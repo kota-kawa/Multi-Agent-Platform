@@ -296,10 +296,12 @@ body{
   background:rgba(47,89,164,.75);
   border:1px solid rgba(91,209,255,.35);
 }
-.sidebar-chat-log .msg.system{
+.sidebar-chat-log .msg.system,
+.sidebar-chat-log .msg.assistant{
   background:rgba(32,44,68,.78);
   border:1px solid rgba(91,209,255,.2);
 }
+.sidebar-chat-log .msg.pending{opacity:.75; font-style:italic;}
 .nav-btn{
   display:flex; flex-direction:column; align-items:center; gap:4px;
   border:1px solid var(--border);
@@ -644,7 +646,9 @@ body{
 .msg{max-width:80%; padding:10px 12px; border-radius:12px; line-height:1.5; white-space:pre-wrap}
 .msg.compact{font-size:14px; padding:8px 10px}
 .msg.user{align-self:flex-end; background:#2d3b57; border:1px solid #3e4b6b}
-.msg.system{align-self:flex-start; background:#1f2738; border:1px solid #33405d}
+.msg.system,
+.msg.assistant{align-self:flex-start; background:#1f2738; border:1px solid #33405d}
+.msg.pending{opacity:.78; font-style:italic}
 .msg-time{display:block; opacity:.6; font-size:11px; margin-top:4px}
 .chat-form{display:flex; gap:8px; padding:10px; border-top:1px solid var(--border)}
 .chat-input{

@@ -56,6 +56,9 @@ navButtons.forEach(btn => {
       chat: "要約チャット",
     };
     appTitle.textContent = titles[view] ?? "リモートブラウザ";
+    if (view === "chat") {
+      ensureChatInitialized({ showLoadingSummary: true });
+    }
     scheduleSidebarTogglePosition();
   });
 });
@@ -317,7 +320,7 @@ addDeviceBtn.addEventListener("click", () => {
   renderDevices();
 });
 
-/* ---------- Chat + Summarizer ---------- */
+/* ---------- Chat + Summarizer (FAQ_Gemini integration) ---------- */
 
 const chatLog = $("#chatLog");
 const sidebarChatLog = $("#sidebarChatLog");
@@ -327,39 +330,112 @@ const chatForm = $("#chatForm");
 const sidebarChatForm = $("#sidebarChatForm");
 const summaryBox = $("#summaryBox");
 const clearChatBtn = $("#clearChatBtn");
+
 const SUMMARY_PLACEHOLDER = "左側のチャットでメッセージを送信すると、ここに要約が表示されます。";
+const SUMMARY_LOADING_TEXT = "要約を取得しています…";
+const INTRO_MESSAGE_TEXT = "ここは要約チャットです。左サイドバーの共通チャットからメッセージを送信すると重要なポイントをここに表示します。";
 
-function updateSummaryBox() {
-  if (!summaryBox) return;
-  const hasSummarizable = messages.some(m => m.role !== "system");
-  if (!hasSummarizable) {
-    summaryBox.textContent = SUMMARY_PLACEHOLDER;
-    return;
-  }
-  const summary = summarizeMessages(messages).trim();
-  summaryBox.textContent = summary ? summary : SUMMARY_PLACEHOLDER;
+const chatState = {
+  messages: [],
+  initialized: false,
+  sending: false,
+};
+
+function getIntroMessage() {
+  return {
+    role: "system",
+    text: INTRO_MESSAGE_TEXT,
+    ts: Date.now(),
+  };
 }
 
-const LS_KEY_CHAT = "spa_chat_messages_v1";
-let messages = loadJSON(LS_KEY_CHAT) ?? [];
+chatState.messages = [getIntroMessage()];
 
-function ensureIntroMessage() {
-  if (messages.length === 0) {
-    messages.push({
-      role: "system",
-      text: "ここは要約チャットです。左サイドバーの共通チャットからメッセージを送信すると重要なポイントをここに表示します。",
-      ts: Date.now()
-    });
-    saveJSON(LS_KEY_CHAT, messages);
+function resolveGeminiBase() {
+  const sanitize = value => (typeof value === "string" ? value.trim().replace(/\/+$/, "") : "");
+  let queryBase = "";
+  try {
+    queryBase = new URLSearchParams(window.location.search).get("faq_gemini_base") || "";
+  } catch (_) {
+    queryBase = "";
   }
+  const sources = [
+    sanitize(queryBase),
+    sanitize(window.FAQ_GEMINI_API_BASE),
+    sanitize(document.querySelector("meta[name='faq-gemini-api-base']")?.content),
+  ];
+  for (const src of sources) {
+    if (src) return src;
+  }
+  if (window.location.origin && window.location.origin !== "null") {
+    return window.location.origin.replace(/\/+$/, "");
+  }
+  return "http://localhost:5000";
 }
 
-function createMessageElement(m) {
+const GEMINI_API_BASE = resolveGeminiBase();
+
+function buildGeminiUrl(path) {
+  const normalizedPath = path.startsWith("http") ? path : path.startsWith("/") ? path : `/${path}`;
+  if (!GEMINI_API_BASE) return normalizedPath;
+  const base = GEMINI_API_BASE.replace(/\/+$/, "");
+  if (!base || base === window.location.origin.replace(/\/+$/, "")) {
+    return normalizedPath;
+  }
+  return `${base}${normalizedPath}`;
+}
+
+async function geminiRequest(path, { method = "GET", headers = {}, body, signal } = {}) {
+  const url = buildGeminiUrl(path);
+  const finalHeaders = { ...headers };
+  const hasBody = body !== undefined && body !== null;
+  const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
+  if (hasBody && !isFormData && !finalHeaders["Content-Type"]) {
+    finalHeaders["Content-Type"] = "application/json";
+  }
+
+  const response = await fetch(url, {
+    method,
+    headers: finalHeaders,
+    body,
+    signal,
+    mode: "cors",
+  });
+
+  const contentType = response.headers.get("content-type") || "";
+  const isJson = contentType.includes("application/json");
+  let data;
+  try {
+    data = isJson ? await response.json() : await response.text();
+  } catch (_) {
+    data = isJson ? {} : "";
+  }
+
+  if (!response.ok) {
+    const message = typeof data === "string" && data
+      ? data
+      : (data && typeof data.error === "string")
+        ? data.error
+        : `${response.status} ${response.statusText}`;
+    throw new Error(message);
+  }
+
+  return typeof data === "string" ? { message: data } : data;
+}
+
+function createMessageElement(message, { compact = false } = {}) {
   const el = document.createElement("div");
-  el.className = `msg ${m.role}`;
+  const roleClass = message.role === "user" ? "user" : "system";
+  el.className = `msg ${roleClass}`;
+  if (compact) el.classList.add("compact");
+  if (message.role === "assistant") el.classList.add("assistant");
+  if (message.pending) el.classList.add("pending");
+
+  const time = message.ts ? new Date(message.ts).toLocaleString("ja-JP") : "";
+  const text = message.text ?? "";
   el.innerHTML = `
-      ${escapeHTML(m.text)}
-      <span class="msg-time">${new Date(m.ts).toLocaleString("ja-JP")}</span>
+      ${escapeHTML(text)}
+      ${time ? `<span class="msg-time">${time}</span>` : ""}
     `;
   return el;
 }
@@ -367,99 +443,181 @@ function createMessageElement(m) {
 function renderChat() {
   if (chatLog) {
     chatLog.innerHTML = "";
-    messages.forEach(m => {
-      chatLog.appendChild(createMessageElement(m));
+    chatState.messages.forEach(message => {
+      chatLog.appendChild(createMessageElement(message));
     });
     chatLog.scrollTop = chatLog.scrollHeight;
   }
 
   if (sidebarChatLog) {
     sidebarChatLog.innerHTML = "";
-    const recent = messages.slice(-20);
-    recent.forEach(m => {
-      const el = createMessageElement(m);
-      el.classList.add("compact");
-      sidebarChatLog.appendChild(el);
+    const recent = chatState.messages.slice(-20);
+    recent.forEach(message => {
+      sidebarChatLog.appendChild(createMessageElement(message, { compact: true }));
     });
     sidebarChatLog.scrollTop = sidebarChatLog.scrollHeight;
   }
 }
 
-function pushUserMessage(text) {
-  messages.push({ role: "user", text, ts: Date.now() });
-  saveJSON(LS_KEY_CHAT, messages);
+renderChat();
+
+function setChatMessagesFromHistory(history) {
+  const now = Date.now();
+  const converted = Array.isArray(history)
+    ? history.map((entry, idx) => ({
+        role: (entry.role || "").toLowerCase() === "user" ? "user" : "assistant",
+        text: entry.message ?? "",
+        ts: now + idx,
+      }))
+    : [];
+  chatState.messages = [getIntroMessage(), ...converted];
   renderChat();
-  updateSummaryBox();
 }
 
-ensureIntroMessage();
-renderChat();
-updateSummaryBox();
+async function syncConversationHistory({ showLoading = false } = {}) {
+  if (!sidebarChatLog && !chatLog) return;
+  if (showLoading) {
+    chatState.messages = [
+      getIntroMessage(),
+      { role: "system", text: "会話履歴を取得しています…", pending: true, ts: Date.now() },
+    ];
+    renderChat();
+  }
+  try {
+    const data = await geminiRequest("/conversation_history");
+    setChatMessagesFromHistory(data.conversation_history);
+  } catch (error) {
+    console.error("会話履歴の取得に失敗しました:", error);
+    if (showLoading) {
+      chatState.messages = [
+        getIntroMessage(),
+        { role: "system", text: `会話履歴の取得に失敗しました: ${error.message}`, ts: Date.now() },
+      ];
+      renderChat();
+    }
+  }
+}
+
+function isChatViewActive() {
+  return views.chat?.classList.contains("active");
+}
+
+async function refreshSummaryBox({ showLoading = false } = {}) {
+  if (!summaryBox) return;
+  if (showLoading) {
+    summaryBox.textContent = SUMMARY_LOADING_TEXT;
+  }
+  try {
+    const data = await geminiRequest("/conversation_summary");
+    const summary = (data.summary || "").trim();
+    summaryBox.textContent = summary ? summary : SUMMARY_PLACEHOLDER;
+  } catch (error) {
+    summaryBox.textContent = `要約の取得に失敗しました: ${error.message}`;
+  }
+}
+
+function ensureChatInitialized({ showLoadingSummary = false } = {}) {
+  if (chatState.initialized) {
+    syncConversationHistory();
+    if (showLoadingSummary) refreshSummaryBox({ showLoading: true });
+    else refreshSummaryBox();
+    return;
+  }
+  chatState.initialized = true;
+  syncConversationHistory({ showLoading: true });
+  refreshSummaryBox({ showLoading: showLoadingSummary });
+}
+
+let pendingAssistantMessage = null;
+
+function addUserMessage(text) {
+  const message = { role: "user", text, ts: Date.now() };
+  chatState.messages.push(message);
+  renderChat();
+  return message;
+}
+
+function addPendingAssistantMessage() {
+  const message = {
+    role: "assistant",
+    text: "回答を生成しています…",
+    pending: true,
+  };
+  chatState.messages.push(message);
+  renderChat();
+  return message;
+}
+
+async function sendChatMessage(text) {
+  if (!text || chatState.sending) return;
+  ensureChatInitialized();
+  chatState.sending = true;
+
+  addUserMessage(text);
+  pendingAssistantMessage = addPendingAssistantMessage();
+
+  try {
+    const payload = JSON.stringify({ question: text });
+    const data = await geminiRequest("/rag_answer", { method: "POST", body: payload });
+    const answer = (data.answer || "").trim();
+    if (pendingAssistantMessage) {
+      pendingAssistantMessage.text = answer || "回答が空でした。";
+      pendingAssistantMessage.pending = false;
+      pendingAssistantMessage.ts = Date.now();
+    }
+    renderChat();
+    await syncConversationHistory();
+    if (isChatViewActive()) {
+      await refreshSummaryBox({ showLoading: true });
+    } else {
+      refreshSummaryBox();
+    }
+  } catch (error) {
+    console.error("チャット送信時にエラーが発生しました:", error);
+    if (pendingAssistantMessage) {
+      pendingAssistantMessage.text = `エラー: ${error.message}`;
+      pendingAssistantMessage.pending = false;
+      pendingAssistantMessage.ts = Date.now();
+      renderChat();
+    }
+  } finally {
+    chatState.sending = false;
+    pendingAssistantMessage = null;
+  }
+}
 
 if (chatForm) {
-  chatForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const text = chatInput.value.trim();
-    if (!text) return;
-    pushUserMessage(text);
+  chatForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const value = chatInput.value.trim();
+    if (!value) return;
     chatInput.value = "";
     if (sidebarChatInput) sidebarChatInput.value = "";
+    await sendChatMessage(value);
   });
 }
 
-sidebarChatForm.addEventListener("submit", (e) => {
-  e.preventDefault();
-  const text = sidebarChatInput.value.trim();
-  if (!text) return;
-  pushUserMessage(text);
-  sidebarChatInput.value = "";
-  if (chatInput) chatInput.value = "";
-});
-
-clearChatBtn.addEventListener("click", () => {
-  if (!confirm("チャット履歴をクリアしますか？")) return;
-  messages = [];
-  saveJSON(LS_KEY_CHAT, messages);
-  ensureIntroMessage();
-  renderChat();
-  updateSummaryBox();
-});
-
-/* --- Simple Extractive Summarizer (JP friendly heuristic) --- */
-function summarizeMessages(msgs, maxSentences = 6) {
-  const text = msgs.filter(m => m.role !== "system").map(m => m.text).join("。") + "。";
-  if (!text.trim()) return "";
-
-  // 文分割（句点・疑問符・感嘆符・改行）
-  const sentences = text.split(/(?<=[。！？\?！\n])\s*/).map(s => s.trim()).filter(Boolean);
-
-  // ストップワード（日本語の頻出助詞・助動詞など簡易版）
-  const stop = new Set("の こと もの です ます する した して に は が を と で から まで より へ も のに そして また ので ため たり だ が です。 ます。 する。".split(/\s+/));
-
-  // 単語出現頻度（極めて単純な形態素もどき：全角・半角記号除去、漢字ひらカナ・英数）
-  const terms = {};
-  sentences.forEach(s => {
-    const words = s.replace(/[^\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}A-Za-z0-9]/gu, " ")
-                   .split(/\s+/).filter(w => w && !stop.has(w));
-    words.forEach(w => { terms[w] = (terms[w] || 0) + 1; });
+if (sidebarChatForm) {
+  sidebarChatForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const value = sidebarChatInput.value.trim();
+    if (!value) return;
+    sidebarChatInput.value = "";
+    if (chatInput) chatInput.value = "";
+    await sendChatMessage(value);
   });
-
-  // 文スコア：出現頻度合計 + 長さペナルティ
-  const scored = sentences.map((s, i) => {
-    const words = s.replace(/[^\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}A-Za-z0-9]/gu, " ")
-                   .split(/\s+/).filter(Boolean);
-    const score = words.reduce((acc, w) => acc + (terms[w] || 0), 0) / Math.sqrt(words.length + 1);
-    // 先頭・末尾バイアス（導入・結論が入りやすいように）
-    const bias = (i === 0 ? 0.8 : 0) + (i === sentences.length - 1 ? 0.5 : 0);
-    return { i, s, score: score + bias };
-  });
-
-  scored.sort((a,b)=>b.score-a.score);
-  const top = scored.slice(0, Math.min(maxSentences, scored.length))
-                    .sort((a,b)=>a.i-b.i)
-                    .map(x=>x.s);
-
-  // 箇条書き風に整形
-  return "▼ 要点\n" + top.map(s => `・${s.replace(/\s+/g," ").trim()}`).join("\n");
 }
 
+if (clearChatBtn) {
+  clearChatBtn.addEventListener("click", async () => {
+    if (!confirm("チャット履歴をクリアしますか？")) return;
+    try {
+      await geminiRequest("/reset_history", { method: "POST" });
+      chatState.messages = [getIntroMessage()];
+      renderChat();
+      await refreshSummaryBox({ showLoading: true });
+    } catch (error) {
+      alert(`チャット履歴のクリアに失敗しました: ${error.message}`);
+    }
+  });
+}
