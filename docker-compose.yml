@@ -4,5 +4,13 @@ services:
     ports:
       - "5050:5050"
     environment:
-      FAQ_GEMINI_API_BASE: "http://localhost:5000"
+      FAQ_GEMINI_API_BASE: "http://faq_gemini:5000,http://localhost:5000"
     restart: unless-stopped
+    networks:
+      - default
+      - multi_agent_network
+
+networks:
+  multi_agent_network:
+    external: true
+    name: ${MULTI_AGENT_NETWORK:-multi_agent_platform_net}
