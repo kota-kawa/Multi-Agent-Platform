@@ -1,0 +1,37 @@
+# バイナリファイルを無視
+*.env
+*.ini
+*.service
+*.sock
+*.exe
+*.dll
+*.json
+*.Identifier
+# ログファイルを無視
+
+*.cgi
+*.htaccess
+
+*.zip
+*.pptx
+*.txt
+!ads.txt
+!robots.txt
+
+
+
+# OSやIDEの一時ファイルを無視
+.DS_Store
+Thumbs.db
+.vscode/
+
+logs/*
+
+
+
+
+# ビルドディレクトリを無視
+/build/
+__pycache__/.env
+__pycache__/
+*.pyc
