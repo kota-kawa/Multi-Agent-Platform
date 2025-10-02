@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>リモートブラウザ / IoT / 要約チャット - Single Page UI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./assets/styles.css" />
+  <script src="./assets/app.js" defer></script>
+</head>
+<body>
+  <div id="app" class="app">
+    <div class="layout">
+      <!-- 左サイドバー（ページ切替） -->
+      <aside class="sidebar" role="navigation" aria-label="ビュー切替">
+        <p class="sidebar-title">ビュー</p>
+        <div class="sidebar-nav" role="group" aria-label="ビュー選択">
+          <button class="nav-btn active" data-view="browser" title="ブラウザ">
+          <!-- モニタ風アイコン（SVG） -->
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M3 4h18a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm0 2v9h18V6H3zm7 13h4v2h-4v-2z"/>
+          </svg>
+          <span>ブラウザ</span>
+          </button>
+          <button class="nav-btn" data-view="iot" title="IoT">
+          <!-- IoT 芯片風アイコン -->
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M9 2h6v2h2v2h2v6h-2v2h-2v2h-6v-2H7v-2H5V6h2V4h2V2zm0 4v2H7v6h2v2h6v-2h2V8h-2V6H9z"/>
+          </svg>
+          <span>IoT</span>
+          </button>
+          <button class="nav-btn" data-view="chat" title="チャット">
+          <!-- 吹き出しアイコン -->
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M20 2H4a2 2 0 0 0-2 2v14l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/>
+          </svg>
+          <span>チャット</span>
+          </button>
+        </div>
+        <section class="sidebar-chat" aria-label="共通チャット">
+          <div class="sidebar-chat-header">
+            <h2 class="sidebar-chat-title">
+              <span class="sidebar-chat-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M4 3h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-4l-4 4-4-4H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" fill="currentColor" />
+                </svg>
+              </span>
+              共通チャット
+            </h2>
+            <p class="sidebar-chat-desc">ビューを切り替えてもここから同じチャットを操作できます。</p>
+          </div>
+          <div id="sidebarChatLog" class="sidebar-chat-log" aria-live="polite"></div>
+          <form id="sidebarChatForm" class="sidebar-chat-form" autocomplete="off">
+            <label class="sr-only" for="sidebarChatInput">共通チャットにメッセージを送信</label>
+            <textarea
+              id="sidebarChatInput"
+              class="sidebar-chat-input"
+              rows="3"
+              placeholder="ブラウザに指示したい内容を入力してください。"
+              required
+            ></textarea>
+            <button class="sidebar-chat-send" type="submit" aria-label="送信">
+              <span class="sr-only">送信</span>
+              <span aria-hidden="true" class="sidebar-chat-send-icon">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M5 12a1 1 0 0 1 1-1h9.586l-3.293-3.293a1 1 0 1 1 1.414-1.414l5 5a1 1 0 0 1 0 1.414l-5 5a1 1 0 1 1-1.414-1.414L15.586 13H6a1 1 0 0 1-1-1z" fill="currentColor" />
+                </svg>
+              </span>
+            </button>
+          </form>
+        </section>
+      </aside>
+      <button
+        type="button"
+        class="sidebar-toggle"
+        aria-label="サイドバーを折りたたむ"
+        aria-expanded="true"
+      >
+        <span class="sidebar-toggle-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path
+              fill="currentColor"
+              d="M14.7 5.3a1 1 0 0 1 0 1.4L10.41 11H19a1 1 0 1 1 0 2h-8.59l4.3 4.3a1 1 0 0 1-1.42 1.4l-6-6a1 1 0 0 1 0-1.4l6-6a1 1 0 0 1 1.42 0z"
+            />
+          </svg>
+        </span>
+      </button>
+
+      <!-- メイン領域 -->
+      <main class="content" role="main">
+        <header class="content-header" role="presentation">
+          <h1 class="content-title" id="appTitle">リモートブラウザ</h1>
+          <p class="content-subtitle">左のサイドバーからビューを切り替えできます。</p>
+        </header>
+        <!-- 1) リモートブラウザ風ビュー -->
+        <section id="view-browser" class="view active" aria-labelledby="appTitle">
+          <div class="browser-controls" role="group" aria-label="リモートブラウザ設定">
+            <label class="url-label" for="urlInput">接続先 URL</label>
+            <div class="url-control-row">
+              <div class="urlbar">
+                <span class="lock" aria-hidden="true">🔒</span>
+                <input id="urlInput" class="url-input" type="text"
+                       value="http://127.0.0.1:7900/?autoconnect=1&resize=scale"
+                       aria-label="接続先 URL" />
+              </div>
+              <button id="connectBtn" class="btn primary" type="button" title="接続／切断">接続</button>
+            </div>
+            <p class="url-hint">必要に応じて URL を入力し、接続ボタンでリモート画面を表示します。</p>
+          </div>
+          <div class="no-vnc-surface">
+            <div id="browserStage" class="stage stage--placeholder" role="region" aria-label="リモート映像">
+              <div class="novnc-logo" aria-hidden="true">noVNC</div>
+              <button id="stageConnect" class="btn ghost large" type="button">接続</button>
+              <p class="hint">上の入力欄で URL を変更できます（同一オリジンでない場合は埋め込みがブロックされることがあります）。</p>
+            </div>
+            <div class="browser-toolbar">
+              <button id="backBtn" class="btn subtle" type="button" title="戻る">←</button>
+              <button id="forwardBtn" class="btn subtle" type="button" title="進む">→</button>
+              <button id="reloadBtn" class="btn subtle" type="button" title="再読み込み">↻</button>
+              <div class="spacer"></div>
+              <button id="fullscreenBtn" class="btn subtle" type="button" title="フルスクリーン">⤢</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2) IoT ダッシュボード -->
+        <section id="view-iot" class="view" aria-label="IoT ダッシュボード">
+          <div class="section-header">
+            <div class="section-title">
+              <span class="section-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M9 2h6v2h2v2h2v6h-2v2h-2v2h-6v-2H7v-2H5V6h2V4h2V2zm0 4v2H7v6h2v2h6v-2h2V8h-2V6H9z" fill="currentColor" />
+                </svg>
+              </span>
+              <div>
+                <h2>IoT ダッシュボード</h2>
+                <p class="section-caption">ホーム内の仮想デバイスを確認・制御できます。</p>
+              </div>
+            </div>
+            <div class="section-actions">
+              <button id="addDeviceBtn" class="btn subtle" type="button">デバイス追加</button>
+              <button id="resetIoTBtn" class="btn subtle" type="button">リセット</button>
+            </div>
+          </div>
+
+          <div id="deviceGrid" class="device-grid" aria-live="polite"></div>
+
+        </section>
+
+        <!-- 3) 要約チャット -->
+        <section id="view-chat" class="view" aria-label="要約チャット">
+          <div class="summary-layout">
+            <div class="summary-panel">
+              <div class="summary-panel-header">
+                <div class="summary-heading">
+                  <h2>要約</h2>
+                  <p>左側の共通チャットから送ったメッセージのポイントを確認できます。</p>
+                </div>
+                <div class="summary-actions">
+                  <button id="summarizeBtn" class="btn subtle" type="button">更新</button>
+                  <button id="clearChatBtn" class="btn subtle" type="button">履歴クリア</button>
+                </div>
+              </div>
+              <div id="summaryBox" class="summary-box">
+                左側のチャットでメッセージを送信したら、「更新」を押して要約を反映します。
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <footer class="footer" role="contentinfo">
+      <span>© 2025 Single Page Demo</span>
+      <span class="divider">•</span>
+      <span>デザイン参考：青系ツールバー & noVNC 風プレースホルダー</span>
+    </footer>
+  </div>
+</body>
+</html>
