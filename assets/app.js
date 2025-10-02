@@ -679,6 +679,19 @@ function handleBrowserStatusEvent(payload) {
     }
     updatePauseButtonState();
   }
+  if (typeof payload.run_summary === "string") {
+    const trimmed = payload.run_summary.trim();
+    if (trimmed) {
+      const alreadyExists = browserChatState.messages.some(
+        message => typeof message.text === "string" && message.text.trim() === trimmed,
+      );
+      if (!alreadyExists) {
+        addBrowserSystemMessage(trimmed, {
+          forceSidebar: currentChatMode === "browser",
+        });
+      }
+    }
+  }
 }
 
 async function loadBrowserAgentHistory({ showLoading = false, forceSidebar = false } = {}) {
