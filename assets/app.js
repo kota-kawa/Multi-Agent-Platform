@@ -368,7 +368,14 @@ const browserChatState = {
   agentRunning: false,
   eventSource: null,
   historyAbort: null,
+  setupHintShown: false,
 };
+
+const BROWSER_AGENT_SETUP_MESSAGE = [
+  "ブラウザエージェント用 API を用意して接続する",
+  "",
+  "/api/history・/api/chat・/api/stream などを提供する別サービスを起動し、その URL を window.BROWSER_AGENT_API_BASE、<meta name=\"browser-agent-api-base\" …>、またはクエリパラメータ ?browser_agent_base=... で指定します。",
+].join("\n");
 
 const browserMessageIndex = new Map();
 
@@ -535,6 +542,25 @@ function buildBrowserAgentUrl(path) {
   return `${base}${normalizedPath}`;
 }
 
+function shouldShowBrowserAgentSetupHint(error) {
+  if (!error) {
+    return false;
+  }
+  const status = typeof error.status === "number" ? error.status : null;
+  if (status === 404 || status === 405) {
+    return true;
+  }
+  const base = (BROWSER_AGENT_API_BASE || "").replace(/\/+$/, "");
+  const origin = (window.location.origin || "").replace(/\/+$/, "");
+  if (!base || base === origin) {
+    return true;
+  }
+  if (!status && error.name === "TypeError") {
+    return true;
+  }
+  return false;
+}
+
 async function browserAgentRequest(path, { method = "GET", headers = {}, body, signal } = {}) {
   const url = buildBrowserAgentUrl(path);
   const finalHeaders = { ...headers };
@@ -603,6 +629,7 @@ function setBrowserChatHistory(history, { forceSidebar = false } = {}) {
       ts: Date.now(),
     },
   ];
+  browserChatState.setupHintShown = false;
   browserMessageIndex.clear();
   browserChatState.messages.forEach((message, index) => {
     if (typeof message.id === "number") {
@@ -645,6 +672,23 @@ function addBrowserSystemMessage(text, { forceSidebar = false } = {}) {
   if (!text) return;
   browserChatState.messages.push({ id: null, role: "system", text, ts: Date.now() });
   renderBrowserChat({ forceSidebar });
+}
+
+function addBrowserAgentSetupHint({ forceSidebar = false, render = true } = {}) {
+  if (browserChatState.setupHintShown) return;
+  browserChatState.setupHintShown = true;
+  browserChatState.messages.push({ id: null, role: "system", text: BROWSER_AGENT_SETUP_MESSAGE, ts: Date.now() });
+  if (render) {
+    renderBrowserChat({ forceSidebar });
+  }
+}
+
+function clearBrowserAgentSetupHint() {
+  const index = browserChatState.messages.findIndex((message) => message.text === BROWSER_AGENT_SETUP_MESSAGE);
+  if (index !== -1) {
+    browserChatState.messages.splice(index, 1);
+  }
+  browserChatState.setupHintShown = false;
 }
 
 function updatePauseButtonState(mode = currentChatMode) {
@@ -703,7 +747,11 @@ async function loadBrowserAgentHistory({ showLoading = false, forceSidebar = fal
     browserChatState.messages = [
       { id: null, role: "system", text: `履歴の取得に失敗しました: ${error.message}`, ts: Date.now() },
     ];
+    browserChatState.setupHintShown = false;
     browserMessageIndex.clear();
+    if (shouldShowBrowserAgentSetupHint(error)) {
+      addBrowserAgentSetupHint({ forceSidebar: true, render: false });
+    }
     renderBrowserChat({ forceSidebar });
   } finally {
     if (browserChatState.historyAbort === controller) {
@@ -784,6 +832,10 @@ async function sendBrowserAgentPrompt(text) {
     }
   } catch (error) {
     addBrowserSystemMessage(`送信に失敗しました: ${error.message}`, { forceSidebar: currentChatMode === "browser" });
+    clearBrowserAgentSetupHint();
+    if (shouldShowBrowserAgentSetupHint(error)) {
+      addBrowserAgentSetupHint({ forceSidebar: currentChatMode === "browser" });
+    }
   } finally {
     browserChatState.sending = false;
     updateSidebarControlsForMode(currentChatMode);
