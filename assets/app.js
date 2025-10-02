@@ -474,9 +474,12 @@ function setChatMessagesFromHistory(history) {
   renderChat();
 }
 
-async function syncConversationHistory({ showLoading = false } = {}) {
+async function syncConversationHistory({ showLoading = false, force = false } = {}) {
   if (!sidebarChatLog && !chatLog) return;
-  if (showLoading) {
+  if (chatState.sending && !force) {
+    return;
+  }
+  if (showLoading && (!chatState.sending || force)) {
     chatState.messages = [
       getIntroMessage(),
       { role: "system", text: "会話履歴を取得しています…", pending: true, ts: Date.now() },
@@ -485,10 +488,13 @@ async function syncConversationHistory({ showLoading = false } = {}) {
   }
   try {
     const data = await geminiRequest("/conversation_history");
+    if (chatState.sending && !force) {
+      return;
+    }
     setChatMessagesFromHistory(data.conversation_history);
   } catch (error) {
     console.error("会話履歴の取得に失敗しました:", error);
-    if (showLoading) {
+    if (showLoading && (!chatState.sending || force)) {
       chatState.messages = [
         getIntroMessage(),
         { role: "system", text: `会話履歴の取得に失敗しました: ${error.message}`, ts: Date.now() },
@@ -566,7 +572,7 @@ async function sendChatMessage(text) {
       pendingAssistantMessage.ts = Date.now();
     }
     renderChat();
-    await syncConversationHistory();
+    await syncConversationHistory({ force: true });
     if (isChatViewActive()) {
       await refreshSummaryBox({ showLoading: true });
     } else {
