@@ -17,6 +17,7 @@
 *.txt
 !ads.txt
 !robots.txt
+!requirements.txt
 
 
 
