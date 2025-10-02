@@ -339,6 +339,26 @@ body{
 
 .view{display:none}
 .view.active{display:block}
+.general-view{
+  background:var(--panel-2);
+  border-radius:18px;
+  padding:28px;
+  box-shadow:var(--shadow);
+  display:flex;
+  flex-direction:column;
+  gap:16px;
+}
+.general-view h2{
+  margin:0;
+  font-size:24px;
+  font-weight:700;
+}
+.general-view p{
+  margin:0;
+  color:var(--muted);
+  font-size:15px;
+  line-height:1.8;
+}
 
 /* generic buttons */
 .btn{
