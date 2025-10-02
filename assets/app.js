@@ -36,6 +36,7 @@ const scheduleSidebarTogglePosition = () => {
 
 /* ---------- View switching ---------- */
 const views = {
+  general: $("#view-general"),
   browser: $("#view-browser"),
   iot: $("#view-iot"),
   chat: $("#view-chat"),
@@ -48,9 +49,13 @@ navButtons.forEach(btn => {
     const view = btn.dataset.view;
     navButtons.forEach(b => b.classList.toggle("active", b === btn));
     Object.entries(views).forEach(([k, el]) => el.classList.toggle("active", k === view));
-    appTitle.textContent =
-      view === "browser" ? "リモートブラウザ" :
-      view === "iot" ? "IoT ダッシュボード" : "要約チャット";
+    const titles = {
+      general: "一般ビュー",
+      browser: "リモートブラウザ",
+      iot: "IoT ダッシュボード",
+      chat: "要約チャット",
+    };
+    appTitle.textContent = titles[view] ?? "リモートブラウザ";
     scheduleSidebarTogglePosition();
   });
 });

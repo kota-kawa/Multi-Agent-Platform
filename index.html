@@ -17,6 +17,13 @@
       <aside class="sidebar" role="navigation" aria-label="ビュー切替">
         <p class="sidebar-title">ビュー</p>
         <div class="sidebar-nav" role="group" aria-label="ビュー選択">
+          <button class="nav-btn" data-view="general" title="一般">
+          <!-- 一般ビュー用アイコン -->
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 2a10 10 0 1 0 10 10A10.011 10.011 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8.009 8.009 0 0 1-8 8zm0-11a3 3 0 1 0 3 3 3 3 0 0 0-3-3z"/>
+          </svg>
+          <span>一般</span>
+          </button>
           <button class="nav-btn active" data-view="browser" title="ブラウザ">
           <!-- モニタ風アイコン（SVG） -->
           <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -94,6 +101,14 @@
           <h1 class="content-title" id="appTitle">リモートブラウザ</h1>
           <p class="content-subtitle">左のサイドバーからビューを切り替えできます。</p>
         </header>
+        <!-- 0) 一般ビュー -->
+        <section id="view-general" class="view" aria-labelledby="appTitle">
+          <div class="general-view">
+            <h2>ようこそ</h2>
+            <p>左側のボタンから目的のビューを選択できます。ここでは全体の概要やお知らせを表示することができます。</p>
+          </div>
+        </section>
+
         <!-- 1) リモートブラウザ風ビュー -->
         <section id="view-browser" class="view active" aria-labelledby="appTitle">
           <div class="browser-controls" role="group" aria-label="リモートブラウザ設定">
