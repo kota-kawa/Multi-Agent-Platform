@@ -320,10 +320,20 @@ const chatInput = $("#chatInput");
 const sidebarChatInput = $("#sidebarChatInput");
 const chatForm = $("#chatForm");
 const sidebarChatForm = $("#sidebarChatForm");
-const summarizeBtn = $("#summarizeBtn");
 const summaryBox = $("#summaryBox");
 const clearChatBtn = $("#clearChatBtn");
-const SUMMARY_PLACEHOLDER = "左側のチャットでメッセージを送信したら、「更新」を押して要約を反映します。";
+const SUMMARY_PLACEHOLDER = "左側のチャットでメッセージを送信すると、ここに要約が表示されます。";
+
+function updateSummaryBox() {
+  if (!summaryBox) return;
+  const hasSummarizable = messages.some(m => m.role !== "system");
+  if (!hasSummarizable) {
+    summaryBox.textContent = SUMMARY_PLACEHOLDER;
+    return;
+  }
+  const summary = summarizeMessages(messages).trim();
+  summaryBox.textContent = summary ? summary : SUMMARY_PLACEHOLDER;
+}
 
 const LS_KEY_CHAT = "spa_chat_messages_v1";
 let messages = loadJSON(LS_KEY_CHAT) ?? [];
@@ -332,7 +342,7 @@ function ensureIntroMessage() {
   if (messages.length === 0) {
     messages.push({
       role: "system",
-      text: "ここは要約チャットです。左サイドバーの共通チャットからメッセージを送信し、「更新」を押すと重要なポイントをここに表示します。",
+      text: "ここは要約チャットです。左サイドバーの共通チャットからメッセージを送信すると重要なポイントをここに表示します。",
       ts: Date.now()
     });
     saveJSON(LS_KEY_CHAT, messages);
@@ -374,14 +384,12 @@ function pushUserMessage(text) {
   messages.push({ role: "user", text, ts: Date.now() });
   saveJSON(LS_KEY_CHAT, messages);
   renderChat();
+  updateSummaryBox();
 }
 
 ensureIntroMessage();
 renderChat();
-
-if (summaryBox && !summaryBox.textContent.trim()) {
-  summaryBox.textContent = SUMMARY_PLACEHOLDER;
-}
+updateSummaryBox();
 
 if (chatForm) {
   chatForm.addEventListener("submit", (e) => {
@@ -407,15 +415,9 @@ clearChatBtn.addEventListener("click", () => {
   if (!confirm("チャット履歴をクリアしますか？")) return;
   messages = [];
   saveJSON(LS_KEY_CHAT, messages);
-  if (summaryBox) summaryBox.textContent = SUMMARY_PLACEHOLDER;
   ensureIntroMessage();
   renderChat();
-});
-
-summarizeBtn.addEventListener("click", () => {
-  if (!summaryBox) return;
-  const summary = summarizeMessages(messages);
-  summaryBox.textContent = summary || "要約対象のメッセージがありません。";
+  updateSummaryBox();
 });
 
 /* --- Simple Extractive Summarizer (JP friendly heuristic) --- */
