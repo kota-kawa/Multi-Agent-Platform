@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="browser-embed-url" content="http://127.0.0.1:7900/?autoconnect=1&resize=scale" />
   <title>リモートブラウザ / IoT / 要約チャット - Single Page UI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -117,30 +118,17 @@
 
         <!-- 1) リモートブラウザ風ビュー -->
         <section id="view-browser" class="view active" aria-labelledby="appTitle">
-          <div class="browser-controls" role="group" aria-label="リモートブラウザ設定">
-            <label class="url-label" for="urlInput">接続先 URL</label>
-            <div class="url-control-row">
-              <div class="urlbar">
-                <span class="lock" aria-hidden="true">🔒</span>
-                <input id="urlInput" class="url-input" type="text"
-                       value="http://127.0.0.1:7900/?autoconnect=1&resize=scale"
-                       aria-label="接続先 URL" />
-              </div>
-              <button id="connectBtn" class="btn primary" type="button" title="接続／切断">接続</button>
-            </div>
-            <p class="url-hint">必要に応じて URL を入力し、接続ボタンでリモート画面を表示します。</p>
+          <div class="browser-info" role="note" aria-live="polite">
+            <p class="browser-info-text">
+              ブラウザは常に接続済みです。以下のビューでは
+              <code>web_agent02</code> の構成と同じリモートブラウザが表示されます。
+            </p>
           </div>
           <div class="no-vnc-surface">
-            <div id="browserStage" class="stage stage--placeholder" role="region" aria-label="リモート映像">
-              <div class="novnc-logo" aria-hidden="true">noVNC</div>
-              <button id="stageConnect" class="btn ghost large" type="button">接続</button>
-              <p class="hint">上の入力欄で URL を変更できます（同一オリジンでない場合は埋め込みがブロックされることがあります）。</p>
+            <div id="browserStage" class="stage" role="region" aria-label="リモートブラウザ">
+              <p class="stage-fallback">リモートブラウザを読み込んでいます…</p>
             </div>
             <div class="browser-toolbar">
-              <button id="backBtn" class="btn subtle" type="button" title="戻る">←</button>
-              <button id="forwardBtn" class="btn subtle" type="button" title="進む">→</button>
-              <button id="reloadBtn" class="btn subtle" type="button" title="再読み込み">↻</button>
-              <div class="spacer"></div>
               <button id="fullscreenBtn" class="btn subtle" type="button" title="フルスクリーン">⤢</button>
             </div>
           </div>

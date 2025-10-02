@@ -108,69 +108,76 @@ if (layoutEl && sidebarToggle && sidebarEl) {
 }
 
 /* ---------- Browser stage (noVNC 風) ---------- */
-const urlInput = $("#urlInput");
-const connectBtn = $("#connectBtn");
 const stage = $("#browserStage");
-const stageConnect = $("#stageConnect");
-const backBtn = $("#backBtn");
-const forwardBtn = $("#forwardBtn");
-const reloadBtn = $("#reloadBtn");
 const fullscreenBtn = $("#fullscreenBtn");
 
 let currentIframe = null;
 
-function connectBrowser() {
-  const url = urlInput.value.trim();
+function resolveBrowserEmbedUrl() {
+  const sanitize = value => (typeof value === "string" ? value.trim() : "");
+  const hasProtocol = value => /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value);
+
+  let queryValue = "";
+  try {
+    queryValue = new URLSearchParams(window.location.search).get("browser_embed_url") || "";
+  } catch (_) {
+    queryValue = "";
+  }
+
+  const sources = [
+    sanitize(queryValue),
+    sanitize(window.BROWSER_EMBED_URL),
+    sanitize(document.querySelector("meta[name='browser-embed-url']")?.content),
+  ];
+
+  for (const candidate of sources) {
+    if (!candidate) continue;
+    if (hasProtocol(candidate)) {
+      return candidate;
+    }
+    try {
+      return new URL(candidate, window.location.origin).toString();
+    } catch (_) {
+      continue;
+    }
+  }
+
+  return "http://127.0.0.1:7900/?autoconnect=1&resize=scale";
+}
+
+const BROWSER_EMBED_URL = resolveBrowserEmbedUrl();
+
+function ensureBrowserIframe() {
+  if (!stage) return;
+  const url = BROWSER_EMBED_URL;
   if (!url) return;
 
-  // 既存の iframe を除去
-  if (currentIframe) {
-    currentIframe.remove();
-    currentIframe = null;
+  let iframe = stage.querySelector("iframe");
+  if (!iframe) {
+    stage.innerHTML = "";
+    iframe = document.createElement("iframe");
+    iframe.setAttribute("title", "埋め込みブラウザ");
+    iframe.setAttribute("allow", "fullscreen");
+    iframe.setAttribute("allowfullscreen", "");
+    stage.appendChild(iframe);
   }
-  // iframe を生成（クロスオリジンはブラウザ側の CSP でブロックされる場合あり）
-  const ifr = document.createElement("iframe");
-  ifr.src = url;
-  ifr.setAttribute("title", "埋め込みブラウザ");
-  stage.classList.remove("stage--placeholder");
-  stage.innerHTML = ""; // プレースホルダをクリア
-  stage.appendChild(ifr);
-  currentIframe = ifr;
-  connectBtn.textContent = "切断";
+
+  if (iframe.src !== url) {
+    iframe.src = url;
+  }
+
+  currentIframe = iframe;
 }
 
-function disconnectBrowser() {
-  stage.innerHTML = `
-    <div class="novnc-logo" aria-hidden="true">noVNC</div>
-    <button id="stageConnect" class="btn ghost large" type="button">接続</button>
-    <p class="hint">上の入力欄で URL を変更できます（同一オリジンでない場合は埋め込みがブロックされることがあります）。</p>
-  `;
-  currentIframe = null;
-  connectBtn.textContent = "接続";
-  // 復活したボタンにイベントを付与
-  $("#stageConnect").addEventListener("click", connectBrowser);
+ensureBrowserIframe();
+
+if (fullscreenBtn) {
+  fullscreenBtn.addEventListener("click", () => {
+    const el = currentIframe ?? stage;
+    if (document.fullscreenElement) document.exitFullscreen();
+    else el?.requestFullscreen?.();
+  });
 }
-
-connectBtn.addEventListener("click", () => {
-  if (currentIframe) disconnectBrowser();
-  else connectBrowser();
-});
-stageConnect.addEventListener("click", connectBrowser);
-
-backBtn.addEventListener("click", () => {
-  try { currentIframe?.contentWindow?.history?.back(); } catch (_) {}
-});
-forwardBtn.addEventListener("click", () => {
-  try { currentIframe?.contentWindow?.history?.forward(); } catch (_) {}
-});
-reloadBtn.addEventListener("click", () => {
-  try { currentIframe?.contentWindow?.location?.reload(); } catch (_) {}
-});
-fullscreenBtn.addEventListener("click", () => {
-  const el = currentIframe ?? stage;
-  if (document.fullscreenElement) document.exitFullscreen();
-  else el.requestFullscreen?.();
-});
 
 /* ---------- IoT Dashboard ---------- */
 
