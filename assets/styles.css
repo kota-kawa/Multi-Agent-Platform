@@ -222,6 +222,29 @@ body{
   padding:12px;
   box-shadow:0 14px 34px rgba(7,16,32,.45);
 }
+.sidebar-chat-action-column{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  align-items:stretch;
+  min-width:0;
+}
+.sidebar-chat-utilities{
+  display:flex;
+  gap:8px;
+  justify-content:flex-end;
+}
+.sidebar-chat-utilities[hidden]{
+  display:none;
+}
+.sidebar-chat-control{
+  flex:1;
+  font-size:12px;
+  letter-spacing:.02em;
+  padding:10px 12px;
+  border-radius:12px;
+  white-space:nowrap;
+}
 .sidebar-chat-input{
   flex:1;
   width:100%;
@@ -755,6 +778,8 @@ body{
 @media (max-width: 520px){
   .sidebar-chat-form{gap:10px; padding:10px;}
   .sidebar-chat-input{min-height:56px; padding:12px 14px;}
+  .sidebar-chat-action-column{gap:8px;}
+  .sidebar-chat-control{font-size:11px; padding:8px 10px;}
   .sidebar-chat-send{width:44px; height:44px;}
 }
 

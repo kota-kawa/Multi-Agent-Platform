@@ -68,14 +68,20 @@
               placeholder="ブラウザに指示したい内容を入力してください。"
               required
             ></textarea>
-            <button class="sidebar-chat-send" type="submit" aria-label="送信">
-              <span class="sr-only">送信</span>
-              <span aria-hidden="true" class="sidebar-chat-send-icon">
-                <svg viewBox="0 0 24 24" focusable="false">
-                  <path d="M5 12a1 1 0 0 1 1-1h9.586l-3.293-3.293a1 1 0 1 1 1.414-1.414l5 5a1 1 0 0 1 0 1.414l-5 5a1 1 0 1 1-1.414-1.414L15.586 13H6a1 1 0 0 1-1-1z" fill="currentColor" />
-                </svg>
-              </span>
-            </button>
+            <div class="sidebar-chat-action-column">
+              <button class="sidebar-chat-send" type="submit" aria-label="送信">
+                <span class="sr-only">送信</span>
+                <span aria-hidden="true" class="sidebar-chat-send-icon">
+                  <svg viewBox="0 0 24 24" focusable="false">
+                    <path d="M5 12a1 1 0 0 1 1-1h9.586l-3.293-3.293a1 1 0 1 1 1.414-1.414l5 5a1 1 0 0 1 0 1.414l-5 5a1 1 0 1 1-1.414-1.414L15.586 13H6a1 1 0 0 1-1-1z" fill="currentColor" />
+                  </svg>
+                </span>
+              </button>
+              <div class="sidebar-chat-utilities" hidden>
+                <button id="sidebarPauseBtn" class="btn subtle sidebar-chat-control" type="button">一時停止</button>
+                <button id="sidebarResetBtn" class="btn subtle sidebar-chat-control" type="button">履歴リセット</button>
+              </div>
+            </div>
           </form>
         </section>
       </aside>
