@@ -10,7 +10,10 @@ import requests
 from flask import Flask, jsonify, request, send_from_directory
 
 
-DEFAULT_GEMINI_BASE = "http://localhost:5000"
+DEFAULT_GEMINI_BASES = (
+    "http://localhost:5000",
+    "http://faq_gemini:5000",
+)
 GEMINI_TIMEOUT = float(os.environ.get("FAQ_GEMINI_TIMEOUT", "30"))
 
 
@@ -26,19 +29,31 @@ class GeminiAPIError(RuntimeError):
         self.status_code = status_code
 
 
-def _resolve_gemini_base() -> str:
-    """Resolve the upstream FAQ_Gemini base URL from the environment."""
+def _iter_gemini_bases() -> list[str]:
+    """Return the configured FAQ_Gemini base URLs in priority order."""
 
-    base = os.environ.get("FAQ_GEMINI_API_BASE", DEFAULT_GEMINI_BASE).strip()
-    if not base:
-        raise GeminiAPIError("FAQ_GEMINI_API_BASE が設定されていません。", status_code=500)
-    return base.rstrip("/")
+    configured = os.environ.get("FAQ_GEMINI_API_BASE", "")
+    candidates: list[str] = []
+    if configured:
+        candidates.extend(part.strip() for part in configured.split(","))
+    candidates.extend(DEFAULT_GEMINI_BASES)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for base in candidates:
+        if not base:
+            continue
+        normalized = base.rstrip("/")
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
 
 
-def _build_gemini_url(path: str) -> str:
+def _build_gemini_url(base: str, path: str) -> str:
     """Build an absolute URL to the upstream FAQ_Gemini API."""
 
-    base = _resolve_gemini_base()
     if not path.startswith("/"):
         path = f"/{path}"
     return f"{base}{path}"
@@ -47,11 +62,31 @@ def _build_gemini_url(path: str) -> str:
 def _call_gemini(path: str, *, method: str = "GET", payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Call the upstream FAQ_Gemini API and return the JSON payload."""
 
-    url = _build_gemini_url(path)
-    try:
-        response = requests.request(method, url, json=payload, timeout=GEMINI_TIMEOUT)
-    except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
-        raise GeminiAPIError(f"FAQ_Gemini API への接続に失敗しました: {exc}") from exc
+    bases = _iter_gemini_bases()
+    if not bases:
+        raise GeminiAPIError("FAQ_Gemini API の接続先が設定されていません。", status_code=500)
+
+    connection_errors: list[str] = []
+    last_exception: Exception | None = None
+    response = None
+    for base in bases:
+        url = _build_gemini_url(base, path)
+        try:
+            response = requests.request(method, url, json=payload, timeout=GEMINI_TIMEOUT)
+        except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
+            connection_errors.append(f"{url}: {exc}")
+            last_exception = exc
+            continue
+        else:
+            break
+
+    if response is None:
+        message_lines = ["FAQ_Gemini API への接続に失敗しました。"]
+        if connection_errors:
+            message_lines.append("試行した URL:")
+            message_lines.extend(f"- {error}" for error in connection_errors)
+        message = "\n".join(message_lines)
+        raise GeminiAPIError(message) from last_exception
 
     try:
         data = response.json()
