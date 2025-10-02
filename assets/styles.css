@@ -35,18 +35,6 @@ body{
 .content-title{margin:0; font-size:26px; font-weight:700}
 .content-subtitle{margin:0; font-size:14px; color:var(--muted)}
 
-.urlbar{
-  display:flex; align-items:center; gap:8px;
-  background:rgba(255,255,255,.12);
-  padding:6px 10px; border-radius:10px; min-width:240px; width:100%;
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
-}
-.urlbar .lock{opacity:.85}
-.url-input{
-  width:100%; background:transparent; border:none; color:#fff;
-  font-size:14px; outline:none
-}
-
 /* layout */
 .layout{
   display:flex;
@@ -397,42 +385,69 @@ body{
 .btn.large{font-size:18px; padding:12px 20px}
 
 /* browser */
-.browser-controls{
+.browser-info{
   background:var(--panel-2);
   border:1px solid var(--border);
   border-radius:var(--radius);
   padding:16px;
   box-shadow:var(--shadow);
-  display:flex;
-  flex-direction:column;
-  gap:12px;
+  margin-bottom:16px;
 }
-.url-label{margin:0; font-size:14px; font-weight:600}
-.url-control-row{
-  display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+.browser-info-text{
+  margin:0;
+  font-size:14px;
+  color:var(--muted);
 }
-.url-control-row .urlbar{flex:1; min-width:240px}
-.url-control-row .btn{flex-shrink:0}
-.url-hint{margin:0; font-size:12px; color:var(--muted)}
+.browser-info-text code{
+  color:var(--accent);
+  font-family:inherit;
+}
 
-/* noVNC-like surface */
 .no-vnc-surface{
-  background:var(--panel-2); border:1px solid var(--border); border-radius:var(--radius);
-  padding:14px; box-shadow:var(--shadow);
+  background:var(--panel-2);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  padding:14px;
+  box-shadow:var(--shadow);
 }
+
 .stage{
-  aspect-ratio:16/9; width:100%;
-  background:#0f1115; color:#c1cad7;
-  border-radius:10px; display:flex; align-items:center; justify-content:center; gap:18px;
-  position:relative; border:1px dashed #3b465e;
+  aspect-ratio:16/9;
+  width:100%;
+  background:#0f1115;
+  border-radius:10px;
+  border:1px solid var(--border);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  position:relative;
+  overflow:hidden;
+  color:#c1cad7;
 }
-.stage iframe{width:100%; height:100%; border:0; border-radius:8px; background:#0a0c10}
-.novnc-logo{position:absolute; top:25%; font-size:64px; font-weight:800; letter-spacing:.08em; opacity:.12}
-.stage .hint{position:absolute; bottom:10px; font-size:12px; color:#98a4b8; text-align:center; width:100%}
+
+.stage iframe{
+  width:100%;
+  height:100%;
+  border:0;
+  border-radius:8px;
+  background:#0a0c10;
+}
+
+.stage-fallback{
+  margin:0;
+  padding:24px;
+  color:var(--muted);
+  font-size:14px;
+  text-align:center;
+}
+
 .browser-toolbar{
-  display:flex; align-items:center; gap:8px; padding-top:10px;
+  display:flex;
+  justify-content:flex-end;
+  align-items:center;
+  gap:8px;
+  padding-top:10px;
 }
-.browser-toolbar .spacer{flex:1}
 
 /* IoT dashboard */
 .section-header{
