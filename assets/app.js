@@ -707,8 +707,7 @@ function updatePauseButtonState(mode = currentChatMode) {
 function updateSidebarControlsForMode(mode) {
   const showBrowserControls = mode === "browser";
   if (sidebarChatUtilities) {
-    if (showBrowserControls) sidebarChatUtilities.removeAttribute("hidden");
-    else sidebarChatUtilities.setAttribute("hidden", "");
+    sidebarChatUtilities.hidden = false;
   }
   if (sidebarResetBtn) {
     sidebarResetBtn.disabled = !showBrowserControls;
