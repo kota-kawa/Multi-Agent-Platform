@@ -379,14 +379,23 @@ body{
   display:flex;
   flex-direction:column;
   gap:24px;
-  overflow-y:auto;
+  min-height:0;
+  overflow:hidden;
   background:
     radial-gradient(1200px 700px at 30% -80%, rgba(61,125,255,.18), transparent 60%),
     radial-gradient(1200px 700px at 90% -80%, rgba(40,201,255,.14), transparent 60%);
 }
 
 .view{display:none}
-.view.active{display:block}
+.view.active{display:block; overflow:auto; flex:1; min-height:0}
+#view-browser.view.active{
+  display:flex;
+  flex-direction:column;
+  flex:1;
+  min-height:0;
+  overflow:hidden;
+}
+.content-header{flex-shrink:0}
 .general-view{
   background:var(--panel-2);
   border-radius:18px;
@@ -426,11 +435,18 @@ body{
   border-radius:var(--radius);
   padding:12px;
   box-shadow:var(--shadow);
+  display:flex;
+  flex-direction:column;
+  flex:1;
+  min-height:0;
 }
 
 .stage{
   width:100%;
-  height:clamp(420px, 70vh, 900px);
+  min-height:420px;
+  flex:1;
+  min-width:0;
+  height:100%;
   background:#0f1115;
   border-radius:10px;
   border:1px solid var(--border);
