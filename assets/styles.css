@@ -375,7 +375,7 @@ body{
 /* main content */
 .content{
   flex:1;
-  padding:24px;
+  padding:20px;
   display:flex;
   flex-direction:column;
   gap:24px;
@@ -420,35 +420,17 @@ body{
 .btn.large{font-size:18px; padding:12px 20px}
 
 /* browser */
-.browser-info{
-  background:var(--panel-2);
-  border:1px solid var(--border);
-  border-radius:var(--radius);
-  padding:16px;
-  box-shadow:var(--shadow);
-  margin-bottom:16px;
-}
-.browser-info-text{
-  margin:0;
-  font-size:14px;
-  color:var(--muted);
-}
-.browser-info-text code{
-  color:var(--accent);
-  font-family:inherit;
-}
-
 .no-vnc-surface{
   background:var(--panel-2);
   border:1px solid var(--border);
   border-radius:var(--radius);
-  padding:14px;
+  padding:12px;
   box-shadow:var(--shadow);
 }
 
 .stage{
-  aspect-ratio:16/9;
   width:100%;
+  height:clamp(420px, 70vh, 900px);
   background:#0f1115;
   border-radius:10px;
   border:1px solid var(--border);
