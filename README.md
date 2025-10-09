@@ -22,6 +22,7 @@ python app.py
 
 ```bash
 export FAQ_GEMINI_API_BASE="http://localhost:5000,http://faq_gemini:5000"
+export BROWSER_AGENT_API_BASE="http://localhost:5005,http://browser_agent:5005"
 python app.py
 ```
 
@@ -33,8 +34,9 @@ docker compose up --build
 
 ビルドと起動が完了すると、ブラウザで `http://localhost:5050` にアクセスできま
 す。FAQ_Gemini を別コンテナで動かす場合は同じ Docker ネットワーク上で
-`faq_gemini` というホスト名になるよう起動してください (例: FAQ_Gemini リポジ
-トリの Dockerfile を利用して `docker run --name faq_gemini ...` など)。
+`faq_gemini` や `browser_agent` というホスト名になるよう起動してください (例:
+FAQ_Gemini リポジトリの Dockerfile を利用して `docker run --name faq_gemini ...`
+など)。
 
 終了するには `Ctrl+C` を押すか、別のターミナルで次のコマンドを実行します。
 
