@@ -80,8 +80,36 @@
                 </span>
               </button>
               <div class="sidebar-chat-utilities" hidden>
-                <button id="sidebarPauseBtn" class="btn subtle sidebar-chat-control" type="button">一時停止</button>
-                <button id="sidebarResetBtn" class="btn subtle sidebar-chat-control" type="button">履歴リセット</button>
+                <button
+                  id="sidebarPauseBtn"
+                  class="sidebar-chat-control"
+                  type="button"
+                  aria-label="一時停止"
+                  aria-pressed="false"
+                >
+                  <span class="sr-only">一時停止</span>
+                  <span class="sidebar-chat-control-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <path fill="currentColor" d="M8 5h3v14H8zm5 0h3v14h-3z" />
+                    </svg>
+                  </span>
+                </button>
+                <button
+                  id="sidebarResetBtn"
+                  class="sidebar-chat-control"
+                  type="button"
+                  aria-label="履歴リセット"
+                >
+                  <span class="sr-only">履歴リセット</span>
+                  <span class="sidebar-chat-control-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <path
+                        fill="currentColor"
+                        d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.75 10h-2.06A6 6 0 1 1 12 6a5.96 5.96 0 0 1 4.24 1.76L13 11h7V4z"
+                      />
+                    </svg>
+                  </span>
+                </button>
               </div>
             </div>
           </form>
