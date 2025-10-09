@@ -347,6 +347,21 @@ const sidebarChatSend = $(".sidebar-chat-send");
 const sidebarChatUtilities = $(".sidebar-chat-utilities");
 const sidebarPauseBtn = $("#sidebarPauseBtn");
 const sidebarResetBtn = $("#sidebarResetBtn");
+const sidebarPauseIcon = sidebarPauseBtn?.querySelector(".sidebar-chat-control-icon");
+const sidebarPauseSr = sidebarPauseBtn?.querySelector(".sr-only");
+const sidebarResetIcon = sidebarResetBtn?.querySelector(".sidebar-chat-control-icon");
+
+const ICON_PAUSE = `<svg viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M8 5h3v14H8zm5 0h3v14h-3z"/></svg>`;
+const ICON_PLAY = `<svg viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M8 5.14v13.72a1 1 0 0 0 1.52.85l9.18-6.86a1 1 0 0 0 0-1.7L9.52 4.29A1 1 0 0 0 8 5.14z"/></svg>`;
+const ICON_RESET = `<svg viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.75 10h-2.06A6 6 0 1 1 12 6a5.96 5.96 0 0 1 4.24 1.76L13 11h7V4z"/></svg>`;
+
+if (sidebarPauseIcon) {
+  sidebarPauseIcon.innerHTML = ICON_PAUSE;
+}
+
+if (sidebarResetIcon) {
+  sidebarResetIcon.innerHTML = ICON_RESET;
+}
 
 const SUMMARY_PLACEHOLDER = "左側のチャットでメッセージを送信すると、ここに要約が表示されます。";
 const SUMMARY_LOADING_TEXT = "要約を取得しています…";
@@ -650,8 +665,15 @@ function addBrowserSystemMessage(text, { forceSidebar = false } = {}) {
 function updatePauseButtonState(mode = currentChatMode) {
   if (!sidebarPauseBtn) return;
   const showBrowserControls = mode === "browser";
-  sidebarPauseBtn.textContent = browserChatState.paused ? "再開" : "一時停止";
+  const label = browserChatState.paused ? "再開" : "一時停止";
   sidebarPauseBtn.setAttribute("aria-pressed", browserChatState.paused ? "true" : "false");
+  sidebarPauseBtn.setAttribute("aria-label", label);
+  if (sidebarPauseSr) {
+    sidebarPauseSr.textContent = label;
+  }
+  if (sidebarPauseIcon) {
+    sidebarPauseIcon.innerHTML = browserChatState.paused ? ICON_PLAY : ICON_PAUSE;
+  }
   sidebarPauseBtn.disabled = !showBrowserControls || (!browserChatState.agentRunning && !browserChatState.paused);
 }
 
