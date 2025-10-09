@@ -115,6 +115,30 @@ const fullscreenBtn = $("#fullscreenBtn");
 
 let currentIframe = null;
 
+const ALLOWED_RESIZE_VALUES = new Set(["scale", "remote", "off"]);
+
+function normalizeBrowserEmbedUrl(value) {
+  if (!value) return value;
+
+  try {
+    const url = new URL(value, window.location.origin);
+    const params = url.searchParams;
+
+    if (!params.has("scale") || !params.get("scale")) {
+      params.set("scale", "auto");
+    }
+
+    const resizeValue = params.get("resize");
+    if (!resizeValue || !ALLOWED_RESIZE_VALUES.has(resizeValue)) {
+      params.set("resize", "scale");
+    }
+
+    return url.toString();
+  } catch (_error) {
+    return value;
+  }
+}
+
 function resolveBrowserEmbedUrl() {
   const sanitize = value => (typeof value === "string" ? value.trim() : "");
   const hasProtocol = value => /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value);
@@ -135,16 +159,17 @@ function resolveBrowserEmbedUrl() {
   for (const candidate of sources) {
     if (!candidate) continue;
     if (hasProtocol(candidate)) {
-      return candidate;
+      return normalizeBrowserEmbedUrl(candidate);
     }
     try {
-      return new URL(candidate, window.location.origin).toString();
+      const absolute = new URL(candidate, window.location.origin).toString();
+      return normalizeBrowserEmbedUrl(absolute);
     } catch (_) {
       continue;
     }
   }
 
-  return "http://127.0.0.1:7900/?autoconnect=1&resize=scale";
+  return normalizeBrowserEmbedUrl("http://127.0.0.1:7900/?autoconnect=1&resize=scale");
 }
 
 const BROWSER_EMBED_URL = resolveBrowserEmbedUrl();
