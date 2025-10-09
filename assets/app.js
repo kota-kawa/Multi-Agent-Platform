@@ -56,15 +56,12 @@ navButtons.forEach(btn => {
       chat: "要約チャット",
     };
     appTitle.textContent = titles[view] ?? "リモートブラウザ";
-    if (view === "browser") {
-      setChatMode("browser");
-      ensureBrowserAgentInitialized({ showLoading: true });
-    } else {
-      setChatMode("general");
-      if (view === "chat") {
-        ensureChatInitialized({ showLoadingSummary: true });
-      }
+    const isBrowserView = view === "browser";
+    if (view === "chat") {
+      ensureChatInitialized({ showLoadingSummary: true });
     }
+    ensureBrowserAgentInitialized({ showLoading: isBrowserView });
+    setChatMode("browser");
     scheduleSidebarTogglePosition();
   });
 });
@@ -1054,9 +1051,8 @@ if (sidebarResetBtn) {
 }
 
 const initialActiveView = document.querySelector(".nav-btn.active")?.dataset.view;
-if (initialActiveView === "browser") {
-  setChatMode("browser");
-  ensureBrowserAgentInitialized({ showLoading: true });
-} else {
-  setChatMode("general");
+if (initialActiveView === "chat") {
+  ensureChatInitialized({ showLoadingSummary: true });
 }
+ensureBrowserAgentInitialized({ showLoading: initialActiveView === "browser" });
+setChatMode("browser");
