@@ -481,8 +481,33 @@ function createMessageElement(message, { compact = false } = {}) {
 
   const time = message.ts ? new Date(message.ts).toLocaleString("ja-JP") : "";
   const text = message.text ?? "";
+  const escapedText = escapeHTML(text);
+
+  if (message.role === "assistant" && message.pending) {
+    el.classList.add("thinking");
+    el.innerHTML = `
+      <div class="thinking-header">
+        <span class="thinking-orb" aria-hidden="true"></span>
+        <span class="thinking-labels">
+          <span class="thinking-title">AI が考えています</span>
+          <span class="thinking-sub">見つけた情報から回答を組み立て中…</span>
+        </span>
+      </div>
+      <div class="thinking-body">
+        <p class="thinking-text">${escapedText || "回答を生成しています…"}</p>
+        <div class="thinking-steps" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+      </div>
+      ${time ? `<span class="msg-time">${time}</span>` : ""}
+    `;
+    return el;
+  }
+
   el.innerHTML = `
-      ${escapeHTML(text)}
+      ${escapedText}
       ${time ? `<span class="msg-time">${time}</span>` : ""}
     `;
   return el;
