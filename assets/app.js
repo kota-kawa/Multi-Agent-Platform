@@ -247,6 +247,8 @@ const IOT_DEVICE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3"
 
 const IOT_FETCH_INTERVAL = 6000;
 
+const PUBLIC_IOT_AGENT_BASE = "https://iot-agent.project-kk.com";
+
 const REGISTER_MESSAGE_DEFAULT = registerMessageEl?.textContent.trim() || "エッジデバイスで使用する識別子を入力し、必要に応じて表示名やメモを設定してください。";
 
 const iotState = {
@@ -276,6 +278,9 @@ function resolveIotAgentBase() {
   }
   if (window.location.origin && window.location.origin !== "null") {
     return `${window.location.origin.replace(/\/+$/, "")}/iot_agent`;
+  }
+  if (PUBLIC_IOT_AGENT_BASE) {
+    return PUBLIC_IOT_AGENT_BASE;
   }
   return "/iot_agent";
 }
