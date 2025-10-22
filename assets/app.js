@@ -8,6 +8,16 @@
 const $ = (q, c = document) => c.querySelector(q);
 const $$ = (q, c = document) => Array.from(c.querySelectorAll(q));
 
+function escapeHTML(value) {
+  return String(value ?? "").replace(/[&<>"']/g, match => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[match]);
+}
+
 const layoutEl = $(".layout");
 const sidebarEl = $(".sidebar");
 const sidebarToggle = $(".sidebar-toggle");
@@ -58,15 +68,26 @@ navButtons.forEach(btn => {
     appTitle.textContent = titles[view] ?? "リモートブラウザ";
     const isBrowserView = view === "browser";
     const isChatView = view === "chat";
+    const isIotView = view === "iot";
     if (isChatView) {
       ensureChatInitialized({ showLoadingSummary: true });
-    } else if (!isBrowserView) {
+    } else if (!isBrowserView && !isIotView) {
       ensureChatInitialized();
     }
     if (isBrowserView) {
       ensureBrowserAgentInitialized({ showLoading: true });
     }
-    setChatMode(isBrowserView ? "browser" : "general");
+    if (isIotView) {
+      ensureIotDashboardInitialized({ showLoading: true });
+      ensureIotChatInitialized({ forceSidebar: true });
+    }
+    const modeMap = {
+      browser: "browser",
+      iot: "iot",
+      general: "general",
+      chat: "general",
+    };
+    setChatMode(modeMap[view] ?? "general");
     scheduleSidebarTogglePosition();
   });
 });
@@ -209,156 +230,707 @@ if (fullscreenBtn) {
 /* ---------- IoT Dashboard ---------- */
 
 const deviceGrid = $("#deviceGrid");
-const resetIoTBtn = $("#resetIoTBtn");
-const addDeviceBtn = $("#addDeviceBtn");
+const iotNotice = $("#iotNotice");
+const registerDeviceBtn = $("#registerDeviceBtn");
+const refreshDevicesBtn = $("#refreshDevicesBtn");
 
-const LS_KEY_IOT = "spa_iot_devices_v1";
+const registerDialog = $("#iotRegisterDialog");
+const registerForm = $("#iotRegisterForm");
+const registerIdInput = $("#iotRegisterId");
+const registerNameInput = $("#iotRegisterName");
+const registerNoteInput = $("#iotRegisterNote");
+const registerMessageEl = $("#iotRegisterMessage");
+const registerCancelBtn = $("#iotRegisterCancel");
+const registerSubmitBtn = $("#iotRegisterSubmit");
 
-const ICON_SENSOR = `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2a3 3 0 0 1 3 3v9.05a4.5 4.5 0 1 1-6 0V5a3 3 0 0 1 3-3zm0 16.5a2.5 2.5 0 0 0 2.5-2.5 2.5 2.5 0 0 0-5 0 2.5 2.5 0 0 0 2.5 2.5z"/><path fill="currentColor" d="M11 6h2v6h-2z"/></svg>`;
-const ICON_ACTUATOR = `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M11 21h-1l1-7H6l7-12h1l-1 7h5l-7 12z"/></svg>`;
+const IOT_DEVICE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3" stroke="currentColor" stroke-width="1.6" fill="none" /><path d="M7 9h10M7 13h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>`;
 
-function defaultDevices() {
-  return [
-    { id: crypto.randomUUID(), name: "温度センサー", type: "sensor", unit: "°C", on: true, value: 24.3 },
-    { id: crypto.randomUUID(), name: "湿度センサー", type: "sensor", unit: "%", on: true, value: 55.2 },
-    { id: crypto.randomUUID(), name: "ランプ", type: "actuator", on: false },
-    { id: crypto.randomUUID(), name: "ファン", type: "actuator", on: false },
+const IOT_FETCH_INTERVAL = 6000;
+
+const REGISTER_MESSAGE_DEFAULT = registerMessageEl?.textContent.trim() || "エッジデバイスで使用する識別子を入力し、必要に応じて表示名やメモを設定してください。";
+
+const iotState = {
+  devices: [],
+  fetching: false,
+  initialized: false,
+  pollTimer: null,
+};
+
+let lastRegisteredDevice = null;
+
+function resolveIotAgentBase() {
+  const sanitize = value => (typeof value === "string" ? value.trim().replace(/\/+$/, "") : "");
+  let queryBase = "";
+  try {
+    queryBase = new URLSearchParams(window.location.search).get("iot_agent_base") || "";
+  } catch (_) {
+    queryBase = "";
+  }
+  const sources = [
+    sanitize(queryBase),
+    sanitize(window.IOT_AGENT_API_BASE),
+    sanitize(document.querySelector("meta[name='iot-agent-api-base']")?.content),
   ];
+  for (const base of sources) {
+    if (base) return base;
+  }
+  if (window.location.origin && window.location.origin !== "null") {
+    return `${window.location.origin.replace(/\/+$/, "")}/iot_agent`;
+  }
+  return "/iot_agent";
 }
 
-let devices = loadJSON(LS_KEY_IOT) ?? defaultDevices();
-saveJSON(LS_KEY_IOT, devices);
+const IOT_AGENT_API_BASE = resolveIotAgentBase();
 
-function loadJSON(key) {
-  try { return JSON.parse(localStorage.getItem(key)); }
-  catch { return null; }
-}
-function saveJSON(key, val) {
-  try { localStorage.setItem(key, JSON.stringify(val)); }
-  catch {}
+function buildIotAgentUrl(path) {
+  if (!path) {
+    return IOT_AGENT_API_BASE || "/iot_agent";
+  }
+  if (/^https?:/i.test(path)) {
+    return path;
+  }
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const base = IOT_AGENT_API_BASE || "";
+  if (!base) {
+    return normalizedPath;
+  }
+  if (/^https?:/i.test(base)) {
+    return `${base.replace(/\/+$/, "")}${normalizedPath}`;
+  }
+  return `${base.replace(/\/+$/, "")}${normalizedPath}` || normalizedPath;
 }
 
-function renderDevices() {
-  deviceGrid.innerHTML = "";
-  devices.forEach(d => {
-    const card = document.createElement("div");
-    card.className = "device-card";
-    card.dataset.id = d.id;
-    card.innerHTML = `
-      <div class="device-card-header">
-        <div class="device-title">
-          <span class="device-icon ${d.type}" aria-hidden="true">${getDeviceIcon(d)}</span>
-          <div class="device-meta">
-            <div class="device-name">${escapeHTML(d.name)}</div>
-            <div class="device-type">${d.type === "sensor" ? "センサー" : "アクチュエータ"}</div>
-          </div>
-        </div>
-        <div class="device-tools">
-          <button class="icon-btn btn-rename" type="button" title="名称変更" aria-label="名称変更">✎</button>
-          <button class="icon-btn btn-delete" type="button" title="削除" aria-label="削除">🗑</button>
-        </div>
-      </div>
-      <div class="device-body">
-        <div class="device-stat">
-          <span class="device-stat-label">${d.type === "sensor" ? "現在値" : "現在の状態"}</span>
-          ${d.type === "sensor"
-            ? `<span class="device-reading">${formatReading(d)}</span>`
-            : `<span class="device-status-pill ${d.on ? "on" : "off"}"><span class="status-dot ${d.on ? "status-on" : "status-off"}"></span>${d.on ? "ON" : "OFF"}</span>`
-          }
-        </div>
-        <div class="device-controls">
-          ${d.type === "sensor"
-            ? `<button class="btn subtle btn-calibrate" type="button">校正</button>`
-            : `<div class="switch ${d.on ? "on" : ""}" role="switch" aria-checked="${d.on}"></div>`
-          }
-        </div>
-      </div>
-    `;
-    // events
-    if (d.type === "actuator") {
-      card.querySelector(".switch").addEventListener("click", () => {
-        d.on = !d.on;
-        saveJSON(LS_KEY_IOT, devices);
-        renderDevices();
-      });
-    } else {
-      // センサー校正：現在値に微調整ノイズ
-      card.querySelector(".btn-calibrate").addEventListener("click", () => {
-        const noise = (Math.random() - 0.5) * (d.name.includes("温度") ? 0.6 : 2.0);
-        d.value = clamp(d.value + noise, d.name.includes("温度") ? -20 : 0, d.name.includes("温度") ? 60 : 100);
-        saveJSON(LS_KEY_IOT, devices);
-        renderDevices();
-      });
+async function iotAgentRequest(path, { method = "GET", headers = {}, body, signal } = {}) {
+  const url = buildIotAgentUrl(path);
+  const finalHeaders = { ...headers };
+  const hasBody = body !== undefined && body !== null;
+  const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
+  if (hasBody && !isFormData && !finalHeaders["Content-Type"]) {
+    finalHeaders["Content-Type"] = "application/json";
+  }
+
+  const response = await fetch(url, {
+    method,
+    headers: finalHeaders,
+    body,
+    signal,
+    mode: /^https?:/i.test(url) ? "cors" : "same-origin",
+    credentials: /^https?:/i.test(url) ? "include" : "same-origin",
+  });
+
+  const contentType = response.headers.get("content-type") || "";
+  const isJson = contentType.includes("application/json");
+  let data;
+  try {
+    data = isJson ? await response.json() : await response.text();
+  } catch (_) {
+    data = isJson ? {} : "";
+  }
+
+  if (!response.ok) {
+    const message = typeof data === "string" && data
+      ? data
+      : (data && typeof data.error === "string")
+        ? data.error
+        : `${response.status} ${response.statusText}`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
+
+  return { data: typeof data === "string" ? { message: data } : data, status: response.status };
+}
+
+function showIotNotice(message, kind = "info") {
+  if (!iotNotice) return;
+  iotNotice.hidden = false;
+  iotNotice.textContent = message;
+  iotNotice.dataset.kind = kind;
+}
+
+function hideIotNotice() {
+  if (!iotNotice) return;
+  iotNotice.hidden = true;
+  iotNotice.textContent = "";
+  delete iotNotice.dataset.kind;
+}
+
+function iotDisplayName(device) {
+  if (!device) return "";
+  const meta = device.meta || {};
+  const candidates = [meta.display_name, meta.note, meta.label, meta.location];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
     }
-    card.querySelector(".btn-rename").addEventListener("click", () => {
-      const name = prompt("新しい名前を入力", d.name);
-      if (name && name.trim()) {
-        d.name = name.trim();
-        saveJSON(LS_KEY_IOT, devices);
-        renderDevices();
-      }
-    });
-    card.querySelector(".btn-delete").addEventListener("click", () => {
-      if (!confirm(`「${d.name}」を削除しますか？`)) return;
-      devices = devices.filter(x => x.id !== d.id);
-      saveJSON(LS_KEY_IOT, devices);
-      renderDevices();
-    });
+  }
+  return device.device_id;
+}
 
+function formatIotTimestamp(ts) {
+  if (!ts && ts !== 0) return "-";
+  const date = new Date(ts * 1000);
+  if (Number.isNaN(date.getTime())) {
+    return String(ts);
+  }
+  return date.toLocaleString("ja-JP", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatIotRelativeTime(ts) {
+  if (!ts && ts !== 0) return "未記録";
+  const date = new Date(ts * 1000);
+  if (Number.isNaN(date.getTime())) {
+    return String(ts);
+  }
+  const diff = Date.now() - date.getTime();
+  if (diff < 0) return formatIotTimestamp(ts);
+  const sec = Math.floor(diff / 1000);
+  if (sec < 5) return "たった今";
+  if (sec < 60) return `${sec}秒前`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}分前`;
+  const hours = Math.floor(min / 60);
+  if (hours < 24) return `${hours}時間前`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}日前`;
+  return formatIotTimestamp(ts);
+}
+
+function formatIotMetaValue(value) {
+  if (value === null) return "null";
+  if (value === undefined) return "-";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") return String(value);
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch (_) {
+    return String(value);
+  }
+}
+
+function createIotStat(label, value) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "device-stat";
+  const labelEl = document.createElement("div");
+  labelEl.className = "device-stat__label";
+  labelEl.textContent = label;
+  const valueEl = document.createElement("div");
+  valueEl.className = "device-stat__value";
+  const textValue = value == null ? "-" : String(value);
+  valueEl.textContent = textValue;
+  valueEl.title = textValue;
+  wrapper.appendChild(labelEl);
+  wrapper.appendChild(valueEl);
+  return wrapper;
+}
+
+function createCollapsibleText(text, { maxLength = 180 } = {}) {
+  const str = text == null ? "" : String(text);
+  const wrapper = document.createElement("div");
+  wrapper.className = "collapsible-text";
+  const content = document.createElement("div");
+  content.className = "collapsible-text__content";
+  content.textContent = str;
+  content.title = str;
+  wrapper.appendChild(content);
+
+  if (str.length <= maxLength) {
+    wrapper.dataset.state = "expanded";
+    return wrapper;
+  }
+
+  const fullText = str;
+  const truncated = fullText.slice(0, maxLength).trimEnd() + "…";
+  let collapsed = true;
+
+  const toggleBtn = document.createElement("button");
+  toggleBtn.type = "button";
+  toggleBtn.className = "collapsible-text__toggle";
+  toggleBtn.textContent = "もっと見る";
+  toggleBtn.setAttribute("aria-expanded", "false");
+
+  const applyState = () => {
+    if (collapsed) {
+      content.textContent = truncated;
+      wrapper.dataset.state = "collapsed";
+      toggleBtn.textContent = "もっと見る";
+      toggleBtn.setAttribute("aria-expanded", "false");
+      toggleBtn.setAttribute("aria-label", "全文を表示");
+    } else {
+      content.textContent = fullText;
+      wrapper.dataset.state = "expanded";
+      toggleBtn.textContent = "閉じる";
+      toggleBtn.setAttribute("aria-expanded", "true");
+      toggleBtn.setAttribute("aria-label", "折りたたむ");
+    }
+  };
+
+  toggleBtn.addEventListener("click", () => {
+    collapsed = !collapsed;
+    applyState();
+  });
+
+  wrapper.appendChild(toggleBtn);
+  applyState();
+  return wrapper;
+}
+
+function renderIotCapabilities(capabilities) {
+  if (!Array.isArray(capabilities) || capabilities.length === 0) {
+    return null;
+  }
+  const names = [];
+  for (const cap of capabilities) {
+    if (cap && typeof cap.name === "string" && cap.name.trim()) {
+      names.push(cap.name.trim());
+    }
+  }
+  if (!names.length) {
+    return null;
+  }
+  const section = document.createElement("div");
+  section.className = "device-section";
+  const label = document.createElement("div");
+  label.className = "device-section__label";
+  label.textContent = "提供機能";
+  section.appendChild(label);
+  const list = document.createElement("div");
+  list.className = "device-section__body";
+  const maxChips = 8;
+  names.slice(0, maxChips).forEach(name => {
+    const chip = document.createElement("span");
+    chip.className = "capability-badge";
+    chip.textContent = name;
+    list.appendChild(chip);
+  });
+  if (names.length > maxChips) {
+    const rest = document.createElement("span");
+    rest.className = "capability-badge";
+    rest.textContent = `+${names.length - maxChips}`;
+    rest.title = names.slice(maxChips).join(", ");
+    list.appendChild(rest);
+  }
+  section.appendChild(list);
+  return section;
+}
+
+function renderIotMeta(meta) {
+  if (!meta || typeof meta !== "object") return null;
+  const entries = Object.entries(meta).filter(([key, value]) => {
+    if (value === undefined || value === null) return false;
+    if (key === "display_name") return false;
+    const str = typeof value === "string" ? value.trim() : String(value ?? "");
+    return str !== "";
+  });
+  if (!entries.length) return null;
+  const section = document.createElement("div");
+  section.className = "device-section";
+  const label = document.createElement("div");
+  label.className = "device-section__label";
+  label.textContent = "メタ情報";
+  section.appendChild(label);
+  const list = document.createElement("div");
+  list.className = "meta-list";
+  entries.forEach(([key, value]) => {
+    const item = document.createElement("div");
+    item.className = "meta-list__item";
+    const keyEl = document.createElement("span");
+    keyEl.className = "meta-list__label";
+    keyEl.textContent = key;
+    const valueEl = document.createElement("span");
+    valueEl.className = "meta-list__value";
+    valueEl.textContent = formatIotMetaValue(value);
+    item.appendChild(keyEl);
+    item.appendChild(valueEl);
+    list.appendChild(item);
+  });
+  section.appendChild(list);
+  return section;
+}
+
+function renderIotLastResult(result) {
+  if (!result || typeof result !== "object") return null;
+  const section = document.createElement("div");
+  section.className = "device-section";
+  const label = document.createElement("div");
+  label.className = "device-section__label";
+  label.textContent = "最後のジョブ";
+  section.appendChild(label);
+
+  const box = document.createElement("div");
+  box.className = "device-last-result";
+
+  const statusLine = document.createElement("div");
+  statusLine.className = "device-last-result__meta";
+  const statusText = result.ok ? "成功" : "失敗";
+  const statusParts = [`ステータス: ${statusText}`];
+  if (result.job_id) {
+    statusParts.push(`ジョブID: ${result.job_id}`);
+  }
+  if (result.completed_at) {
+    statusParts.push(`完了: ${formatIotTimestamp(result.completed_at)}`);
+  }
+  statusLine.textContent = statusParts.join(" / ");
+  box.appendChild(statusLine);
+
+  if (Object.prototype.hasOwnProperty.call(result, "return_value")) {
+    const returnLine = document.createElement("div");
+    returnLine.appendChild(createCollapsibleText(formatIotMetaValue(result.return_value)));
+    box.appendChild(returnLine);
+  }
+  if (result.error || result.message) {
+    const errorLine = document.createElement("div");
+    errorLine.appendChild(createCollapsibleText(result.error || result.message));
+    box.appendChild(errorLine);
+  }
+  if (result.output) {
+    const outputLine = document.createElement("div");
+    outputLine.appendChild(createCollapsibleText(formatIotMetaValue(result.output)));
+    box.appendChild(outputLine);
+  }
+  section.appendChild(box);
+  return section;
+}
+
+function renderIotDevices() {
+  if (!deviceGrid) return;
+  deviceGrid.innerHTML = "";
+
+  if (!iotState.devices.length) {
+    const empty = document.createElement("div");
+    empty.className = "device-empty";
+    empty.innerHTML = "<p>登録されたデバイスがありません。</p><p>右上の「デバイス登録」から登録してください。</p>";
+    deviceGrid.appendChild(empty);
+    return;
+  }
+
+  iotState.devices.forEach(device => {
+    const card = document.createElement("article");
+    card.className = "device-card";
+    card.dataset.deviceId = device.device_id;
+
+    const header = document.createElement("div");
+    header.className = "device-card-header";
+
+    const summary = document.createElement("div");
+    summary.className = "device-summary";
+    const icon = document.createElement("div");
+    icon.className = "device-icon";
+    icon.innerHTML = IOT_DEVICE_ICON;
+    summary.appendChild(icon);
+
+    const metaWrap = document.createElement("div");
+    metaWrap.className = "device-meta";
+    const nameEl = document.createElement("div");
+    nameEl.className = "device-name";
+    nameEl.textContent = iotDisplayName(device);
+    const idEl = document.createElement("div");
+    idEl.className = "device-id";
+    idEl.textContent = device.device_id;
+    metaWrap.appendChild(nameEl);
+    metaWrap.appendChild(idEl);
+    summary.appendChild(metaWrap);
+
+    header.appendChild(summary);
+
+    const actions = document.createElement("div");
+    actions.className = "device-actions";
+
+    const renameBtn = document.createElement("button");
+    renameBtn.type = "button";
+    renameBtn.className = "icon-btn";
+    renameBtn.dataset.action = "rename";
+    renameBtn.dataset.deviceId = device.device_id;
+    renameBtn.title = "名称変更";
+    renameBtn.setAttribute("aria-label", `${iotDisplayName(device)} の名前を変更`);
+    renameBtn.textContent = "✎";
+    actions.appendChild(renameBtn);
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "icon-btn";
+    deleteBtn.dataset.action = "delete";
+    deleteBtn.dataset.deviceId = device.device_id;
+    deleteBtn.title = "デバイスを削除";
+    deleteBtn.setAttribute("aria-label", `${iotDisplayName(device)} を削除`);
+    deleteBtn.textContent = "🗑";
+    actions.appendChild(deleteBtn);
+
+    header.appendChild(actions);
+    card.appendChild(header);
+
+    const body = document.createElement("div");
+    body.className = "device-body";
+
+    const stats = document.createElement("div");
+    stats.className = "device-stats";
+    stats.appendChild(createIotStat("最終アクセス", formatIotRelativeTime(device.last_seen)));
+    stats.appendChild(createIotStat("登録日時", formatIotTimestamp(device.registered_at)));
+    const queueDepth = Number.isFinite(Number(device.queue_depth)) ? `${Number(device.queue_depth)}件` : "-";
+    stats.appendChild(createIotStat("待機ジョブ", queueDepth));
+    body.appendChild(stats);
+
+    const capabilities = renderIotCapabilities(device.capabilities);
+    if (capabilities) {
+      body.appendChild(capabilities);
+    }
+    const metaSection = renderIotMeta(device.meta);
+    if (metaSection) {
+      body.appendChild(metaSection);
+    }
+    const lastResult = renderIotLastResult(device.last_result);
+    if (lastResult) {
+      body.appendChild(lastResult);
+    }
+
+    card.appendChild(body);
     deviceGrid.appendChild(card);
   });
 }
 
-function formatReading(d) {
-  if (d.type !== "sensor") return d.on ? "ON" : "OFF";
-  return `${d.value.toFixed(1)}${d.unit}`;
-}
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-function escapeHTML(s) {
-  return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-}
-
-function getDeviceIcon(device) {
-  return device.type === "sensor" ? ICON_SENSOR : ICON_ACTUATOR;
-}
-
-renderDevices();
-
-/* データ更新（擬似） */
-setInterval(() => {
-  // センサーの値をゆらぎで更新
-  const temp = devices.find(d => d.type==="sensor" && /温度/.test(d.name));
-  const hum  = devices.find(d => d.type==="sensor" && /湿度/.test(d.name));
-  if (temp) {
-    const delta = (Math.random() - 0.5) * 0.4;
-    temp.value = clamp(temp.value + delta, -20, 60);
+async function fetchIotDevices({ silent = false } = {}) {
+  if (iotState.fetching) return;
+  iotState.fetching = true;
+  try {
+    const { data } = await iotAgentRequest("/api/devices");
+    if (Array.isArray(data.devices)) {
+      iotState.devices = data.devices;
+    } else {
+      iotState.devices = [];
+    }
+    renderIotDevices();
+    if (iotNotice?.dataset.kind === "error") {
+      hideIotNotice();
+    }
+  } catch (error) {
+    console.error("Failed to fetch devices", error);
+    if (!silent) {
+      showIotNotice(`デバイス一覧の取得に失敗しました: ${error.message}`, "error");
+    }
+  } finally {
+    iotState.fetching = false;
   }
-  if (hum) {
-    const delta = (Math.random() - 0.5) * 1.6;
-    hum.value = clamp(hum.value + delta, 0, 100);
+}
+
+async function updateIotDeviceDisplayName(deviceId, displayName) {
+  const payload = { display_name: displayName || null };
+  const { data } = await iotAgentRequest(`/api/devices/${encodeURIComponent(deviceId)}/name`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  return data?.device || null;
+}
+
+async function deleteIotDevice(deviceId) {
+  await iotAgentRequest(`/api/devices/${encodeURIComponent(deviceId)}`, {
+    method: "DELETE",
+  });
+}
+
+function updateLocalDevice(updated) {
+  if (!updated) return;
+  const index = iotState.devices.findIndex(device => device.device_id === updated.device_id);
+  if (index !== -1) {
+    iotState.devices[index] = updated;
   }
-  saveJSON(LS_KEY_IOT, devices);
-  renderDevices();
-}, 1500);
+}
 
-resetIoTBtn.addEventListener("click", () => {
-  if (!confirm("IoT ダッシュボードを初期化しますか？")) return;
-  devices = defaultDevices();
-  saveJSON(LS_KEY_IOT, devices);
-  renderDevices();
-});
+function setRegisterMessage(message, kind = "info") {
+  if (!registerMessageEl) return;
+  registerMessageEl.textContent = message;
+  registerMessageEl.className = "dialog-message";
+  if (kind === "error") {
+    registerMessageEl.classList.add("error");
+  } else if (kind === "success") {
+    registerMessageEl.classList.add("success");
+  }
+}
 
-addDeviceBtn.addEventListener("click", () => {
-  const name = prompt("デバイス名（例：CO₂ センサー / ポンプ）");
-  if (!name) return;
-  const kind = prompt("種類を入力（sensor / actuator）", "sensor");
-  const type = (kind || "").toLowerCase() === "actuator" ? "actuator" : "sensor";
-  const d = { id: crypto.randomUUID(), name: name.trim(), type, on: false };
-  if (type === "sensor") { d.unit = ""; d.value = 0; }
-  devices.push(d);
-  saveJSON(LS_KEY_IOT, devices);
-  renderDevices();
-});
+function resetRegisterDialog() {
+  registerForm?.reset();
+  if (registerSubmitBtn) {
+    registerSubmitBtn.disabled = false;
+    registerSubmitBtn.textContent = "登録";
+  }
+  setRegisterMessage(REGISTER_MESSAGE_DEFAULT);
+}
+
+async function handleRegisterSubmit(event) {
+  event.preventDefault();
+  if (!registerSubmitBtn) return;
+
+  const deviceId = registerIdInput ? registerIdInput.value.trim() : "";
+  const displayNameInput = registerNameInput ? registerNameInput.value.trim() : "";
+  const note = registerNoteInput ? registerNoteInput.value.trim() : "";
+
+  if (!deviceId) {
+    setRegisterMessage("デバイスIDを入力してください。", "error");
+    registerIdInput?.focus();
+    return;
+  }
+
+  const payload = {
+    device_id: deviceId,
+    capabilities: [],
+    meta: { registered_via: "dashboard" },
+    approved: true,
+  };
+
+  if (displayNameInput) {
+    payload.meta.display_name = displayNameInput;
+  }
+  if (note) {
+    payload.meta.note = note;
+  }
+
+  registerSubmitBtn.disabled = true;
+  registerSubmitBtn.textContent = "登録中…";
+  setRegisterMessage("サーバーへ登録しています…");
+
+  try {
+    const { data } = await iotAgentRequest("/api/devices/register", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    const registeredId = typeof data?.device_id === "string" ? data.device_id : deviceId;
+    const registeredDevice = data?.device && typeof data.device === "object" ? data.device : null;
+    lastRegisteredDevice = {
+      id: registeredId,
+      name: registeredDevice ? iotDisplayName(registeredDevice) : displayNameInput || registeredId,
+    };
+    setRegisterMessage(`デバイス ${lastRegisteredDevice.name} を登録しました。`, "success");
+    registerDialog?.close("success");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setRegisterMessage(`登録に失敗しました: ${message}`, "error");
+  } finally {
+    registerSubmitBtn.disabled = false;
+    registerSubmitBtn.textContent = "登録";
+  }
+}
+
+function startIotPolling() {
+  if (iotState.pollTimer !== null) return;
+  iotState.pollTimer = window.setInterval(() => {
+    fetchIotDevices({ silent: true });
+  }, IOT_FETCH_INTERVAL);
+}
+
+function ensureIotDashboardInitialized({ showLoading = false } = {}) {
+  if (!iotState.initialized) {
+    iotState.initialized = true;
+    fetchIotDevices();
+    startIotPolling();
+    return;
+  }
+  if (showLoading) {
+    fetchIotDevices();
+  }
+}
+
+if (registerDeviceBtn && registerDialog) {
+  registerDeviceBtn.addEventListener("click", () => {
+    resetRegisterDialog();
+    registerDialog.showModal();
+    setTimeout(() => registerIdInput?.focus(), 50);
+  });
+}
+
+if (registerCancelBtn && registerDialog) {
+  registerCancelBtn.addEventListener("click", () => {
+    registerDialog.close("cancel");
+  });
+}
+
+if (registerForm) {
+  registerForm.addEventListener("submit", handleRegisterSubmit);
+}
+
+if (registerDialog) {
+  registerDialog.addEventListener("close", () => {
+    if (registerDialog.returnValue === "success" && lastRegisteredDevice) {
+      const label = lastRegisteredDevice.name || lastRegisteredDevice.id;
+      const suffix = lastRegisteredDevice.name && lastRegisteredDevice.name !== lastRegisteredDevice.id
+        ? ` (ID: ${lastRegisteredDevice.id})`
+        : "";
+      showIotNotice(`デバイス「${label}」${suffix}を登録しました。エッジデバイスをオンラインにするとジョブの取得を開始できます。`, "success");
+      fetchIotDevices({ silent: false });
+    }
+    lastRegisteredDevice = null;
+    resetRegisterDialog();
+  });
+}
+
+if (refreshDevicesBtn) {
+  refreshDevicesBtn.addEventListener("click", () => {
+    fetchIotDevices();
+  });
+}
+
+if (deviceGrid) {
+  deviceGrid.addEventListener("click", async event => {
+    const target = event.target instanceof Element ? event.target.closest("button[data-action]") : null;
+    if (!target) return;
+    const action = target.dataset.action;
+    const deviceId = target.dataset.deviceId;
+    if (!action || !deviceId) return;
+    event.preventDefault();
+
+    if (action === "rename") {
+      const device = iotState.devices.find(d => d.device_id === deviceId);
+      const currentName = device?.meta?.display_name && typeof device.meta.display_name === "string"
+        ? device.meta.display_name
+        : "";
+      const promptLabel = currentName || iotDisplayName(device) || deviceId;
+      const newName = window.prompt(`「${promptLabel}」の新しい名前を入力してください。`, currentName);
+      if (newName === null) return;
+      const trimmed = newName.trim();
+      if (trimmed === (currentName || "").trim()) return;
+      try {
+        const updatedDevice = await updateIotDeviceDisplayName(deviceId, trimmed);
+        if (updatedDevice) {
+          updateLocalDevice(updatedDevice);
+          renderIotDevices();
+          showIotNotice(`デバイス名を「${iotDisplayName(updatedDevice)}」に更新しました。`, "success");
+          fetchIotDevices({ silent: true });
+        } else {
+          throw new Error("更新後のデバイス情報が取得できませんでした。");
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        showIotNotice(`名前の更新に失敗しました: ${message}`, "error");
+      }
+      return;
+    }
+
+    if (action === "delete") {
+      const device = iotState.devices.find(d => d.device_id === deviceId);
+      const label = iotDisplayName(device) || deviceId;
+      const confirmed = window.confirm(`デバイス「${label}」を削除しますか？\nジョブキューや履歴も失われます。`);
+      if (!confirmed) return;
+      try {
+        await deleteIotDevice(deviceId);
+        iotState.devices = iotState.devices.filter(d => d.device_id !== deviceId);
+        renderIotDevices();
+        showIotNotice(`デバイス「${label}」を削除しました。`, "success");
+        fetchIotDevices({ silent: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        showIotNotice(`デバイスの削除に失敗しました: ${message}`, "error");
+      }
+    }
+  });
+}
 
 /* ---------- Chat + Summarizer (FAQ_Gemini integration) ---------- */
 
@@ -398,6 +970,16 @@ const chatState = {
   messages: [],
   initialized: false,
   sending: false,
+};
+
+const IOT_CHAT_GREETING = "こんにちは！登録済みデバイスの状況を確認したり、チャットから指示を送れます。";
+
+const iotChatState = {
+  messages: [],
+  history: [],
+  initialized: false,
+  sending: false,
+  paused: false,
 };
 
 let currentChatMode = "general";
@@ -568,6 +1150,56 @@ function renderBrowserChat({ forceSidebar = false } = {}) {
   }
 }
 
+function renderIotChat({ forceSidebar = false } = {}) {
+  if (forceSidebar || currentChatMode === "iot") {
+    renderSidebarMessages(iotChatState.messages);
+  }
+}
+
+function pushIotMessage(role, text, { pending = false, addToHistory = true } = {}) {
+  const normalizedRole = role === "user" ? "user" : "assistant";
+  const message = {
+    role: normalizedRole,
+    text: text ?? "",
+    ts: Date.now(),
+  };
+  if (pending) {
+    message.pending = true;
+  }
+  iotChatState.messages.push(message);
+  if (addToHistory) {
+    iotChatState.history.push({ role: normalizedRole, content: message.text });
+  }
+  return message;
+}
+
+function summarizeIotDevices() {
+  if (!iotState.devices.length) {
+    return "登録済みのデバイスはありません。";
+  }
+  const summaries = iotState.devices.map(device => {
+    const caps = Array.isArray(device.capabilities)
+      ? device.capabilities.map(cap => cap?.name).filter(Boolean)
+      : [];
+    const capText = caps.length ? `（機能: ${caps.join(", ")})` : "";
+    return `${iotDisplayName(device)}${capText}`;
+  });
+  return summaries.join(" / ");
+}
+
+function ensureIotChatInitialized({ forceSidebar = false } = {}) {
+  ensureIotDashboardInitialized();
+  if (!iotChatState.initialized) {
+    iotChatState.initialized = true;
+    iotChatState.messages = [];
+    iotChatState.history = [];
+    pushIotMessage("assistant", IOT_CHAT_GREETING, { addToHistory: true });
+  }
+  if (forceSidebar || currentChatMode === "iot") {
+    renderIotChat({ forceSidebar });
+  }
+}
+
 function resolveBrowserAgentBase() {
   const sanitize = value => (typeof value === "string" ? value.trim().replace(/\/+$/, "") : "");
   let queryBase = "";
@@ -729,18 +1361,63 @@ function updatePauseButtonState(mode = currentChatMode) {
   sidebarPauseBtn.disabled = !showBrowserControls || (!browserChatState.agentRunning && !browserChatState.paused);
 }
 
+function updateIotPauseButtonState() {
+  if (!sidebarPauseBtn) return;
+  const label = iotChatState.paused ? "再開" : "一時停止";
+  sidebarPauseBtn.setAttribute("aria-pressed", iotChatState.paused ? "true" : "false");
+  sidebarPauseBtn.setAttribute("aria-label", label);
+  if (sidebarPauseSr) {
+    sidebarPauseSr.textContent = label;
+  }
+  if (sidebarPauseIcon) {
+    sidebarPauseIcon.innerHTML = iotChatState.paused ? ICON_PLAY : ICON_PAUSE;
+  }
+  sidebarPauseBtn.disabled = false;
+}
+
 function updateSidebarControlsForMode(mode) {
-  const showBrowserControls = mode === "browser";
   if (sidebarChatUtilities) {
     sidebarChatUtilities.hidden = false;
   }
+  if (mode === "browser") {
+    if (sidebarResetBtn) {
+      sidebarResetBtn.disabled = false;
+    }
+    if (sidebarChatSend) {
+      sidebarChatSend.disabled = browserChatState.sending;
+    }
+    updatePauseButtonState(mode);
+    return;
+  }
+
+  if (mode === "iot") {
+    if (sidebarResetBtn) {
+      sidebarResetBtn.disabled = false;
+    }
+    if (sidebarChatSend) {
+      sidebarChatSend.disabled = iotChatState.paused || iotChatState.sending;
+    }
+    updateIotPauseButtonState();
+    return;
+  }
+
   if (sidebarResetBtn) {
-    sidebarResetBtn.disabled = !showBrowserControls;
+    sidebarResetBtn.disabled = true;
   }
   if (sidebarChatSend) {
-    sidebarChatSend.disabled = showBrowserControls ? browserChatState.sending : false;
+    sidebarChatSend.disabled = chatState.sending;
   }
-  updatePauseButtonState(mode);
+  if (sidebarPauseBtn) {
+    sidebarPauseBtn.setAttribute("aria-pressed", "false");
+    sidebarPauseBtn.setAttribute("aria-label", "一時停止");
+    if (sidebarPauseSr) {
+      sidebarPauseSr.textContent = "一時停止";
+    }
+    if (sidebarPauseIcon) {
+      sidebarPauseIcon.innerHTML = ICON_PAUSE;
+    }
+    sidebarPauseBtn.disabled = true;
+  }
 }
 
 function handleBrowserStatusEvent(payload) {
@@ -876,8 +1553,50 @@ async function sendBrowserAgentPrompt(text) {
   }
 }
 
+async function sendIotChatMessage(text) {
+  if (!text || iotChatState.sending || iotChatState.paused) return;
+  ensureIotChatInitialized({ forceSidebar: currentChatMode === "iot" });
+  iotChatState.sending = true;
+  updateSidebarControlsForMode(currentChatMode);
+
+  const userMessage = pushIotMessage("user", text);
+  renderIotChat({ forceSidebar: currentChatMode === "iot" });
+
+  const pending = pushIotMessage("assistant", "応答を待っています…", { pending: true, addToHistory: false });
+  renderIotChat({ forceSidebar: currentChatMode === "iot" });
+
+  try {
+    const payload = {
+      messages: iotChatState.history.map(entry => ({ role: entry.role, content: entry.content })),
+    };
+    const { data } = await iotAgentRequest("/api/chat", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    let reply = typeof data.reply === "string" ? data.reply.trim() : "";
+    if (!reply) {
+      reply = summarizeIotDevices() || "了解しました。";
+    }
+    pending.text = reply;
+    pending.pending = false;
+    pending.ts = Date.now();
+    iotChatState.history.push({ role: "assistant", content: pending.text });
+  } catch (error) {
+    const fallback = summarizeIotDevices();
+    pending.text = fallback || `エラーが発生しました: ${error.message}`;
+    pending.pending = false;
+    pending.ts = Date.now();
+    iotChatState.history.push({ role: "assistant", content: pending.text });
+  } finally {
+    userMessage.ts = userMessage.ts || Date.now();
+    iotChatState.sending = false;
+    renderIotChat({ forceSidebar: currentChatMode === "iot" });
+    updateSidebarControlsForMode(currentChatMode);
+  }
+}
+
 function setChatMode(mode) {
-  if (mode !== "browser" && mode !== "general") {
+  if (!{"browser": true, "general": true, "iot": true}[mode]) {
     mode = "general";
   }
   if (currentChatMode !== mode) {
@@ -886,6 +1605,9 @@ function setChatMode(mode) {
   updateSidebarControlsForMode(mode);
   if (mode === "browser") {
     renderBrowserChat({ forceSidebar: true });
+  } else if (mode === "iot") {
+    ensureIotChatInitialized({ forceSidebar: true });
+    renderIotChat({ forceSidebar: true });
   } else {
     renderGeneralChat({ forceSidebar: true });
   }
@@ -1030,6 +1752,7 @@ if (chatForm) {
     chatInput.value = "";
     if (sidebarChatInput) sidebarChatInput.value = "";
     if (currentChatMode === "browser") await sendBrowserAgentPrompt(value);
+    else if (currentChatMode === "iot") await sendIotChatMessage(value);
     else await sendChatMessage(value);
   });
 }
@@ -1042,6 +1765,7 @@ if (sidebarChatForm) {
     sidebarChatInput.value = "";
     if (chatInput) chatInput.value = "";
     if (currentChatMode === "browser") await sendBrowserAgentPrompt(value);
+    else if (currentChatMode === "iot") await sendIotChatMessage(value);
     else await sendChatMessage(value);
   });
 }
@@ -1062,44 +1786,66 @@ if (clearChatBtn) {
 
 if (sidebarPauseBtn) {
   sidebarPauseBtn.addEventListener("click", async () => {
-    if (currentChatMode !== "browser") return;
-    try {
-      if (browserChatState.paused) {
-        const { data } = await browserAgentRequest("/api/resume", { method: "POST" });
-        if (data && typeof data.status === "string") {
-          browserChatState.paused = data.status !== "resumed" ? browserChatState.paused : false;
+    if (currentChatMode === "browser") {
+      try {
+        if (browserChatState.paused) {
+          const { data } = await browserAgentRequest("/api/resume", { method: "POST" });
+          if (data && typeof data.status === "string") {
+            browserChatState.paused = data.status !== "resumed" ? browserChatState.paused : false;
+          } else {
+            browserChatState.paused = false;
+          }
         } else {
-          browserChatState.paused = false;
+          const { data } = await browserAgentRequest("/api/pause", { method: "POST" });
+          if (data && typeof data.status === "string") {
+            browserChatState.paused = data.status === "paused";
+          } else {
+            browserChatState.paused = true;
+          }
+          browserChatState.agentRunning = true;
         }
-      } else {
-        const { data } = await browserAgentRequest("/api/pause", { method: "POST" });
-        if (data && typeof data.status === "string") {
-          browserChatState.paused = data.status === "paused";
-        } else {
-          browserChatState.paused = true;
-        }
-        browserChatState.agentRunning = true;
+      } catch (error) {
+        addBrowserSystemMessage(`一時停止操作に失敗しました: ${error.message}`, { forceSidebar: true });
+      } finally {
+        updatePauseButtonState();
       }
-    } catch (error) {
-      addBrowserSystemMessage(`一時停止操作に失敗しました: ${error.message}`, { forceSidebar: true });
-    } finally {
-      updatePauseButtonState();
+      return;
+    }
+
+    if (currentChatMode === "iot") {
+      iotChatState.paused = !iotChatState.paused;
+      updateSidebarControlsForMode(currentChatMode);
+      if (!iotChatState.paused) {
+        (sidebarChatInput || chatInput)?.focus?.();
+      }
     }
   });
 }
 
 if (sidebarResetBtn) {
   sidebarResetBtn.addEventListener("click", async () => {
-    if (currentChatMode !== "browser") return;
-    if (!confirm("ブラウザエージェントの履歴をリセットしますか？")) return;
-    try {
-      const { data } = await browserAgentRequest("/api/reset", { method: "POST" });
-      browserChatState.paused = false;
-      browserChatState.agentRunning = false;
-      setBrowserChatHistory(data?.messages || [], { forceSidebar: true });
+    if (currentChatMode === "browser") {
+      if (!confirm("ブラウザエージェントの履歴をリセットしますか？")) return;
+      try {
+        const { data } = await browserAgentRequest("/api/reset", { method: "POST" });
+        browserChatState.paused = false;
+        browserChatState.agentRunning = false;
+        setBrowserChatHistory(data?.messages || [], { forceSidebar: true });
+        updateSidebarControlsForMode(currentChatMode);
+      } catch (error) {
+        addBrowserSystemMessage(`履歴のリセットに失敗しました: ${error.message}`, { forceSidebar: true });
+      }
+      return;
+    }
+
+    if (currentChatMode === "iot") {
+      if (!confirm("IoT エージェントのチャット履歴をリセットしますか？")) return;
+      iotChatState.messages = [];
+      iotChatState.history = [];
+      iotChatState.sending = false;
+      iotChatState.paused = false;
+      ensureIotChatInitialized({ forceSidebar: true });
       updateSidebarControlsForMode(currentChatMode);
-    } catch (error) {
-      addBrowserSystemMessage(`履歴のリセットに失敗しました: ${error.message}`, { forceSidebar: true });
     }
   });
 }
@@ -1107,12 +1853,17 @@ if (sidebarResetBtn) {
 const initialActiveView = document.querySelector(".nav-btn.active")?.dataset.view;
 const initialIsBrowser = initialActiveView === "browser";
 const initialIsChat = initialActiveView === "chat";
+const initialIsIot = initialActiveView === "iot";
 if (initialIsChat) {
   ensureChatInitialized({ showLoadingSummary: true });
-} else if (!initialIsBrowser) {
+} else if (!initialIsBrowser && !initialIsIot) {
   ensureChatInitialized();
 }
 if (initialIsBrowser) {
   ensureBrowserAgentInitialized({ showLoading: true });
 }
-setChatMode(initialIsBrowser ? "browser" : "general");
+if (initialIsIot) {
+  ensureIotDashboardInitialized({ showLoading: true });
+  ensureIotChatInitialized({ forceSidebar: true });
+}
+setChatMode(initialIsBrowser ? "browser" : initialIsIot ? "iot" : "general");
