@@ -16,7 +16,11 @@ DEFAULT_GEMINI_BASES = (
 )
 GEMINI_TIMEOUT = float(os.environ.get("FAQ_GEMINI_TIMEOUT", "30"))
 
+# Known upstream IoT Agent deployment that should be reachable from public environments.
+PUBLIC_IOT_AGENT_BASE = "https://iot-agent.project-kk.com"
+
 DEFAULT_IOT_AGENT_BASES = (
+    PUBLIC_IOT_AGENT_BASE,
     "http://localhost:5005",
     "http://iot_agent:5005",
 )
