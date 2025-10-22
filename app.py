@@ -7,7 +7,7 @@ import os
 from typing import Any, Dict
 
 import requests
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 
 
 DEFAULT_GEMINI_BASES = (
@@ -15,6 +15,12 @@ DEFAULT_GEMINI_BASES = (
     "http://faq_gemini:5000",
 )
 GEMINI_TIMEOUT = float(os.environ.get("FAQ_GEMINI_TIMEOUT", "30"))
+
+DEFAULT_IOT_AGENT_BASES = (
+    "http://localhost:5005",
+    "http://iot_agent:5005",
+)
+IOT_AGENT_TIMEOUT = float(os.environ.get("IOT_AGENT_TIMEOUT", "30"))
 
 
 app = Flask(__name__, static_folder="assets", static_url_path="/assets")
@@ -44,6 +50,31 @@ def _iter_gemini_bases() -> list[str]:
         if not base:
             continue
         normalized = base.rstrip("/")
+        if normalized.startswith("/"):
+            # Avoid proxying to self
+            continue
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
+
+
+def _iter_iot_agent_bases() -> list[str]:
+    """Return configured IoT Agent base URLs in priority order."""
+
+    configured = os.environ.get("IOT_AGENT_API_BASE", "")
+    candidates: list[str] = []
+    if configured:
+        candidates.extend(part.strip() for part in configured.split(","))
+    candidates.extend(DEFAULT_IOT_AGENT_BASES)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for base in candidates:
+        if not base:
+            continue
+        normalized = base.rstrip("/")
         if not normalized or normalized in seen:
             continue
         seen.add(normalized)
@@ -53,6 +84,14 @@ def _iter_gemini_bases() -> list[str]:
 
 def _build_gemini_url(base: str, path: str) -> str:
     """Build an absolute URL to the upstream FAQ_Gemini API."""
+
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return f"{base}{path}"
+
+
+def _build_iot_agent_url(base: str, path: str) -> str:
+    """Build an absolute URL to the upstream IoT Agent API."""
 
     if not path.startswith("/"):
         path = f"/{path}"
@@ -103,6 +142,62 @@ def _call_gemini(path: str, *, method: str = "GET", payload: Dict[str, Any] | No
         raise GeminiAPIError("FAQ_Gemini API から不正なレスポンス形式が返されました。", status_code=502)
 
     return data
+
+
+def _proxy_iot_agent_request(path: str) -> Response:
+    """Proxy the incoming request to the configured IoT Agent API."""
+
+    bases = _iter_iot_agent_bases()
+    if not bases:
+        return jsonify({"error": "IoT Agent API の接続先が設定されていません。"}), 500
+
+    if request.is_json:
+        json_payload = request.get_json(silent=True)
+        body_payload = None
+    else:
+        json_payload = None
+        body_payload = request.get_data(cache=False) if request.method in {"POST", "PUT", "PATCH", "DELETE"} else None
+
+    forward_headers: Dict[str, str] = {}
+    for header, value in request.headers.items():
+        lowered = header.lower()
+        if lowered in {"content-type", "authorization", "accept", "cookie"} or lowered.startswith("x-"):
+            forward_headers[header] = value
+
+    connection_errors: list[str] = []
+    response = None
+    for base in bases:
+        url = _build_iot_agent_url(base, path)
+        try:
+            response = requests.request(
+                request.method,
+                url,
+                params=request.args,
+                json=json_payload,
+                data=body_payload if json_payload is None else None,
+                headers=forward_headers,
+                timeout=IOT_AGENT_TIMEOUT,
+            )
+        except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
+            connection_errors.append(f"{url}: {exc}")
+            continue
+        else:
+            break
+
+    if response is None:
+        message_lines = ["IoT Agent API への接続に失敗しました。"]
+        if connection_errors:
+            message_lines.append("試行した URL:")
+            message_lines.extend(f"- {error}" for error in connection_errors)
+        return jsonify({"error": "\n".join(message_lines)}), 502
+
+    proxy_response = Response(response.content, status=response.status_code)
+    excluded_headers = {"content-encoding", "transfer-encoding", "connection", "content-length"}
+    for header, value in response.headers.items():
+        if header.lower() in excluded_headers:
+            continue
+        proxy_response.headers[header] = value
+    return proxy_response
 
 
 @app.route("/rag_answer", methods=["POST"])
@@ -160,6 +255,14 @@ def reset_history() -> Any:
         return jsonify({"error": str(exc)}), exc.status_code
 
     return jsonify(data)
+
+
+@app.route("/iot_agent", defaults={"path": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+@app.route("/iot_agent/<path:path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+def proxy_iot_agent(path: str) -> Response:
+    """Forward IoT Agent API requests to the configured upstream service."""
+
+    return _proxy_iot_agent_request(path)
 
 
 @app.route("/")
