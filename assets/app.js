@@ -529,40 +529,6 @@ function renderIotCapabilities(capabilities) {
   return section;
 }
 
-function renderIotMeta(meta) {
-  if (!meta || typeof meta !== "object") return null;
-  const entries = Object.entries(meta).filter(([key, value]) => {
-    if (value === undefined || value === null) return false;
-    if (key === "display_name") return false;
-    const str = typeof value === "string" ? value.trim() : String(value ?? "");
-    return str !== "";
-  });
-  if (!entries.length) return null;
-  const section = document.createElement("div");
-  section.className = "device-section";
-  const label = document.createElement("div");
-  label.className = "device-section__label";
-  label.textContent = "メタ情報";
-  section.appendChild(label);
-  const list = document.createElement("div");
-  list.className = "meta-list";
-  entries.forEach(([key, value]) => {
-    const item = document.createElement("div");
-    item.className = "meta-list__item";
-    const keyEl = document.createElement("span");
-    keyEl.className = "meta-list__label";
-    keyEl.textContent = key;
-    const valueEl = document.createElement("span");
-    valueEl.className = "meta-list__value";
-    valueEl.textContent = formatIotMetaValue(value);
-    item.appendChild(keyEl);
-    item.appendChild(valueEl);
-    list.appendChild(item);
-  });
-  section.appendChild(list);
-  return section;
-}
-
 function renderIotLastResult(result) {
   if (!result || typeof result !== "object") return null;
   const section = document.createElement("div");
@@ -688,10 +654,6 @@ function renderIotDevices() {
     const capabilities = renderIotCapabilities(device.capabilities);
     if (capabilities) {
       body.appendChild(capabilities);
-    }
-    const metaSection = renderIotMeta(device.meta);
-    if (metaSection) {
-      body.appendChild(metaSection);
     }
     const lastResult = renderIotLastResult(device.last_result);
     if (lastResult) {
