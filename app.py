@@ -270,12 +270,18 @@ def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
             break
 
     if response is None:
-        message_lines = ["Browser Agent API への接続に失敗しました。"]
         if connection_errors:
-            message_lines.append("試行した URL:")
-            message_lines.extend(f"- {error}" for error in connection_errors)
-        message = "\n".join(message_lines)
-        raise BrowserAgentError(message) from last_exception
+            logging.warning(
+                "Browser Agent API connection attempts failed: %s",
+                "; ".join(connection_errors),
+            )
+        hint = (
+            "BROWSER_AGENT_API_BASE 環境変数で有効なエンドポイントを設定するか、"
+            "ブラウザエージェントサービスを起動してください。"
+        )
+        raise BrowserAgentError(
+            "ブラウザエージェントに接続できませんでした。 " + hint,
+        ) from last_exception
 
     try:
         data = response.json()
