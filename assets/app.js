@@ -69,9 +69,10 @@ navButtons.forEach(btn => {
     const isBrowserView = view === "browser";
     const isChatView = view === "chat";
     const isIotView = view === "iot";
+    const isGeneralView = view === "general";
     if (isChatView) {
       ensureChatInitialized({ showLoadingSummary: true });
-    } else if (!isBrowserView && !isIotView) {
+    } else if (!isBrowserView && !isIotView && !isGeneralView) {
       ensureChatInitialized();
     }
     if (isBrowserView) {
@@ -81,10 +82,13 @@ navButtons.forEach(btn => {
       ensureIotDashboardInitialized({ showLoading: true });
       ensureIotChatInitialized({ forceSidebar: true });
     }
+    if (isGeneralView) {
+      ensureOrchestratorInitialized({ forceSidebar: true });
+    }
     const modeMap = {
       browser: "browser",
       iot: "iot",
-      general: "general",
+      general: "orchestrator",
       chat: "general",
     };
     setChatMode(modeMap[view] ?? "general");
@@ -932,11 +936,24 @@ if (sidebarResetIcon) {
 const SUMMARY_PLACEHOLDER = "左側のチャットでメッセージを送信すると、ここに要約が表示されます。";
 const SUMMARY_LOADING_TEXT = "要約を取得しています…";
 const INTRO_MESSAGE_TEXT = "ここは要約チャットです。左サイドバーの共通チャットからメッセージを送信すると重要なポイントをここに表示します。";
+const ORCHESTRATOR_INTRO_TEXT = "一般ビューではマルチエージェント・オーケストレーターがタスクを計画し、適切なエージェントに指示を送ります。共通チャットからリクエストを入力してください。";
 
 const chatState = {
   messages: [],
   initialized: false,
   sending: false,
+};
+
+const orchestratorState = {
+  messages: [],
+  initialized: false,
+  sending: false,
+};
+
+const ORCHESTRATOR_AGENT_LABELS = {
+  faq: "FAQ Gemini",
+  browser: "ブラウザエージェント",
+  iot: "IoT エージェント",
 };
 
 const IOT_CHAT_GREETING = "こんにちは！登録済みデバイスの状況を確認したり、チャットから指示を送れます。";
@@ -1045,6 +1062,35 @@ async function geminiRequest(path, { method = "GET", headers = {}, body, signal 
   return typeof data === "string" ? { message: data } : data;
 }
 
+async function orchestratorRequest(message, { signal } = {}) {
+  const response = await fetch("/orchestrator/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+    signal,
+  });
+
+  const contentType = response.headers.get("content-type") || "";
+  const isJson = contentType.includes("application/json");
+  let data;
+  try {
+    data = isJson ? await response.json() : await response.text();
+  } catch (_) {
+    data = isJson ? {} : "";
+  }
+
+  if (!response.ok) {
+    const messageText = typeof data === "string" && data
+      ? data
+      : (data && typeof data.error === "string")
+        ? data.error
+        : `${response.status} ${response.statusText}`;
+    throw new Error(messageText);
+  }
+
+  return typeof data === "string" ? { message: data } : data;
+}
+
 function createMessageElement(message, { compact = false } = {}) {
   const el = document.createElement("div");
   const roleClass = message.role === "user" ? "user" : "system";
@@ -1095,6 +1141,47 @@ function renderSidebarMessages(messages) {
     sidebarChatLog.appendChild(createMessageElement(message, { compact: true }));
   });
   sidebarChatLog.scrollTop = sidebarChatLog.scrollHeight;
+}
+
+function getOrchestratorIntroMessage() {
+  return {
+    role: "assistant",
+    text: ORCHESTRATOR_INTRO_TEXT,
+    ts: Date.now(),
+  };
+}
+
+function renderOrchestratorChat({ forceSidebar = false } = {}) {
+  if (forceSidebar || currentChatMode === "orchestrator") {
+    renderSidebarMessages(orchestratorState.messages);
+  }
+}
+
+function ensureOrchestratorInitialized({ forceSidebar = false } = {}) {
+  if (!orchestratorState.initialized) {
+    orchestratorState.initialized = true;
+    orchestratorState.messages = [getOrchestratorIntroMessage()];
+  }
+  renderOrchestratorChat({ forceSidebar });
+}
+
+function addOrchestratorUserMessage(text) {
+  const message = { role: "user", text, ts: Date.now() };
+  orchestratorState.messages.push(message);
+  renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
+  return message;
+}
+
+function addOrchestratorAssistantMessage(text, { pending = false } = {}) {
+  const message = {
+    role: "assistant",
+    text: text ?? "",
+    pending,
+    ts: Date.now(),
+  };
+  orchestratorState.messages.push(message);
+  renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
+  return message;
 }
 
 function renderGeneralChat({ forceSidebar = false } = {}) {
@@ -1368,6 +1455,27 @@ function updateSidebarControlsForMode(mode) {
     return;
   }
 
+  if (mode === "orchestrator") {
+    if (sidebarResetBtn) {
+      sidebarResetBtn.disabled = true;
+    }
+    if (sidebarChatSend) {
+      sidebarChatSend.disabled = orchestratorState.sending;
+    }
+    if (sidebarPauseBtn) {
+      sidebarPauseBtn.setAttribute("aria-pressed", "false");
+      sidebarPauseBtn.setAttribute("aria-label", "一時停止");
+      if (sidebarPauseSr) {
+        sidebarPauseSr.textContent = "一時停止";
+      }
+      if (sidebarPauseIcon) {
+        sidebarPauseIcon.innerHTML = ICON_PAUSE;
+      }
+      sidebarPauseBtn.disabled = true;
+    }
+    return;
+  }
+
   if (sidebarResetBtn) {
     sidebarResetBtn.disabled = true;
   }
@@ -1563,7 +1671,7 @@ async function sendIotChatMessage(text) {
 }
 
 function setChatMode(mode) {
-  if (!{"browser": true, "general": true, "iot": true}[mode]) {
+  if (!{"browser": true, "general": true, "iot": true, "orchestrator": true}[mode]) {
     mode = "general";
   }
   if (currentChatMode !== mode) {
@@ -1575,6 +1683,9 @@ function setChatMode(mode) {
   } else if (mode === "iot") {
     ensureIotChatInitialized({ forceSidebar: true });
     renderIotChat({ forceSidebar: true });
+  } else if (mode === "orchestrator") {
+    ensureOrchestratorInitialized({ forceSidebar: true });
+    renderOrchestratorChat({ forceSidebar: true });
   } else {
     renderGeneralChat({ forceSidebar: true });
   }
@@ -1673,6 +1784,72 @@ function addPendingAssistantMessage() {
   return message;
 }
 
+async function sendOrchestratorMessage(text) {
+  if (!text || orchestratorState.sending) return;
+  ensureOrchestratorInitialized({ forceSidebar: currentChatMode === "orchestrator" });
+  orchestratorState.sending = true;
+  updateSidebarControlsForMode(currentChatMode);
+
+  const userMessage = addOrchestratorUserMessage(text);
+  const pending = addOrchestratorAssistantMessage("タスクを計画しています…", { pending: true });
+
+  try {
+    const data = await orchestratorRequest(text);
+    const assistantMessages = Array.isArray(data.assistant_messages) ? data.assistant_messages : [];
+
+    if (assistantMessages.length > 0) {
+      const [first, ...rest] = assistantMessages;
+      const firstText = typeof first?.text === "string" && first.text.trim()
+        ? first.text.trim()
+        : "処理が完了しました。";
+      pending.text = firstText;
+      pending.pending = false;
+      pending.ts = Date.now();
+
+      rest.forEach((entry, index) => {
+        const textValue = typeof entry?.text === "string" ? entry.text.trim() : "";
+        if (!textValue) return;
+        const message = addOrchestratorAssistantMessage(textValue);
+        message.ts = Date.now() + index + 1;
+      });
+    } else {
+      const planSummary = typeof data.plan_summary === "string" ? data.plan_summary.trim() : "";
+      const executions = Array.isArray(data.executions) ? data.executions : [];
+      const firstExecution = executions.find(entry => typeof entry?.response === "string" && entry.response.trim());
+      const fallback = planSummary
+        ? `計画: ${planSummary}`
+        : firstExecution
+          ? String(firstExecution.response).trim()
+          : "処理が完了しました。";
+      pending.text = fallback || "処理が完了しました。";
+      pending.pending = false;
+      pending.ts = Date.now();
+      executions.slice(planSummary ? 0 : 1).forEach((entry, index) => {
+        const textValue = typeof entry?.response === "string" ? entry.response.trim() : "";
+        const agentKey = typeof entry?.agent === "string" ? entry.agent : "";
+        const agentLabel = agentKey ? (ORCHESTRATOR_AGENT_LABELS[agentKey] || agentKey) : "";
+        const status = typeof entry?.status === "string" ? entry.status : "";
+        const prefix = agentLabel ? `[${agentLabel}] ` : "";
+        const suffix = status === "error" && typeof entry?.error === "string" && entry.error.trim()
+          ? `エラー: ${entry.error.trim()}`
+          : textValue || (typeof entry?.error === "string" ? entry.error.trim() : "");
+        if (!suffix) return;
+        const message = addOrchestratorAssistantMessage(`${prefix}${suffix}`);
+        message.ts = Date.now() + index + 1;
+      });
+    }
+  } catch (error) {
+    pending.text = `エラー: ${error.message}`;
+    pending.pending = false;
+    pending.ts = Date.now();
+  } finally {
+    userMessage.ts = userMessage.ts || Date.now();
+    orchestratorState.sending = false;
+    renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
+    updateSidebarControlsForMode(currentChatMode);
+  }
+}
+
 async function sendChatMessage(text) {
   if (!text || chatState.sending) return;
   ensureChatInitialized();
@@ -1720,6 +1897,7 @@ if (chatForm) {
     if (sidebarChatInput) sidebarChatInput.value = "";
     if (currentChatMode === "browser") await sendBrowserAgentPrompt(value);
     else if (currentChatMode === "iot") await sendIotChatMessage(value);
+    else if (currentChatMode === "orchestrator") await sendOrchestratorMessage(value);
     else await sendChatMessage(value);
   });
 }
@@ -1733,6 +1911,7 @@ if (sidebarChatForm) {
     if (chatInput) chatInput.value = "";
     if (currentChatMode === "browser") await sendBrowserAgentPrompt(value);
     else if (currentChatMode === "iot") await sendIotChatMessage(value);
+    else if (currentChatMode === "orchestrator") await sendOrchestratorMessage(value);
     else await sendChatMessage(value);
   });
 }
@@ -1821,9 +2000,10 @@ const initialActiveView = document.querySelector(".nav-btn.active")?.dataset.vie
 const initialIsBrowser = initialActiveView === "browser";
 const initialIsChat = initialActiveView === "chat";
 const initialIsIot = initialActiveView === "iot";
+const initialIsGeneral = initialActiveView === "general";
 if (initialIsChat) {
   ensureChatInitialized({ showLoadingSummary: true });
-} else if (!initialIsBrowser && !initialIsIot) {
+} else if (!initialIsBrowser && !initialIsIot && !initialIsGeneral) {
   ensureChatInitialized();
 }
 if (initialIsBrowser) {
@@ -1833,4 +2013,7 @@ if (initialIsIot) {
   ensureIotDashboardInitialized({ showLoading: true });
   ensureIotChatInitialized({ forceSidebar: true });
 }
-setChatMode(initialIsBrowser ? "browser" : initialIsIot ? "iot" : "general");
+if (initialIsGeneral) {
+  ensureOrchestratorInitialized({ forceSidebar: true });
+}
+setChatMode(initialIsBrowser ? "browser" : initialIsIot ? "iot" : initialIsGeneral ? "orchestrator" : "general");
