@@ -2,12 +2,49 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Literal, TypedDict
 
 import requests
 from flask import Flask, Response, jsonify, request, send_from_directory
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from langgraph.graph import END, StateGraph
+
+
+def _load_env_file(path: str = ".env") -> None:
+    """Best-effort .env loader so orchestrator can pick up API keys."""
+
+    env_path = Path(path)
+    if not env_path.is_file():
+        return
+
+    try:
+        content = env_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        cleaned = value.strip()
+        if (
+            (cleaned.startswith('"') and cleaned.endswith('"'))
+            or (cleaned.startswith("'") and cleaned.endswith("'"))
+        ):
+            cleaned = cleaned[1:-1]
+        os.environ.setdefault(key, cleaned)
+
+
+_load_env_file()
 
 
 DEFAULT_GEMINI_BASES = (
@@ -26,6 +63,15 @@ DEFAULT_IOT_AGENT_BASES = (
 )
 IOT_AGENT_TIMEOUT = float(os.environ.get("IOT_AGENT_TIMEOUT", "30"))
 
+DEFAULT_BROWSER_AGENT_BASES = (
+    "http://localhost:5005",
+    "http://browser_agent:5005",
+)
+BROWSER_AGENT_TIMEOUT = float(os.environ.get("BROWSER_AGENT_TIMEOUT", "120"))
+
+ORCHESTRATOR_MODEL = os.environ.get("ORCHESTRATOR_MODEL", "gpt-4.1-2025-04-14")
+ORCHESTRATOR_MAX_TASKS = int(os.environ.get("ORCHESTRATOR_MAX_TASKS", "5"))
+
 
 app = Flask(__name__, static_folder="assets", static_url_path="/assets")
 logging.basicConfig(level=logging.INFO)
@@ -37,6 +83,26 @@ class GeminiAPIError(RuntimeError):
     def __init__(self, message: str, status_code: int = 502) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class BrowserAgentError(RuntimeError):
+    """Raised when the Browser Agent request cannot be completed."""
+
+    def __init__(self, message: str, status_code: int = 502) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class IotAgentError(RuntimeError):
+    """Raised when the IoT Agent request fails."""
+
+    def __init__(self, message: str, status_code: int = 502) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class OrchestratorError(RuntimeError):
+    """Raised when the orchestrator cannot complete a request."""
 
 
 def _iter_gemini_bases() -> list[str]:
@@ -102,6 +168,36 @@ def _build_iot_agent_url(base: str, path: str) -> str:
     return f"{base}{path}"
 
 
+def _iter_browser_agent_bases() -> list[str]:
+    """Return configured Browser Agent base URLs in priority order."""
+
+    configured = os.environ.get("BROWSER_AGENT_API_BASE", "")
+    candidates: list[str] = []
+    if configured:
+        candidates.extend(part.strip() for part in configured.split(","))
+    candidates.extend(DEFAULT_BROWSER_AGENT_BASES)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for base in candidates:
+        if not base:
+            continue
+        normalized = base.rstrip("/")
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
+
+
+def _build_browser_agent_url(base: str, path: str) -> str:
+    """Build an absolute URL to the Browser Agent API."""
+
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return f"{base}{path}"
+
+
 def _call_gemini(path: str, *, method: str = "GET", payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Call the upstream FAQ_Gemini API and return the JSON payload."""
 
@@ -144,6 +240,103 @@ def _call_gemini(path: str, *, method: str = "GET", payload: Dict[str, Any] | No
 
     if not isinstance(data, dict):
         raise GeminiAPIError("FAQ_Gemini API から不正なレスポンス形式が返されました。", status_code=502)
+
+    return data
+
+
+def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
+    """Send a chat request to the Browser Agent and return the JSON payload."""
+
+    bases = _iter_browser_agent_bases()
+    if not bases:
+        raise BrowserAgentError("Browser Agent API の接続先が設定されていません。", status_code=500)
+
+    connection_errors: list[str] = []
+    last_exception: Exception | None = None
+    response = None
+    for base in bases:
+        url = _build_browser_agent_url(base, "/api/chat")
+        try:
+            response = requests.post(
+                url,
+                json={"prompt": prompt, "new_task": True},
+                timeout=BROWSER_AGENT_TIMEOUT,
+            )
+        except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
+            connection_errors.append(f"{url}: {exc}")
+            last_exception = exc
+            continue
+        else:
+            break
+
+    if response is None:
+        message_lines = ["Browser Agent API への接続に失敗しました。"]
+        if connection_errors:
+            message_lines.append("試行した URL:")
+            message_lines.extend(f"- {error}" for error in connection_errors)
+        message = "\n".join(message_lines)
+        raise BrowserAgentError(message) from last_exception
+
+    try:
+        data = response.json()
+    except ValueError as exc:  # pragma: no cover - unexpected upstream response
+        raise BrowserAgentError("Browser Agent API から不正なレスポンス形式が返されました。") from exc
+
+    if not response.ok:
+        message = data.get("error") if isinstance(data, dict) else None
+        if not message:
+            message = response.text or f"{response.status_code} {response.reason}"
+        raise BrowserAgentError(message, status_code=response.status_code)
+
+    if not isinstance(data, dict):
+        raise BrowserAgentError("Browser Agent API から不正なレスポンス形式が返されました。", status_code=502)
+
+    return data
+
+
+def _call_iot_agent_chat(command: str) -> Dict[str, Any]:
+    """Send a chat request to the IoT Agent and return the JSON payload."""
+
+    bases = _iter_iot_agent_bases()
+    if not bases:
+        raise IotAgentError("IoT Agent API の接続先が設定されていません。", status_code=500)
+
+    payload = {"messages": [{"role": "user", "content": command}]}
+    connection_errors: list[str] = []
+    last_exception: Exception | None = None
+    response = None
+    for base in bases:
+        url = _build_iot_agent_url(base, "/api/chat")
+        try:
+            response = requests.post(url, json=payload, timeout=IOT_AGENT_TIMEOUT)
+        except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
+            connection_errors.append(f"{url}: {exc}")
+            last_exception = exc
+            continue
+        else:
+            break
+
+    if response is None:
+        message_lines = ["IoT Agent API への接続に失敗しました。"]
+        if connection_errors:
+            message_lines.append("試行した URL:")
+            message_lines.extend(f"- {error}" for error in connection_errors)
+        message = "\n".join(message_lines)
+        raise IotAgentError(message) from last_exception
+
+    try:
+        data = response.json()
+    except ValueError as exc:  # pragma: no cover - unexpected upstream response
+        raise IotAgentError("IoT Agent API から不正なレスポンス形式が返されました。") from exc
+
+    if not response.ok:
+        message = data.get("error") if isinstance(data, dict) else None
+        if not message:
+            message = response.text or f"{response.status_code} {response.reason}"
+        raise IotAgentError(message, status_code=response.status_code)
+
+    if not isinstance(data, dict):
+        raise IotAgentError("IoT Agent API から不正なレスポンス形式が返されました。", status_code=502)
 
     return data
 
@@ -202,6 +395,361 @@ def _proxy_iot_agent_request(path: str) -> Response:
             continue
         proxy_response.headers[header] = value
     return proxy_response
+
+
+AgentName = Literal["faq", "browser", "iot"]
+
+
+class TaskSpec(TypedDict):
+    agent: AgentName
+    command: str
+
+
+class ExecutionResult(TypedDict, total=False):
+    agent: AgentName
+    command: str
+    status: Literal["success", "error"]
+    response: str | None
+    error: str | None
+
+
+class OrchestratorState(TypedDict, total=False):
+    user_input: str
+    plan_summary: str | None
+    raw_plan: Dict[str, Any] | None
+    tasks: List[TaskSpec]
+    executions: List[ExecutionResult]
+    current_index: int
+
+
+class MultiAgentOrchestrator:
+    """LangGraph-based orchestrator that routes work to specialised agents."""
+
+    _AGENT_ALIASES = {
+        "faq": "faq",
+        "faq_gemini": "faq",
+        "gemini": "faq",
+        "knowledge": "faq",
+        "knowledge_base": "faq",
+        "docs": "faq",
+        "browser": "browser",
+        "browser_agent": "browser",
+        "web": "browser",
+        "web_agent": "browser",
+        "navigator": "browser",
+        "iot": "iot",
+        "iot_agent": "iot",
+        "device": "iot",
+    }
+
+    _AGENT_DISPLAY_NAMES = {
+        "faq": "FAQ Gemini",
+        "browser": "ブラウザエージェント",
+        "iot": "IoT エージェント",
+    }
+
+    _PLANNER_PROMPT = """
+あなたはマルチエージェントシステムのオーケストレーターです。与えられたユーザーの依頼を読み、実行すべきタスクを分析して下さい。
+
+- 利用可能なエージェント:
+  - "faq": FAQ_Gemini のナレッジベースに質問できます。
+  - "browser": ブラウザ自動化エージェントで Web を閲覧・操作できます。
+  - "iot": IoT エージェントを通じてデバイスの状態確認や操作ができます。
+- 出力は JSON オブジェクトのみで、追加の説明やマークダウンを含めてはいけません。
+- JSON には必ず次のキーを含めてください:
+  - "plan_summary": 実行方針を 1 文でまとめた文字列。
+  - "tasks": タスクの配列。各要素は {"agent": <上記のいずれか>, "command": <エージェントに渡す命令>} です。
+- タスク数は 0〜{max_tasks} 件の範囲に収めてください。不要なタスクは作成しないでください。
+- エージェントで対応できない内容はタスクを生成せず、plan_summary でその旨を説明してください。
+""".strip()
+
+    def __init__(self) -> None:
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise OrchestratorError("OPENAI_API_KEY が .env に設定されていません。")
+
+        try:
+            self._llm = ChatOpenAI(model=ORCHESTRATOR_MODEL, temperature=0.1)
+        except Exception as exc:  # noqa: BLE001
+            raise OrchestratorError(f"LangGraph LLM の初期化に失敗しました: {exc}") from exc
+
+        self._graph = self._build_graph()
+
+    def _build_graph(self) -> Any:
+        graph: StateGraph[OrchestratorState] = StateGraph(OrchestratorState)
+        graph.add_node("plan", self._plan_node)
+        graph.add_node("execute", self._execute_node)
+        graph.add_edge("plan", "execute")
+        graph.add_conditional_edges("execute", self._continue_or_end, {"continue": "execute", "end": END})
+        graph.set_entry_point("plan")
+        return graph.compile()
+
+    def _continue_or_end(self, state: OrchestratorState) -> str:
+        tasks = state.get("tasks") or []
+        index = state.get("current_index", 0)
+        return "continue" if index < len(tasks) else "end"
+
+    def _plan_node(self, state: OrchestratorState) -> OrchestratorState:
+        user_input = state.get("user_input", "")
+        if not user_input:
+            raise OrchestratorError("オーケストレーターに渡された入力が空でした。")
+
+        prompt = self._PLANNER_PROMPT.format(max_tasks=ORCHESTRATOR_MAX_TASKS)
+        messages = [SystemMessage(content=prompt), HumanMessage(content=user_input)]
+
+        try:
+            response = self._llm.invoke(messages)
+        except Exception as exc:  # noqa: BLE001
+            raise OrchestratorError(f"プラン生成に失敗しました: {exc}") from exc
+
+        raw_content = response.content
+        plan_text = self._extract_text(raw_content)
+        plan_data = self._parse_plan(plan_text)
+
+        tasks = self._normalise_tasks(plan_data.get("tasks"))
+        plan_summary = str(plan_data.get("plan_summary") or plan_data.get("plan") or "").strip()
+
+        return {
+            "user_input": user_input,
+            "plan_summary": plan_summary,
+            "raw_plan": plan_data,
+            "tasks": tasks,
+            "executions": [],
+            "current_index": 0,
+        }
+
+    def _execute_node(self, state: OrchestratorState) -> OrchestratorState:
+        tasks = state.get("tasks") or []
+        index = state.get("current_index", 0)
+        executions = list(state.get("executions") or [])
+
+        if index >= len(tasks):
+            return {"executions": executions, "current_index": index}
+
+        task = tasks[index]
+        result = self._execute_task(task)
+        executions.append(result)
+
+        return {"executions": executions, "current_index": index + 1, "tasks": tasks}
+
+    def _extract_text(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            pieces: list[str] = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        pieces.append(text)
+            return "".join(pieces)
+        return str(content)
+
+    def _parse_plan(self, raw: str) -> Dict[str, Any]:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:  # noqa: PERF203
+            raise OrchestratorError("プラン応答の JSON 解析に失敗しました。") from exc
+
+        if not isinstance(parsed, dict):
+            raise OrchestratorError("プラン応答の形式が不正です。")
+        return parsed
+
+    def _normalise_tasks(self, raw_tasks: Any) -> List[TaskSpec]:
+        tasks: List[TaskSpec] = []
+        if not isinstance(raw_tasks, Iterable):
+            return tasks
+
+        for item in raw_tasks:
+            if not isinstance(item, dict):
+                continue
+            agent_raw = str(item.get("agent") or "").strip().lower()
+            command = str(item.get("command") or "").strip()
+            if not agent_raw or not command:
+                continue
+            agent = self._AGENT_ALIASES.get(agent_raw)
+            if not agent:
+                continue
+            tasks.append({"agent": agent, "command": command})
+            if len(tasks) >= ORCHESTRATOR_MAX_TASKS:
+                break
+        return tasks
+
+    def _execute_task(self, task: TaskSpec) -> ExecutionResult:
+        agent = task["agent"]
+        command = task["command"]
+        if agent == "faq":
+            try:
+                data = _call_gemini("/rag_answer", method="POST", payload={"question": command})
+            except GeminiAPIError as exc:
+                return {
+                    "agent": agent,
+                    "command": command,
+                    "status": "error",
+                    "response": None,
+                    "error": str(exc),
+                }
+            answer = str(data.get("answer") or "").strip() or "FAQ_Gemini から回答が得られませんでした。"
+            return {
+                "agent": agent,
+                "command": command,
+                "status": "success",
+                "response": answer,
+                "error": None,
+            }
+
+        if agent == "browser":
+            try:
+                data = _call_browser_agent_chat(command)
+            except BrowserAgentError as exc:
+                return {
+                    "agent": agent,
+                    "command": command,
+                    "status": "error",
+                    "response": None,
+                    "error": str(exc),
+                }
+            summary = str(data.get("run_summary") or "").strip()
+            if not summary:
+                messages = data.get("messages")
+                summary = self._summarise_browser_messages(messages)
+            if not summary:
+                summary = "ブラウザエージェントからの応答を取得できませんでした。"
+            return {
+                "agent": agent,
+                "command": command,
+                "status": "success",
+                "response": summary,
+                "error": None,
+            }
+
+        if agent == "iot":
+            try:
+                data = _call_iot_agent_chat(command)
+            except IotAgentError as exc:
+                return {
+                    "agent": agent,
+                    "command": command,
+                    "status": "error",
+                    "response": None,
+                    "error": str(exc),
+                }
+            reply = str(data.get("reply") or "").strip()
+            if not reply:
+                reply = "IoT エージェントからの応答が空でした。"
+            return {
+                "agent": agent,
+                "command": command,
+                "status": "success",
+                "response": reply,
+                "error": None,
+            }
+
+        return {
+            "agent": agent,
+            "command": command,
+            "status": "error",
+            "response": None,
+            "error": f"未対応のエージェント種別です: {agent}",
+        }
+
+    def _summarise_browser_messages(self, messages: Any) -> str:
+        if not isinstance(messages, list):
+            return ""
+        for item in reversed(messages):
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").lower()
+            if role != "assistant":
+                continue
+            content = item.get("content") or item.get("text")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+        return ""
+
+    def _format_assistant_messages(
+        self,
+        plan_summary: str | None,
+        executions: List[ExecutionResult],
+    ) -> List[Dict[str, Any]]:
+        messages: List[Dict[str, Any]] = []
+        if plan_summary:
+            messages.append({"type": "plan", "text": f"計画: {plan_summary}"})
+
+        for result in executions:
+            agent_label = self._AGENT_DISPLAY_NAMES.get(result["agent"], result["agent"])
+            if result.get("status") == "success":
+                body = result.get("response") or "タスクを完了しました。"
+            else:
+                body = result.get("error") or "タスクの実行に失敗しました。"
+            messages.append(
+                {
+                    "type": "execution",
+                    "agent": result["agent"],
+                    "status": result.get("status"),
+                    "text": f"[{agent_label}] {body}",
+                }
+            )
+
+        if not messages:
+            messages.append({"type": "status", "text": "今回のリクエストでは実行すべきタスクはありませんでした。"})
+
+        return messages
+
+    def run(self, user_input: str) -> Dict[str, Any]:
+        state: OrchestratorState = {
+            "user_input": user_input,
+            "plan_summary": None,
+            "raw_plan": None,
+            "tasks": [],
+            "executions": [],
+            "current_index": 0,
+        }
+
+        result_state = self._graph.invoke(state)
+        plan_summary = result_state.get("plan_summary")
+        executions = result_state.get("executions") or []
+        tasks = result_state.get("tasks") or []
+
+        return {
+            "plan_summary": plan_summary or "",
+            "tasks": tasks,
+            "executions": executions,
+            "assistant_messages": self._format_assistant_messages(plan_summary, executions),
+        }
+
+
+_orchestrator_service: MultiAgentOrchestrator | None = None
+
+
+def _get_orchestrator() -> MultiAgentOrchestrator:
+    global _orchestrator_service
+    if _orchestrator_service is None:
+        try:
+            _orchestrator_service = MultiAgentOrchestrator()
+        except OrchestratorError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise OrchestratorError(f"オーケストレーターの初期化に失敗しました: {exc}") from exc
+    return _orchestrator_service
+
+
+@app.route("/orchestrator/chat", methods=["POST"])
+def orchestrator_chat() -> Any:
+    """Handle orchestrator chat requests originating from the General view."""
+
+    payload = request.get_json(silent=True) or {}
+    message = (payload.get("message") or "").strip()
+    if not message:
+        return jsonify({"error": "メッセージを入力してください。"}), 400
+
+    try:
+        orchestrator = _get_orchestrator()
+        result = orchestrator.run(message)
+    except OrchestratorError as exc:
+        logging.exception("Orchestrator execution failed: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify(result)
 
 
 @app.route("/rag_answer", methods=["POST"])
