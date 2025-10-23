@@ -446,37 +446,29 @@ function resolveIotAgentBase() {
     sanitize(queryBase),
     sanitize(window.IOT_AGENT_API_BASE),
     sanitize(document.querySelector("meta[name='iot-agent-api-base']")?.content),
+    sanitize(PUBLIC_IOT_AGENT_BASE),
   ];
   for (const base of sources) {
     if (base) return base;
   }
-  if (window.location.origin && window.location.origin !== "null") {
-    return `${window.location.origin.replace(/\/+$/, "")}/iot_agent`;
-  }
-  if (PUBLIC_IOT_AGENT_BASE) {
-    return PUBLIC_IOT_AGENT_BASE;
-  }
-  return "/iot_agent";
+  return PUBLIC_IOT_AGENT_BASE;
 }
 
 const IOT_AGENT_API_BASE = resolveIotAgentBase();
 
 function buildIotAgentUrl(path) {
   if (!path) {
-    return IOT_AGENT_API_BASE || "/iot_agent";
+    return IOT_AGENT_API_BASE || PUBLIC_IOT_AGENT_BASE;
   }
   if (/^https?:/i.test(path)) {
     return path;
   }
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  const base = IOT_AGENT_API_BASE || "";
+  const base = IOT_AGENT_API_BASE || PUBLIC_IOT_AGENT_BASE || "";
   if (!base) {
     return normalizedPath;
   }
-  if (/^https?:/i.test(base)) {
-    return `${base.replace(/\/+$/, "")}${normalizedPath}`;
-  }
-  return `${base.replace(/\/+$/, "")}${normalizedPath}` || normalizedPath;
+  return `${base.replace(/\/+$/, "")}${normalizedPath}`;
 }
 
 async function iotAgentRequest(path, { method = "GET", headers = {}, body, signal } = {}) {
