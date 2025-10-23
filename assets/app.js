@@ -59,6 +59,10 @@ const generalProxyStatus = $("#generalProxyStatus");
 const generalProxyContainer = $("#generalProxyContainer");
 const generalViewPanel = views.general?.querySelector(".general-view") ?? null;
 
+let generalBrowserSurface = null;
+let generalBrowserStage = null;
+let generalBrowserFullscreenBtn = null;
+
 const viewPlacements = new Map();
 const AGENT_TO_VIEW_MAP = { browser: "browser", iot: "iot", faq: "chat", chat: "chat" };
 const GENERAL_PROXY_AGENT_LABELS = {
@@ -99,6 +103,11 @@ function ensureViewPlacement(viewEl) {
 }
 
 function restoreView(viewKey) {
+  if (viewKey === "browser") {
+    deactivateGeneralBrowserProxy();
+    return;
+  }
+
   const viewEl = views[viewKey];
   if (!viewEl) return;
   const placement = viewPlacements.get(viewEl);
@@ -111,12 +120,19 @@ function restoreView(viewKey) {
     parent.appendChild(viewEl);
   }
   viewEl.classList.remove("general-proxy-active");
-  if (viewKey === "browser") {
-    requestDeferredNoVncViewportSync({ reloadFallback: true });
-  }
 }
 
 function moveViewToGeneral(viewKey) {
+  if (viewKey === "browser") {
+    if (generalProxyViewKey && generalProxyViewKey !== viewKey) {
+      restoreView(generalProxyViewKey);
+      generalProxyViewKey = null;
+    }
+    activateGeneralBrowserProxy();
+    generalProxyViewKey = viewKey;
+    return;
+  }
+
   const viewEl = views[viewKey];
   if (!generalProxyContainer || !viewEl) return;
   if (generalProxyViewKey && generalProxyViewKey !== viewKey) {
@@ -131,9 +147,6 @@ function moveViewToGeneral(viewKey) {
   }
   viewEl.classList.add("general-proxy-active");
   generalProxyViewKey = viewKey;
-  if (viewKey === "browser") {
-    requestDeferredNoVncViewportSync({ reloadFallback: true });
-  }
 }
 
 function clearGeneralProxy() {
@@ -184,7 +197,8 @@ function updateGeneralViewProxy() {
 
   if (generalProxyTargetView === "browser") {
     ensureBrowserAgentInitialized({ showLoading: true });
-    requestDeferredNoVncViewportSync({ reloadFallback: true });
+    activateGeneralBrowserProxy();
+    requestGeneralBrowserViewportSync({ reloadFallback: true });
   } else if (generalProxyTargetView === "iot") {
     ensureIotDashboardInitialized({ showLoading: true });
     ensureIotChatInitialized({ forceSidebar: true });
@@ -247,7 +261,7 @@ function activateView(viewKey) {
   }
   if (isBrowserView) {
     ensureBrowserAgentInitialized({ showLoading: true });
-    requestDeferredNoVncViewportSync({ reloadFallback: true });
+    requestMainBrowserViewportSync({ reloadFallback: true });
   }
   if (isIotView) {
     ensureIotDashboardInitialized({ showLoading: true });
@@ -313,13 +327,11 @@ if (layoutEl && sidebarToggle && sidebarEl) {
 }
 
 /* ---------- Browser stage (noVNC 風) ---------- */
-const stage = $("#browserStage");
-const fullscreenBtn = $("#fullscreenBtn");
+const browserStage = $("#browserStage");
+const browserFullscreenBtn = $("#fullscreenBtn");
 
-let currentIframe = null;
-let currentIframeOrigin = "*";
-let deferredNoVncViewportRaf = null;
-let deferredNoVncViewportReloadFallback = false;
+const noVncControllers = new Set();
+let generalBrowserController = null;
 
 const ALLOWED_RESIZE_VALUES = new Set(["scale", "remote", "off"]);
 const DEFAULT_NOVNC_PARAMS = {
@@ -394,28 +406,6 @@ function resolveBrowserEmbedUrl() {
 
 const BROWSER_EMBED_URL = resolveBrowserEmbedUrl();
 
-let stageResizeObserver = null;
-let stageResizeRaf = null;
-
-function requestDeferredNoVncViewportSync({ reloadFallback = false } = {}) {
-  deferredNoVncViewportReloadFallback =
-    deferredNoVncViewportReloadFallback || reloadFallback;
-  if (deferredNoVncViewportRaf !== null) {
-    return;
-  }
-
-  const flush = () => {
-    const shouldReload = deferredNoVncViewportReloadFallback;
-    deferredNoVncViewportReloadFallback = false;
-    deferredNoVncViewportRaf = null;
-    syncNoVncViewport({ reloadFallback: shouldReload });
-  };
-
-  deferredNoVncViewportRaf = requestAnimationFrame(() => {
-    deferredNoVncViewportRaf = requestAnimationFrame(flush);
-  });
-}
-
 function reloadBrowserIframeWithCacheBust(iframe) {
   if (!iframe) return;
   const base = iframe.src || BROWSER_EMBED_URL;
@@ -428,116 +418,187 @@ function reloadBrowserIframeWithCacheBust(iframe) {
   }
 }
 
-function syncNoVncViewport({ reloadFallback = false } = {}) {
-  if (!currentIframe) return;
+function createNoVncController({ stage, fullscreenButton, context = "default" } = {}) {
+  if (!stage) return null;
 
-  const rect = stage?.getBoundingClientRect?.();
-  const width = Math.round((rect && rect.width) || stage?.clientWidth || 0);
-  const height = Math.round((rect && rect.height) || stage?.clientHeight || 0);
-  if (width <= 0 || height <= 0) {
-    if (reloadFallback) {
-      requestDeferredNoVncViewportSync();
-    }
-    return;
-  }
-
-  const payload = {
-    source: "multi-agent-platform",
-    type: "novnc.viewport.sync",
-    width,
-    height,
-    stageWidth: Math.round(stage?.clientWidth || width),
-    stageHeight: Math.round(stage?.clientHeight || height),
-    devicePixelRatio: Number(window.devicePixelRatio) || 1,
-    innerWidth: typeof window.innerWidth === "number" ? window.innerWidth : width,
-    innerHeight: typeof window.innerHeight === "number" ? window.innerHeight : height,
-    timestamp: Date.now(),
+  const state = {
+    iframe: null,
+    origin: "*",
+    deferredRaf: null,
+    deferredReloadFallback: false,
+    stageResizeObserver: null,
+    stageResizeRaf: null,
   };
 
-  let posted = false;
-  try {
-    currentIframe.contentWindow?.postMessage(payload, currentIframeOrigin || "*");
-    posted = true;
-  } catch (_error) {
-    posted = false;
+  const controller = {
+    context,
+    ensureIframe,
+    requestSync,
+    sync,
+    reload,
+    matchesWindow,
+    getStage: () => stage,
+    getIframe: () => state.iframe,
+  };
+
+  function ensureIframe() {
+    if (!stage || !BROWSER_EMBED_URL) {
+      return null;
+    }
+
+    let iframe = stage.querySelector("iframe");
+    const titleSuffix = context === "general-proxy" ? " (一般ビュー)" : "";
+    if (!iframe) {
+      stage.innerHTML = "";
+      iframe = document.createElement("iframe");
+      iframe.setAttribute("title", `埋め込みブラウザ${titleSuffix}`);
+      iframe.setAttribute("allow", "fullscreen");
+      iframe.addEventListener("load", () => {
+        controller.requestSync();
+      });
+      stage.appendChild(iframe);
+    }
+
+    if (iframe.src !== BROWSER_EMBED_URL) {
+      iframe.src = BROWSER_EMBED_URL;
+    }
+
+    try {
+      const parsed = new URL(iframe.src, window.location.origin);
+      state.origin = parsed.origin || "*";
+    } catch (_error) {
+      state.origin = "*";
+    }
+
+    state.iframe = iframe;
+    controller.requestSync({ reloadFallback: true });
+    return iframe;
   }
 
-  if (reloadFallback && !posted) {
-    const lastReload = Number(currentIframe.dataset?.novncReloadTs || "0");
+  function sync({ reloadFallback = false } = {}) {
+    if (!state.iframe) {
+      ensureIframe();
+      if (!state.iframe) {
+        return;
+      }
+    }
+
+    const rect = stage?.getBoundingClientRect?.();
+    const width = Math.round((rect && rect.width) || stage?.clientWidth || 0);
+    const height = Math.round((rect && rect.height) || stage?.clientHeight || 0);
+    if (width <= 0 || height <= 0) {
+      if (reloadFallback) {
+        controller.requestSync();
+      }
+      return;
+    }
+
+    const payload = {
+      source: "multi-agent-platform",
+      type: "novnc.viewport.sync",
+      width,
+      height,
+      stageWidth: Math.round(stage?.clientWidth || width),
+      stageHeight: Math.round(stage?.clientHeight || height),
+      devicePixelRatio: Number(window.devicePixelRatio) || 1,
+      innerWidth: typeof window.innerWidth === "number" ? window.innerWidth : width,
+      innerHeight: typeof window.innerHeight === "number" ? window.innerHeight : height,
+      timestamp: Date.now(),
+      context,
+    };
+
+    let posted = false;
+    try {
+      state.iframe.contentWindow?.postMessage(payload, state.origin || "*");
+      posted = true;
+    } catch (_error) {
+      posted = false;
+    }
+
+    if (reloadFallback && !posted) {
+      controller.reload();
+    }
+  }
+
+  function requestSync({ reloadFallback = false } = {}) {
+    state.deferredReloadFallback = state.deferredReloadFallback || reloadFallback;
+    if (state.deferredRaf !== null) {
+      return;
+    }
+
+    state.deferredRaf = requestAnimationFrame(() => {
+      state.deferredRaf = requestAnimationFrame(() => {
+        const shouldReload = state.deferredReloadFallback;
+        state.deferredReloadFallback = false;
+        state.deferredRaf = null;
+        controller.sync({ reloadFallback: shouldReload });
+      });
+    });
+  }
+
+  function reload() {
+    const iframe = state.iframe;
+    if (!iframe) {
+      return;
+    }
+
+    const lastReload = Number(iframe.dataset?.novncReloadTs || "0");
     const now = Date.now();
     if (!lastReload || now - lastReload > 1500) {
-      if (currentIframe.dataset) {
-        currentIframe.dataset.novncReloadTs = String(now);
+      if (iframe.dataset) {
+        iframe.dataset.novncReloadTs = String(now);
       }
-      reloadBrowserIframeWithCacheBust(currentIframe);
+      reloadBrowserIframeWithCacheBust(iframe);
     }
   }
-}
 
-const handleIframeLoad = () => {
-  requestDeferredNoVncViewportSync({ reloadFallback: false });
-};
-
-function ensureBrowserIframe() {
-  if (!stage) return;
-  const url = BROWSER_EMBED_URL;
-  if (!url) return;
-
-  let iframe = stage.querySelector("iframe");
-  if (!iframe) {
-    stage.innerHTML = "";
-    iframe = document.createElement("iframe");
-    iframe.setAttribute("title", "埋め込みブラウザ");
-    iframe.setAttribute("allow", "fullscreen");
-    iframe.addEventListener("load", handleIframeLoad);
-    stage.appendChild(iframe);
+  function matchesWindow(win) {
+    return Boolean(state.iframe && win === state.iframe.contentWindow);
   }
 
-  if (iframe.src !== url) {
-    iframe.src = url;
-  }
+  if (typeof ResizeObserver === "function") {
+    state.stageResizeObserver = new ResizeObserver(entries => {
+      if (!entries || entries.length === 0) return;
+      const entry = entries[0];
+      const { width, height } = entry.contentRect || {};
+      const roundedWidth = Math.round(width || 0);
+      const roundedHeight = Math.round(height || 0);
+      if (roundedWidth <= 0 || roundedHeight <= 0) return;
 
-  try {
-    const parsed = new URL(iframe.src, window.location.origin);
-    currentIframeOrigin = parsed.origin || "*";
-  } catch (_error) {
-    currentIframeOrigin = "*";
-  }
+      if (state.stageResizeRaf !== null) {
+        cancelAnimationFrame(state.stageResizeRaf);
+        state.stageResizeRaf = null;
+      }
 
-  currentIframe = iframe;
-  requestDeferredNoVncViewportSync({ reloadFallback: true });
-}
-
-ensureBrowserIframe();
-
-if (stage && typeof ResizeObserver === "function") {
-  stageResizeObserver = new ResizeObserver(entries => {
-    if (!entries || entries.length === 0) return;
-    const entry = entries[0];
-    const { width, height } = entry.contentRect;
-    const roundedWidth = Math.round(width);
-    const roundedHeight = Math.round(height);
-    if (roundedWidth <= 0 || roundedHeight <= 0) return;
-
-    if (stageResizeRaf !== null) {
-      cancelAnimationFrame(stageResizeRaf);
-      stageResizeRaf = null;
-    }
-
-    stageResizeRaf = requestAnimationFrame(() => {
-      stageResizeRaf = null;
-      syncNoVncViewport();
+      state.stageResizeRaf = requestAnimationFrame(() => {
+        state.stageResizeRaf = null;
+        controller.requestSync();
+      });
     });
-  });
-  stageResizeObserver.observe(stage);
+    state.stageResizeObserver.observe(stage);
+  }
+
+  if (fullscreenButton) {
+    fullscreenButton.addEventListener("click", () => {
+      const el = state.iframe ?? stage;
+      if (!el) return;
+      if (document.fullscreenElement) document.exitFullscreen();
+      else el.requestFullscreen?.();
+    });
+  }
+
+  noVncControllers.add(controller);
+  return controller;
 }
 
-if (fullscreenBtn) {
-  fullscreenBtn.addEventListener("click", () => {
-    const el = currentIframe ?? stage;
-    if (document.fullscreenElement) document.exitFullscreen();
-    else el?.requestFullscreen?.();
-  });
+const mainBrowserController = createNoVncController({
+  stage: browserStage,
+  fullscreenButton: browserFullscreenBtn,
+  context: "browser-view",
+});
+
+if (mainBrowserController) {
+  mainBrowserController.ensureIframe();
 }
 
 window.addEventListener("message", event => {
@@ -558,17 +619,150 @@ window.addEventListener("message", event => {
     normalizedType === "novnc.viewport.ready" ||
     normalizedType === "novnc.ready"
   ) {
-    requestDeferredNoVncViewportSync();
+    let handled = false;
+    for (const controller of noVncControllers) {
+      if (!controller) continue;
+      if (!event.source || controller.matchesWindow(event.source)) {
+        controller.requestSync();
+        handled = true;
+      }
+    }
+    if (!handled) {
+      for (const controller of noVncControllers) {
+        controller?.requestSync();
+      }
+    }
     return;
   }
 
   if (
-    (normalizedType === "novnc.viewport.reload" || normalizedType === "novnc.reload") &&
-    event.source === currentIframe?.contentWindow
+    normalizedType === "novnc.viewport.reload" || normalizedType === "novnc.reload"
   ) {
-    reloadBrowserIframeWithCacheBust(currentIframe);
+    for (const controller of noVncControllers) {
+      if (!controller) continue;
+      if (!event.source || controller.matchesWindow(event.source)) {
+        controller.reload();
+      }
+    }
   }
 });
+
+function ensureGeneralBrowserProxyElements() {
+  if (generalBrowserSurface && generalBrowserStage && generalBrowserFullscreenBtn) {
+    return {
+      surface: generalBrowserSurface,
+      stage: generalBrowserStage,
+      fullscreenBtn: generalBrowserFullscreenBtn,
+    };
+  }
+
+  const surface = document.createElement("div");
+  surface.className = "no-vnc-surface general-browser-surface";
+  surface.hidden = true;
+
+  const stage = document.createElement("div");
+  stage.className = "stage";
+  stage.id = "generalBrowserStage";
+  stage.setAttribute("role", "region");
+  stage.setAttribute("aria-label", "リモートブラウザ (一般ビュー)");
+
+  const fallback = document.createElement("p");
+  fallback.className = "stage-fallback";
+  fallback.textContent = "リモートブラウザを読み込んでいます…";
+  stage.appendChild(fallback);
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "browser-toolbar";
+
+  const fullscreenBtn = document.createElement("button");
+  fullscreenBtn.type = "button";
+  fullscreenBtn.id = "generalFullscreenBtn";
+  fullscreenBtn.className = "btn subtle";
+  fullscreenBtn.title = "フルスクリーン";
+  fullscreenBtn.setAttribute("aria-label", "フルスクリーン");
+  fullscreenBtn.textContent = "⤢";
+
+  toolbar.appendChild(fullscreenBtn);
+
+  surface.appendChild(stage);
+  surface.appendChild(toolbar);
+
+  generalBrowserSurface = surface;
+  generalBrowserStage = stage;
+  generalBrowserFullscreenBtn = fullscreenBtn;
+
+  return { surface, stage, fullscreenBtn };
+}
+
+function ensureGeneralNoVncController() {
+  if (!generalBrowserStage || !generalBrowserFullscreenBtn) {
+    const elements = ensureGeneralBrowserProxyElements();
+    if (!elements.stage || !elements.fullscreenBtn) {
+      return null;
+    }
+  }
+
+  if (!generalBrowserController) {
+    generalBrowserController = createNoVncController({
+      stage: generalBrowserStage,
+      fullscreenButton: generalBrowserFullscreenBtn,
+      context: "general-proxy",
+    });
+  }
+
+  return generalBrowserController;
+}
+
+function activateGeneralBrowserProxy() {
+  if (!generalProxyContainer) {
+    return;
+  }
+
+  const { surface } = ensureGeneralBrowserProxyElements();
+  if (!surface) {
+    return;
+  }
+
+  if (surface.parentElement !== generalProxyContainer) {
+    generalProxyContainer.innerHTML = "";
+    generalProxyContainer.appendChild(surface);
+  }
+
+  surface.hidden = false;
+
+  const controller = ensureGeneralNoVncController();
+  controller?.ensureIframe();
+}
+
+function deactivateGeneralBrowserProxy() {
+  if (!generalProxyContainer || !generalBrowserSurface) {
+    return;
+  }
+
+  if (generalBrowserSurface.parentElement === generalProxyContainer) {
+    generalProxyContainer.removeChild(generalBrowserSurface);
+  }
+
+  generalBrowserSurface.hidden = true;
+}
+
+function requestMainBrowserViewportSync({ reloadFallback = false } = {}) {
+  if (!mainBrowserController) {
+    return;
+  }
+  mainBrowserController.requestSync({ reloadFallback });
+}
+
+function requestGeneralBrowserViewportSync({ reloadFallback = false } = {}) {
+  const controller = ensureGeneralNoVncController();
+  if (!controller) {
+    return;
+  }
+  controller.ensureIframe();
+  if (generalBrowserSurface?.isConnected) {
+    controller.requestSync({ reloadFallback });
+  }
+}
 
 /* ---------- IoT Dashboard ---------- */
 
