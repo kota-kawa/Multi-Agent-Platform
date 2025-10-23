@@ -1401,7 +1401,38 @@ async function geminiRequest(path, { method = "GET", headers = {}, body, signal 
   return typeof data === "string" ? { message: data } : data;
 }
 
-async function orchestratorRequest(message, { signal } = {}) {
+function parseSseEventBlock(block) {
+  const lines = block.split("\n");
+  let eventType = "message";
+  const dataLines = [];
+
+  for (const rawLine of lines) {
+    if (!rawLine) continue;
+    if (rawLine.startsWith(":")) continue;
+    if (rawLine.startsWith("event:")) {
+      eventType = rawLine.slice(6).trim() || "message";
+    } else if (rawLine.startsWith("data:")) {
+      dataLines.push(rawLine.slice(5).trimStart());
+    }
+  }
+
+  const dataText = dataLines.join("\n");
+  let data;
+  if (dataText) {
+    try {
+      data = JSON.parse(dataText);
+    } catch (error) {
+      console.error("オーケストレーターイベントの解析に失敗しました:", error, dataText);
+      data = { raw: dataText };
+    }
+  } else {
+    data = {};
+  }
+
+  return { event: eventType || "message", data };
+}
+
+async function* orchestratorRequest(message, { signal } = {}) {
   const response = await fetch("/orchestrator/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1409,16 +1440,17 @@ async function orchestratorRequest(message, { signal } = {}) {
     signal,
   });
 
-  const contentType = response.headers.get("content-type") || "";
-  const isJson = contentType.includes("application/json");
-  let data;
-  try {
-    data = isJson ? await response.json() : await response.text();
-  } catch (_) {
-    data = isJson ? {} : "";
-  }
-
   if (!response.ok) {
+    let data;
+    try {
+      data = await response.json();
+    } catch (_) {
+      try {
+        data = await response.text();
+      } catch (__) {
+        data = "";
+      }
+    }
     const messageText = typeof data === "string" && data
       ? data
       : (data && typeof data.error === "string")
@@ -1427,7 +1459,60 @@ async function orchestratorRequest(message, { signal } = {}) {
     throw new Error(messageText);
   }
 
-  return typeof data === "string" ? { message: data } : data;
+  const reader = response.body?.getReader();
+  if (!reader) return;
+
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (value) {
+        buffer += decoder.decode(value, { stream: !done });
+      } else if (done) {
+        buffer += decoder.decode(new Uint8Array(), { stream: false });
+      }
+
+      if (!buffer) {
+        if (done) return;
+        continue;
+      }
+
+      buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+      let separatorIndex;
+      while ((separatorIndex = buffer.indexOf("\n\n")) !== -1) {
+        const rawEvent = buffer.slice(0, separatorIndex);
+        buffer = buffer.slice(separatorIndex + 2);
+        if (!rawEvent.trim()) continue;
+        const parsed = parseSseEventBlock(rawEvent);
+        yield parsed;
+        if (parsed.event === "complete" || parsed.event === "error") {
+          try {
+            await reader.cancel();
+          } catch (_) {
+            // ignore cancellation errors
+          }
+          return;
+        }
+      }
+
+      if (done) {
+        const remaining = buffer.trim();
+        if (remaining) {
+          yield parseSseEventBlock(remaining);
+        }
+        return;
+      }
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch (_) {
+      // ignore
+    }
+  }
 }
 
 function createMessageElement(message, { compact = false } = {}) {
@@ -2130,59 +2215,139 @@ async function sendOrchestratorMessage(text) {
   updateSidebarControlsForMode(currentChatMode);
 
   const userMessage = addOrchestratorUserMessage(text);
-  const pending = addOrchestratorAssistantMessage("タスクを計画しています…", { pending: true });
+  const planMessage = addOrchestratorAssistantMessage("タスクを計画しています…", { pending: true });
   setGeneralProxyAgent(null);
 
+  const taskMessages = new Map();
+
   try {
-    const data = await orchestratorRequest(text);
-    setGeneralProxyAgent(determineGeneralProxyAgentFromResult(data));
-    const assistantMessages = Array.isArray(data.assistant_messages) ? data.assistant_messages : [];
+    for await (const { event: eventType, data: payload } of orchestratorRequest(text)) {
+      const eventData = payload && typeof payload === "object" ? payload : {};
 
-    if (assistantMessages.length > 0) {
-      const [first, ...rest] = assistantMessages;
-      const firstText = typeof first?.text === "string" && first.text.trim()
-        ? first.text.trim()
-        : "処理が完了しました。";
-      pending.text = firstText;
-      pending.pending = false;
-      pending.ts = Date.now();
+      if (eventType === "plan") {
+        const state = eventData.state && typeof eventData.state === "object" ? eventData.state : {};
+        const planSummary = typeof state.plan_summary === "string" ? state.plan_summary.trim() : "";
+        const tasks = Array.isArray(state.tasks) ? state.tasks : [];
+        const textValue = planSummary
+          ? `計画: ${planSummary}`
+          : tasks.length === 0
+            ? "今回のリクエストでは実行すべきタスクはありませんでした。"
+            : "計画を作成しました。タスクを実行します…";
+        planMessage.text = textValue;
+        planMessage.pending = false;
+        planMessage.ts = Date.now();
+        renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
+        continue;
+      }
 
-      rest.forEach((entry, index) => {
-        const textValue = typeof entry?.text === "string" ? entry.text.trim() : "";
-        if (!textValue) return;
-        const message = addOrchestratorAssistantMessage(textValue);
-        message.ts = Date.now() + index + 1;
-      });
-    } else {
-      const planSummary = typeof data.plan_summary === "string" ? data.plan_summary.trim() : "";
-      const executions = Array.isArray(data.executions) ? data.executions : [];
-      const firstExecution = executions.find(entry => typeof entry?.response === "string" && entry.response.trim());
-      const fallback = planSummary
-        ? `計画: ${planSummary}`
-        : firstExecution
-          ? String(firstExecution.response).trim()
-          : "処理が完了しました。";
-      pending.text = fallback || "処理が完了しました。";
-      pending.pending = false;
-      pending.ts = Date.now();
-      executions.slice(planSummary ? 0 : 1).forEach((entry, index) => {
-        const textValue = typeof entry?.response === "string" ? entry.response.trim() : "";
-        const agentKey = typeof entry?.agent === "string" ? entry.agent : "";
-        const agentLabel = agentKey ? (ORCHESTRATOR_AGENT_LABELS[agentKey] || agentKey) : "";
-        const status = typeof entry?.status === "string" ? entry.status : "";
-        const prefix = agentLabel ? `[${agentLabel}] ` : "";
-        const suffix = status === "error" && typeof entry?.error === "string" && entry.error.trim()
-          ? `エラー: ${entry.error.trim()}`
-          : textValue || (typeof entry?.error === "string" ? entry.error.trim() : "");
-        if (!suffix) return;
-        const message = addOrchestratorAssistantMessage(`${prefix}${suffix}`);
-        message.ts = Date.now() + index + 1;
-      });
+      if (eventType === "before_execution") {
+        const task = eventData.task && typeof eventData.task === "object" ? eventData.task : {};
+        const taskIndex = typeof eventData.task_index === "number" ? eventData.task_index : null;
+        const agentRaw = typeof task.agent === "string" ? task.agent.trim().toLowerCase() : "";
+        const commandText = typeof task.command === "string" ? task.command.trim() : "";
+        const agentLabel = agentRaw ? (ORCHESTRATOR_AGENT_LABELS[agentRaw] || agentRaw) : "エージェント";
+        if (agentRaw) {
+          setGeneralProxyAgent(agentRaw);
+          if (agentRaw === "browser") {
+            ensureBrowserAgentInitialized({ showLoading: true });
+            if (commandText) {
+              await sendBrowserAgentPrompt(commandText);
+            }
+          }
+        }
+        const displayText = commandText
+          ? `[${agentLabel}] ${commandText}`
+          : `[${agentLabel}] タスクを実行しています…`;
+        const message = addOrchestratorAssistantMessage(displayText, { pending: true });
+        message.ts = Date.now();
+        if (taskIndex !== null) {
+          taskMessages.set(taskIndex, message);
+        }
+        continue;
+      }
+
+      if (eventType === "browser_init") {
+        // 初期化イベントはクライアント側でハンドオフ済みなので何もしない
+        continue;
+      }
+
+      if (eventType === "after_execution") {
+        const task = eventData.task && typeof eventData.task === "object" ? eventData.task : {};
+        const taskIndex = typeof eventData.task_index === "number" ? eventData.task_index : null;
+        const result = eventData.result && typeof eventData.result === "object" ? eventData.result : {};
+        const agentRaw = typeof task.agent === "string" ? task.agent.trim().toLowerCase() : "";
+        const agentLabel = agentRaw ? (ORCHESTRATOR_AGENT_LABELS[agentRaw] || agentRaw) : "エージェント";
+        const status = typeof result.status === "string" ? result.status : "";
+        const responseText = typeof result.response === "string" ? result.response.trim() : "";
+        const errorText = typeof result.error === "string" ? result.error.trim() : "";
+        const finalText = status === "error"
+          ? `[${agentLabel}] ${errorText || "タスクの実行に失敗しました。"}`
+          : `[${agentLabel}] ${responseText || "タスクを完了しました。"}`;
+        const existing = taskIndex !== null ? taskMessages.get(taskIndex) : null;
+        const targetMessage = existing || addOrchestratorAssistantMessage(finalText);
+        targetMessage.text = finalText;
+        targetMessage.pending = false;
+        targetMessage.ts = Date.now();
+        if (!existing && taskIndex !== null) {
+          taskMessages.set(taskIndex, targetMessage);
+        }
+        renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
+        continue;
+      }
+
+      if (eventType === "error") {
+        const errorText = typeof eventData.error === "string" ? eventData.error : "エラーが発生しました。";
+        planMessage.text = `エラー: ${errorText}`;
+        planMessage.pending = false;
+        planMessage.ts = Date.now();
+        setGeneralProxyAgent(null);
+        renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
+        break;
+      }
+
+      if (eventType === "complete") {
+        const assistantMessages = Array.isArray(eventData.assistant_messages) ? eventData.assistant_messages : [];
+        if (assistantMessages.length > 0) {
+          const [first, ...rest] = assistantMessages;
+          const firstType = typeof first?.type === "string" ? first.type : "";
+          const firstText = typeof first?.text === "string" ? first.text.trim() : "";
+          if (firstType === "plan" || firstType === "status") {
+            if (firstText) {
+              planMessage.text = firstText;
+              planMessage.pending = false;
+              planMessage.ts = planMessage.ts || Date.now();
+            }
+          } else if (firstType === "execution") {
+            const planIndex = orchestratorState.messages.indexOf(planMessage);
+            if (planIndex !== -1) {
+              orchestratorState.messages.splice(planIndex, 1);
+            }
+          }
+
+          const remaining = firstType === "plan" || firstType === "status" ? rest : assistantMessages;
+          remaining.forEach(entry => {
+            const textValue = typeof entry?.text === "string" ? entry.text.trim() : "";
+            if (!textValue) return;
+            const alreadyExists = orchestratorState.messages.some(message => message.role === "assistant" && message.text === textValue);
+            if (!alreadyExists) {
+              addOrchestratorAssistantMessage(textValue);
+            }
+          });
+        }
+        const state = eventData.state && typeof eventData.state === "object" ? eventData.state : {};
+        const finalProxyAgent = determineGeneralProxyAgentFromResult({
+          executions: state.executions,
+          tasks: state.tasks,
+        });
+        setGeneralProxyAgent(finalProxyAgent);
+        renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
+        break;
+      }
     }
   } catch (error) {
-    pending.text = `エラー: ${error.message}`;
-    pending.pending = false;
-    pending.ts = Date.now();
+    planMessage.text = `エラー: ${error.message}`;
+    planMessage.pending = false;
+    planMessage.ts = Date.now();
     setGeneralProxyAgent(null);
   } finally {
     userMessage.ts = userMessage.ts || Date.now();
