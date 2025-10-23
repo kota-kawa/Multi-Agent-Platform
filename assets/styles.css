@@ -909,12 +909,6 @@ body{
 .thinking-labels{display:flex; flex-direction:column; gap:4px;}
 .thinking-title{font-size:13px; font-weight:600; letter-spacing:.04em; text-transform:none;}
 .thinking-sub{font-size:11px; color:rgba(230,233,239,.75); letter-spacing:.02em;}
-.thinking-detail{
-  font-size:12px;
-  line-height:1.7;
-  color:rgba(220,230,247,.82);
-  letter-spacing:.02em;
-}
 .thinking-orb{
   width:14px;
   height:14px;
