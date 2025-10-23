@@ -317,13 +317,14 @@ const stage = $("#browserStage");
 const fullscreenBtn = $("#fullscreenBtn");
 
 let currentIframe = null;
+let currentIframeOrigin = "*";
 let deferredNoVncViewportRaf = null;
 let deferredNoVncViewportReloadFallback = false;
 
 const ALLOWED_RESIZE_VALUES = new Set(["scale", "remote", "off"]);
 const DEFAULT_NOVNC_PARAMS = {
   autoconnect: "1",
-  resize: "scale",
+  resize: "remote",
   scale: "auto",
   view_clip: "1",
 };
@@ -388,7 +389,7 @@ function resolveBrowserEmbedUrl() {
     }
   }
 
-  return normalizeBrowserEmbedUrl("http://127.0.0.1:7900/?autoconnect=1&resize=scale&scale=auto&view_clip=1");
+  return normalizeBrowserEmbedUrl("http://127.0.0.1:7900/?autoconnect=1&resize=remote&scale=auto&view_clip=1");
 }
 
 const BROWSER_EMBED_URL = resolveBrowserEmbedUrl();
@@ -430,19 +431,32 @@ function reloadBrowserIframeWithCacheBust(iframe) {
 function syncNoVncViewport({ reloadFallback = false } = {}) {
   if (!currentIframe) return;
 
-  const width = Math.round(stage?.clientWidth || 0);
-  const height = Math.round(stage?.clientHeight || 0);
+  const rect = stage?.getBoundingClientRect?.();
+  const width = Math.round((rect && rect.width) || stage?.clientWidth || 0);
+  const height = Math.round((rect && rect.height) || stage?.clientHeight || 0);
+  if (width <= 0 || height <= 0) {
+    if (reloadFallback) {
+      requestDeferredNoVncViewportSync();
+    }
+    return;
+  }
+
   const payload = {
     source: "multi-agent-platform",
     type: "novnc.viewport.sync",
     width,
     height,
+    stageWidth: Math.round(stage?.clientWidth || width),
+    stageHeight: Math.round(stage?.clientHeight || height),
+    devicePixelRatio: Number(window.devicePixelRatio) || 1,
+    innerWidth: typeof window.innerWidth === "number" ? window.innerWidth : width,
+    innerHeight: typeof window.innerHeight === "number" ? window.innerHeight : height,
     timestamp: Date.now(),
   };
 
   let posted = false;
   try {
-    currentIframe.contentWindow?.postMessage(payload, "*");
+    currentIframe.contentWindow?.postMessage(payload, currentIframeOrigin || "*");
     posted = true;
   } catch (_error) {
     posted = false;
@@ -460,6 +474,10 @@ function syncNoVncViewport({ reloadFallback = false } = {}) {
   }
 }
 
+const handleIframeLoad = () => {
+  requestDeferredNoVncViewportSync({ reloadFallback: false });
+};
+
 function ensureBrowserIframe() {
   if (!stage) return;
   const url = BROWSER_EMBED_URL;
@@ -471,11 +489,19 @@ function ensureBrowserIframe() {
     iframe = document.createElement("iframe");
     iframe.setAttribute("title", "埋め込みブラウザ");
     iframe.setAttribute("allow", "fullscreen");
+    iframe.addEventListener("load", handleIframeLoad);
     stage.appendChild(iframe);
   }
 
   if (iframe.src !== url) {
     iframe.src = url;
+  }
+
+  try {
+    const parsed = new URL(iframe.src, window.location.origin);
+    currentIframeOrigin = parsed.origin || "*";
+  } catch (_error) {
+    currentIframeOrigin = "*";
   }
 
   currentIframe = iframe;
@@ -513,6 +539,36 @@ if (fullscreenBtn) {
     else el?.requestFullscreen?.();
   });
 }
+
+window.addEventListener("message", event => {
+  const data = event?.data;
+  if (!data || typeof data !== "object") {
+    return;
+  }
+
+  const { type } = data;
+  if (typeof type !== "string") {
+    return;
+  }
+
+  const normalizedType = type.toLowerCase();
+  if (
+    normalizedType === "novnc.viewport.request" ||
+    normalizedType === "novnc.viewport.requestsync" ||
+    normalizedType === "novnc.viewport.ready" ||
+    normalizedType === "novnc.ready"
+  ) {
+    requestDeferredNoVncViewportSync();
+    return;
+  }
+
+  if (
+    (normalizedType === "novnc.viewport.reload" || normalizedType === "novnc.reload") &&
+    event.source === currentIframe?.contentWindow
+  ) {
+    reloadBrowserIframeWithCacheBust(currentIframe);
+  }
+});
 
 /* ---------- IoT Dashboard ---------- */
 
