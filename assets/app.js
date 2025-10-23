@@ -111,6 +111,9 @@ function restoreView(viewKey) {
     parent.appendChild(viewEl);
   }
   viewEl.classList.remove("general-proxy-active");
+  if (viewKey === "browser") {
+    requestDeferredNoVncViewportSync({ reloadFallback: true });
+  }
 }
 
 function moveViewToGeneral(viewKey) {
@@ -128,6 +131,9 @@ function moveViewToGeneral(viewKey) {
   }
   viewEl.classList.add("general-proxy-active");
   generalProxyViewKey = viewKey;
+  if (viewKey === "browser") {
+    requestDeferredNoVncViewportSync({ reloadFallback: true });
+  }
 }
 
 function clearGeneralProxy() {
@@ -178,7 +184,7 @@ function updateGeneralViewProxy() {
 
   if (generalProxyTargetView === "browser") {
     ensureBrowserAgentInitialized({ showLoading: true });
-    syncNoVncViewport({ reloadFallback: true });
+    requestDeferredNoVncViewportSync({ reloadFallback: true });
   } else if (generalProxyTargetView === "iot") {
     ensureIotDashboardInitialized({ showLoading: true });
     ensureIotChatInitialized({ forceSidebar: true });
@@ -241,7 +247,7 @@ function activateView(viewKey) {
   }
   if (isBrowserView) {
     ensureBrowserAgentInitialized({ showLoading: true });
-    syncNoVncViewport({ reloadFallback: true });
+    requestDeferredNoVncViewportSync({ reloadFallback: true });
   }
   if (isIotView) {
     ensureIotDashboardInitialized({ showLoading: true });
@@ -311,6 +317,8 @@ const stage = $("#browserStage");
 const fullscreenBtn = $("#fullscreenBtn");
 
 let currentIframe = null;
+let deferredNoVncViewportRaf = null;
+let deferredNoVncViewportReloadFallback = false;
 
 const ALLOWED_RESIZE_VALUES = new Set(["scale", "remote", "off"]);
 const DEFAULT_NOVNC_PARAMS = {
@@ -388,6 +396,25 @@ const BROWSER_EMBED_URL = resolveBrowserEmbedUrl();
 let stageResizeObserver = null;
 let stageResizeRaf = null;
 
+function requestDeferredNoVncViewportSync({ reloadFallback = false } = {}) {
+  deferredNoVncViewportReloadFallback =
+    deferredNoVncViewportReloadFallback || reloadFallback;
+  if (deferredNoVncViewportRaf !== null) {
+    return;
+  }
+
+  const flush = () => {
+    const shouldReload = deferredNoVncViewportReloadFallback;
+    deferredNoVncViewportReloadFallback = false;
+    deferredNoVncViewportRaf = null;
+    syncNoVncViewport({ reloadFallback: shouldReload });
+  };
+
+  deferredNoVncViewportRaf = requestAnimationFrame(() => {
+    deferredNoVncViewportRaf = requestAnimationFrame(flush);
+  });
+}
+
 function reloadBrowserIframeWithCacheBust(iframe) {
   if (!iframe) return;
   const base = iframe.src || BROWSER_EMBED_URL;
@@ -452,7 +479,7 @@ function ensureBrowserIframe() {
   }
 
   currentIframe = iframe;
-  syncNoVncViewport({ reloadFallback: true });
+  requestDeferredNoVncViewportSync({ reloadFallback: true });
 }
 
 ensureBrowserIframe();
