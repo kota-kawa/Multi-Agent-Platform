@@ -25,7 +25,7 @@ export FAQ_GEMINI_API_BASE="http://localhost:5000,http://faq_gemini:5000"
 python app.py
 ```
 
-同様に IoT ダッシュボードは既定で公開されている IoT Agent (`https://iot-agent.project-kk.com`) に接続します。別の IoT Agent を利用したい場合は、環境変数 `IOT_AGENT_API_BASE` を設定してください。複数候補をカンマ区切りで渡すと順番に接続を試行します。
+同様に IoT ダッシュボードは既定で公開されている IoT Agent (`https://iot-agent.project-kk.com`) のみを利用します。別の IoT Agent を利用したい場合は、環境変数 `IOT_AGENT_API_BASE` を設定してください。複数候補をカンマ区切りで渡すと順番に接続を試行します。
 
 ```bash
 export IOT_AGENT_API_BASE="https://your-iot-agent.example.com"
