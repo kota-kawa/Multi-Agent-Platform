@@ -1461,8 +1461,12 @@ if (sidebarResetIcon) {
   sidebarResetIcon.innerHTML = ICON_RESET;
 }
 
+const THINKING_TITLE_TEXT = "AIが考えています";
+const THINKING_SUBTITLE_TEXT = "見つけた情報から回答を組み立て中";
+const THINKING_MESSAGE_TEXT = `${THINKING_TITLE_TEXT}\u3000${THINKING_SUBTITLE_TEXT}`;
+
 const SUMMARY_PLACEHOLDER = "左側のチャットでメッセージを送信すると、ここに要約が表示されます。";
-const SUMMARY_LOADING_TEXT = "要約を取得しています…";
+const SUMMARY_LOADING_TEXT = THINKING_MESSAGE_TEXT;
 const INTRO_MESSAGE_TEXT = "ここは要約チャットです。左サイドバーの共通チャットからメッセージを送信すると重要なポイントをここに表示します。";
 const ORCHESTRATOR_INTRO_TEXT = "一般ビューではマルチエージェント・オーケストレーターがタスクを計画し、適切なエージェントに指示を送ります。共通チャットからリクエストを入力してください。";
 
@@ -1715,9 +1719,6 @@ function createMessageElement(message, { compact = false } = {}) {
   const time = message.ts ? new Date(message.ts).toLocaleString("ja-JP") : "";
   const text = message.text ?? "";
   const escapedText = escapeHTML(text);
-  const trimmedText = text.trim();
-  const hasDetail = trimmedText.length > 0;
-  const escapedDetail = hasDetail ? escapeHTML(trimmedText) : "";
 
   if (message.role === "assistant" && message.pending) {
     el.classList.add("thinking");
@@ -1725,9 +1726,8 @@ function createMessageElement(message, { compact = false } = {}) {
       <div class="thinking-header">
         <span class="thinking-orb" aria-hidden="true"></span>
         <span class="thinking-labels">
-          <span class="thinking-title">AI が考えています</span>
-          <span class="thinking-sub">見つけた情報から回答を組み立て中…</span>
-          ${hasDetail ? `<span class="thinking-detail">${escapedDetail}</span>` : ""}
+          <span class="thinking-title">${THINKING_TITLE_TEXT}</span>
+          <span class="thinking-sub">${THINKING_SUBTITLE_TEXT}</span>
         </span>
       </div>
       ${time ? `<span class="msg-time">${time}</span>` : ""}
@@ -2246,7 +2246,7 @@ async function sendIotChatMessage(text) {
   const userMessage = pushIotMessage("user", text);
   renderIotChat({ forceSidebar: currentChatMode === "iot" });
 
-  const pending = pushIotMessage("assistant", "応答を待っています…", { pending: true, addToHistory: false });
+  const pending = pushIotMessage("assistant", THINKING_MESSAGE_TEXT, { pending: true, addToHistory: false });
   renderIotChat({ forceSidebar: currentChatMode === "iot" });
 
   try {
@@ -2400,7 +2400,7 @@ async function sendOrchestratorMessage(text) {
   updateSidebarControlsForMode(currentChatMode);
 
   const userMessage = addOrchestratorUserMessage(text);
-  const planMessage = addOrchestratorAssistantMessage("タスクを計画しています…", { pending: true });
+  const planMessage = addOrchestratorAssistantMessage(THINKING_MESSAGE_TEXT, { pending: true });
   setGeneralProxyAgent(null);
 
   const taskMessages = new Map();
