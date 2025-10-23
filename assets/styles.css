@@ -416,6 +416,23 @@ body{
   font-size:15px;
   line-height:1.8;
 }
+.general-view__default{display:flex; flex-direction:column; gap:16px}
+.general-view__status{
+  margin:0;
+  font-size:14px;
+  color:var(--muted);
+  line-height:1.7;
+}
+.general-view__proxy{
+  display:none;
+  flex-direction:column;
+  gap:20px;
+  margin-top:12px;
+}
+.general-view--has-proxy .general-view__proxy{display:flex}
+.general-view--has-proxy .general-view__default{display:none}
+.view.general-proxy-active{display:block; overflow:auto; flex:1; min-height:0}
+#view-browser.view.general-proxy-active{display:flex; flex-direction:column; flex:1; min-height:0; overflow:hidden}
 
 /* generic buttons */
 .btn{
