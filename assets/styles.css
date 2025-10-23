@@ -33,7 +33,7 @@ body{
 
 .content-header{
   display:flex; flex-direction:column; gap:6px;
-  margin-bottom:20px;
+  margin-bottom:var(--content-header-margin-bottom, 20px);
 }
 .content-title{margin:0; font-size:26px; font-weight:700}
 .content-subtitle{margin:0; font-size:14px; color:var(--muted)}
@@ -374,16 +374,29 @@ body{
 
 /* main content */
 .content{
+  --content-padding-top:20px;
+  --content-padding-bottom:20px;
+  --content-gap:24px;
   flex:1;
-  padding:20px;
+  padding:var(--content-padding-top) 20px var(--content-padding-bottom);
   display:flex;
   flex-direction:column;
-  gap:24px;
+  gap:var(--content-gap);
   min-height:0;
   overflow:hidden;
   background:
     radial-gradient(1200px 700px at 30% -80%, rgba(61,125,255,.18), transparent 60%),
     radial-gradient(1200px 700px at 90% -80%, rgba(40,201,255,.14), transparent 60%);
+}
+
+.layout.browser-stage-active .content{
+  --content-padding-top:12px;
+  --content-padding-bottom:16px;
+  --content-gap:16px;
+}
+
+.layout.browser-stage-active .content-header{
+  --content-header-margin-bottom:12px;
 }
 
 #view-general.view.active{display:flex; flex-direction:column; flex:1; min-height:0}
@@ -396,15 +409,21 @@ body{
   min-height:0;
   overflow:hidden;
 }
+
+.layout.browser-stage-active #view-browser.view.active{
+  min-height:0;
+}
 .content-header{flex-shrink:0}
 .general-view{
+  --general-view-padding:28px;
+  --general-view-gap:16px;
   background:var(--panel-2);
   border-radius:18px;
-  padding:28px;
+  padding:var(--general-view-padding);
   box-shadow:var(--shadow);
   display:flex;
   flex-direction:column;
-  gap:16px;
+  gap:var(--general-view-gap);
   flex:1;
   min-height:0;
 }
@@ -429,8 +448,8 @@ body{
 .general-view__proxy{
   display:none;
   flex-direction:column;
-  gap:20px;
-  margin-top:12px;
+  gap:var(--general-proxy-gap, 20px);
+  margin-top:var(--general-proxy-margin-top, 12px);
   flex:1;
   min-height:0;
 }
@@ -466,7 +485,8 @@ body{
 
 .stage{
   width:100%;
-  min-height:clamp(420px, 65vh, 900px);
+  --stage-min-height:clamp(420px, 65vh, 900px);
+  min-height:var(--stage-min-height);
   flex:1;
   min-width:0;
   height:100%;
@@ -479,6 +499,27 @@ body{
   position:relative;
   overflow:hidden;
   color:#c1cad7;
+}
+
+.layout.browser-stage-active .no-vnc-surface,
+.layout.general-browser-proxy-active .no-vnc-surface{
+  min-height:0;
+  flex:1;
+}
+
+.layout.browser-stage-active .stage,
+.layout.general-browser-proxy-active .stage{
+  --stage-min-height:100%;
+}
+
+.layout.general-browser-proxy-active .general-view{
+  --general-view-padding:22px;
+  --general-view-gap:18px;
+}
+
+.layout.general-browser-proxy-active .general-view__proxy{
+  --general-proxy-gap:16px;
+  --general-proxy-margin-top:8px;
 }
 
 .stage iframe{

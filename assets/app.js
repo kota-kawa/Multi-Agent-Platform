@@ -82,6 +82,20 @@ let generalProxyAgentKey = null;
 let generalProxyViewKey = null;
 let currentViewKey = document.querySelector(".nav-btn.active")?.dataset.view || "browser";
 
+function updateLayoutBrowserStageState() {
+  if (!layoutEl) {
+    return;
+  }
+
+  const isBrowserView = currentViewKey === "browser";
+  const generalBrowserProxyActive = currentViewKey === "general" && generalProxyTargetView === "browser";
+  const browserStageActive = isBrowserView || generalBrowserProxyActive;
+
+  layoutEl.classList.toggle("browser-view-active", isBrowserView);
+  layoutEl.classList.toggle("general-browser-proxy-active", generalBrowserProxyActive);
+  layoutEl.classList.toggle("browser-stage-active", browserStageActive);
+}
+
 function resolveAgentToView(agentKey) {
   if (typeof agentKey !== "string") return null;
   const normalized = agentKey.trim().toLowerCase();
@@ -192,6 +206,7 @@ function updateGeneralViewProxy() {
   }
 
   if (!shouldShowProxy) {
+    updateLayoutBrowserStageState();
     return;
   }
 
@@ -205,6 +220,8 @@ function updateGeneralViewProxy() {
   } else if (generalProxyTargetView === "chat") {
     ensureChatInitialized({ showLoadingSummary: true });
   }
+
+  updateLayoutBrowserStageState();
 }
 
 function setGeneralProxyAgent(agentKey) {
@@ -278,6 +295,7 @@ function activateView(viewKey) {
     chat: "general",
   };
   setChatMode(modeMap[target] ?? "general");
+  updateLayoutBrowserStageState();
   updateGeneralViewProxy();
   scheduleSidebarTogglePosition();
 }
