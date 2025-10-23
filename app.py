@@ -6,11 +6,11 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, TypedDict
+from typing import Any, Dict, Iterable, Iterator, List, Literal, TypedDict
 from urllib.parse import urlparse, urlunparse
 
 import requests
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
@@ -102,6 +102,14 @@ class IotAgentError(RuntimeError):
 
 class OrchestratorError(RuntimeError):
     """Raised when the orchestrator cannot complete a request."""
+
+
+def _format_sse_event(payload: Dict[str, Any]) -> str:
+    """Serialise an SSE event line with the payload JSON."""
+
+    event_type = str(payload.get("event") or "message").strip() or "message"
+    data = json.dumps(payload, ensure_ascii=False)
+    return f"event: {event_type}\ndata: {data}\n\n"
 
 
 def _iter_gemini_bases() -> list[str]:
@@ -745,7 +753,44 @@ class MultiAgentOrchestrator:
 
         return messages
 
-    def run(self, user_input: str) -> Dict[str, Any]:
+    def _snapshot_state(self, state: OrchestratorState) -> Dict[str, Any]:
+        tasks_raw = state.get("tasks") or []
+        executions_raw = state.get("executions") or []
+        tasks = [
+            {"agent": task.get("agent"), "command": task.get("command")}
+            for task in tasks_raw
+            if isinstance(task, dict)
+        ]
+        executions = [
+            {
+                "agent": entry.get("agent"),
+                "command": entry.get("command"),
+                "status": entry.get("status"),
+                "response": entry.get("response"),
+                "error": entry.get("error"),
+            }
+            for entry in executions_raw
+            if isinstance(entry, dict)
+        ]
+        return {
+            "plan_summary": state.get("plan_summary") or "",
+            "raw_plan": state.get("raw_plan"),
+            "tasks": tasks,
+            "executions": executions,
+            "current_index": state.get("current_index", 0),
+        }
+
+    def _event_payload(
+        self,
+        event_type: str,
+        state: OrchestratorState,
+        **extras: Any,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"event": event_type, "state": self._snapshot_state(state)}
+        payload.update(extras)
+        return payload
+
+    def run_stream(self, user_input: str) -> Iterator[Dict[str, Any]]:
         state: OrchestratorState = {
             "user_input": user_input,
             "plan_summary": None,
@@ -755,16 +800,70 @@ class MultiAgentOrchestrator:
             "current_index": 0,
         }
 
-        result_state = self._graph.invoke(state)
-        plan_summary = result_state.get("plan_summary")
-        executions = result_state.get("executions") or []
-        tasks = result_state.get("tasks") or []
+        plan_state = self._plan_node(state)
+        state.update(plan_state)
+        tasks = list(state.get("tasks") or [])
+        state["tasks"] = tasks
+        state["executions"] = list(state.get("executions") or [])
+        state["current_index"] = 0
+
+        yield self._event_payload("plan", state)
+
+        for index, task in enumerate(tasks):
+            state["current_index"] = index
+            yield self._event_payload("before_execution", state, task_index=index, task=task)
+
+            if task["agent"] == "browser":
+                yield self._event_payload("browser_init", state, task_index=index, task=task)
+
+            result = self._execute_task(task)
+
+            executions = state.get("executions")
+            if not isinstance(executions, list):
+                executions = []
+                state["executions"] = executions
+            executions.append(result)
+            state["current_index"] = index + 1
+
+            yield self._event_payload(
+                "after_execution",
+                state,
+                task_index=index,
+                task=task,
+                result=result,
+            )
+
+        plan_summary = state.get("plan_summary") or ""
+        executions = state.get("executions") or []
+        assistant_messages = self._format_assistant_messages(plan_summary, executions)
+        yield self._event_payload(
+            "complete",
+            state,
+            assistant_messages=assistant_messages,
+        )
+
+    def run(self, user_input: str) -> Dict[str, Any]:
+        final_event: Dict[str, Any] | None = None
+        for event in self.run_stream(user_input):
+            final_event = event
+
+        if not final_event or final_event.get("event") != "complete":
+            raise OrchestratorError("オーケストレーターの実行が完了しませんでした。")
+
+        final_state = final_event.get("state") or {}
+        plan_summary = final_state.get("plan_summary") or ""
+        tasks = final_state.get("tasks") or []
+        executions = final_state.get("executions") or []
+        assistant_messages = final_event.get("assistant_messages") or self._format_assistant_messages(
+            plan_summary,
+            executions,
+        )
 
         return {
-            "plan_summary": plan_summary or "",
+            "plan_summary": plan_summary,
             "tasks": tasks,
             "executions": executions,
-            "assistant_messages": self._format_assistant_messages(plan_summary, executions),
+            "assistant_messages": assistant_messages,
         }
 
 
@@ -794,12 +893,34 @@ def orchestrator_chat() -> Any:
 
     try:
         orchestrator = _get_orchestrator()
-        result = orchestrator.run(message)
     except OrchestratorError as exc:
-        logging.exception("Orchestrator execution failed: %s", exc)
-        return jsonify({"error": str(exc)}), 500
+        logging.exception("Orchestrator initialisation failed: %s", exc)
 
-    return jsonify(result)
+        def _error_stream() -> Iterator[str]:
+            yield _format_sse_event({"event": "error", "error": str(exc)})
+
+        return Response(
+            stream_with_context(_error_stream()),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    def _stream() -> Iterator[str]:
+        try:
+            for event in orchestrator.run_stream(message):
+                yield _format_sse_event(event)
+        except OrchestratorError as exc:  # pragma: no cover - defensive
+            logging.exception("Orchestrator execution failed: %s", exc)
+            yield _format_sse_event({"event": "error", "error": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            logging.exception("Unexpected orchestrator failure: %s", exc)
+            yield _format_sse_event({"event": "error", "error": "内部エラーが発生しました。"})
+
+    return Response(
+        stream_with_context(_stream()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.route("/rag_answer", methods=["POST"])
