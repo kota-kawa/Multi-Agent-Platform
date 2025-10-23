@@ -178,6 +178,7 @@ function updateGeneralViewProxy() {
 
   if (generalProxyTargetView === "browser") {
     ensureBrowserAgentInitialized({ showLoading: true });
+    syncNoVncViewport({ reloadFallback: true });
   } else if (generalProxyTargetView === "iot") {
     ensureIotDashboardInitialized({ showLoading: true });
     ensureIotChatInitialized({ forceSidebar: true });
@@ -240,6 +241,7 @@ function activateView(viewKey) {
   }
   if (isBrowserView) {
     ensureBrowserAgentInitialized({ showLoading: true });
+    syncNoVncViewport({ reloadFallback: true });
   }
   if (isIotView) {
     ensureIotDashboardInitialized({ showLoading: true });
@@ -311,6 +313,12 @@ const fullscreenBtn = $("#fullscreenBtn");
 let currentIframe = null;
 
 const ALLOWED_RESIZE_VALUES = new Set(["scale", "remote", "off"]);
+const DEFAULT_NOVNC_PARAMS = {
+  autoconnect: "1",
+  resize: "scale",
+  scale: "auto",
+  view_clip: "1",
+};
 
 function normalizeBrowserEmbedUrl(value) {
   if (!value) return value;
@@ -319,13 +327,21 @@ function normalizeBrowserEmbedUrl(value) {
     const url = new URL(value, window.location.origin);
     const params = url.searchParams;
 
-    if (!params.has("scale") || !params.get("scale")) {
-      params.set("scale", "auto");
-    }
-
     const resizeValue = params.get("resize");
     if (!resizeValue || !ALLOWED_RESIZE_VALUES.has(resizeValue)) {
-      params.set("resize", "remote");
+      params.set("resize", DEFAULT_NOVNC_PARAMS.resize);
+    }
+
+    if (!params.has("scale") || !params.get("scale")) {
+      params.set("scale", DEFAULT_NOVNC_PARAMS.scale);
+    }
+
+    if (!params.has("view_clip") || !params.get("view_clip")) {
+      params.set("view_clip", DEFAULT_NOVNC_PARAMS.view_clip);
+    }
+
+    if (!params.has("autoconnect") || !params.get("autoconnect")) {
+      params.set("autoconnect", DEFAULT_NOVNC_PARAMS.autoconnect);
     }
 
     return url.toString();
@@ -364,10 +380,58 @@ function resolveBrowserEmbedUrl() {
     }
   }
 
-  return normalizeBrowserEmbedUrl("http://127.0.0.1:7900/?autoconnect=1&resize=remote");
+  return normalizeBrowserEmbedUrl("http://127.0.0.1:7900/?autoconnect=1&resize=scale&scale=auto&view_clip=1");
 }
 
 const BROWSER_EMBED_URL = resolveBrowserEmbedUrl();
+
+let stageResizeObserver = null;
+let stageResizeRaf = null;
+
+function reloadBrowserIframeWithCacheBust(iframe) {
+  if (!iframe) return;
+  const base = iframe.src || BROWSER_EMBED_URL;
+  try {
+    const url = new URL(base, window.location.origin);
+    url.searchParams.set("_ts", Date.now().toString(36));
+    iframe.src = url.toString();
+  } catch (_error) {
+    iframe.src = base;
+  }
+}
+
+function syncNoVncViewport({ reloadFallback = false } = {}) {
+  if (!currentIframe) return;
+
+  const width = Math.round(stage?.clientWidth || 0);
+  const height = Math.round(stage?.clientHeight || 0);
+  const payload = {
+    source: "multi-agent-platform",
+    type: "novnc.viewport.sync",
+    width,
+    height,
+    timestamp: Date.now(),
+  };
+
+  let posted = false;
+  try {
+    currentIframe.contentWindow?.postMessage(payload, "*");
+    posted = true;
+  } catch (_error) {
+    posted = false;
+  }
+
+  if (reloadFallback && !posted) {
+    const lastReload = Number(currentIframe.dataset?.novncReloadTs || "0");
+    const now = Date.now();
+    if (!lastReload || now - lastReload > 1500) {
+      if (currentIframe.dataset) {
+        currentIframe.dataset.novncReloadTs = String(now);
+      }
+      reloadBrowserIframeWithCacheBust(currentIframe);
+    }
+  }
+}
 
 function ensureBrowserIframe() {
   if (!stage) return;
@@ -388,9 +452,32 @@ function ensureBrowserIframe() {
   }
 
   currentIframe = iframe;
+  syncNoVncViewport({ reloadFallback: true });
 }
 
 ensureBrowserIframe();
+
+if (stage && typeof ResizeObserver === "function") {
+  stageResizeObserver = new ResizeObserver(entries => {
+    if (!entries || entries.length === 0) return;
+    const entry = entries[0];
+    const { width, height } = entry.contentRect;
+    const roundedWidth = Math.round(width);
+    const roundedHeight = Math.round(height);
+    if (roundedWidth <= 0 || roundedHeight <= 0) return;
+
+    if (stageResizeRaf !== null) {
+      cancelAnimationFrame(stageResizeRaf);
+      stageResizeRaf = null;
+    }
+
+    stageResizeRaf = requestAnimationFrame(() => {
+      stageResizeRaf = null;
+      syncNoVncViewport();
+    });
+  });
+  stageResizeObserver.observe(stage);
+}
 
 if (fullscreenBtn) {
   fullscreenBtn.addEventListener("click", () => {
