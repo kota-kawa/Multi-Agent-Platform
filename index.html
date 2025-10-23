@@ -141,9 +141,13 @@
         <!-- 0) 一般ビュー -->
         <section id="view-general" class="view" aria-labelledby="appTitle">
           <div class="general-view">
-            <h2>ようこそ</h2>
-            <p>左側のボタンから目的のビューを選択できます。ここでは全体の概要やお知らせを表示することができます。</p>
-            <p class="general-view__hint">「一般」ビューでは LangGraph を利用したマルチエージェント・オーケストレーターが動作し、共通チャットに入力した内容から計画を立てて各エージェントへ指示を出します。他のビューを選択している間は、従来どおり各専門エージェントへ直接メッセージが送られます。</p>
+            <div id="generalDefaultContent" class="general-view__default">
+              <h2>ようこそ</h2>
+              <p>左側のボタンから目的のビューを選択できます。ここでは全体の概要やお知らせを表示することができます。</p>
+              <p class="general-view__hint">「一般」ビューでは LangGraph を利用したマルチエージェント・オーケストレーターが動作し、共通チャットに入力した内容から計画を立てて各エージェントへ指示を出します。他のビューを選択している間は、従来どおり各専門エージェントへ直接メッセージが送られます。</p>
+            </div>
+            <p id="generalProxyStatus" class="general-view__status" hidden></p>
+            <div id="generalProxyContainer" class="general-view__proxy" hidden></div>
           </div>
         </section>
 

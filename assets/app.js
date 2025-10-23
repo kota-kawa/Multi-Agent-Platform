@@ -54,45 +54,215 @@ const views = {
 
 const appTitle = $("#appTitle");
 const navButtons = $$(".nav-btn");
+const generalDefaultContent = $("#generalDefaultContent");
+const generalProxyStatus = $("#generalProxyStatus");
+const generalProxyContainer = $("#generalProxyContainer");
+const generalViewPanel = views.general?.querySelector(".general-view") ?? null;
+
+const viewPlacements = new Map();
+const AGENT_TO_VIEW_MAP = { browser: "browser", iot: "iot", faq: "chat", chat: "chat" };
+const GENERAL_PROXY_AGENT_LABELS = {
+  faq: "FAQ Gemini",
+  browser: "ブラウザエージェント",
+  iot: "IoT エージェント",
+  chat: "要約チャット",
+};
+const GENERAL_PROXY_VIEW_LABELS = {
+  browser: "リモートブラウザ",
+  chat: "要約チャット",
+  iot: "IoT ダッシュボード",
+};
+
+let generalProxyTargetView = null;
+let generalProxyAgentKey = null;
+let generalProxyViewKey = null;
+let currentViewKey = document.querySelector(".nav-btn.active")?.dataset.view || "browser";
+
+function resolveAgentToView(agentKey) {
+  if (typeof agentKey !== "string") return null;
+  const normalized = agentKey.trim().toLowerCase();
+  if (!normalized) return null;
+  return AGENT_TO_VIEW_MAP[normalized] || null;
+}
+
+function ensureViewPlacement(viewEl) {
+  if (!viewEl) return null;
+  let placement = viewPlacements.get(viewEl);
+  if (!placement) {
+    placement = {
+      parent: viewEl.parentElement,
+      placeholder: document.createComment(`placeholder:${viewEl.id || ""}`),
+    };
+    viewPlacements.set(viewEl, placement);
+  }
+  return placement;
+}
+
+function restoreView(viewKey) {
+  const viewEl = views[viewKey];
+  if (!viewEl) return;
+  const placement = viewPlacements.get(viewEl);
+  if (!placement) return;
+  const { parent, placeholder } = placement;
+  if (!parent) return;
+  if (placeholder.parentNode) {
+    placeholder.parentNode.replaceChild(viewEl, placeholder);
+  } else {
+    parent.appendChild(viewEl);
+  }
+  viewEl.classList.remove("general-proxy-active");
+}
+
+function moveViewToGeneral(viewKey) {
+  const viewEl = views[viewKey];
+  if (!generalProxyContainer || !viewEl) return;
+  if (generalProxyViewKey && generalProxyViewKey !== viewKey) {
+    restoreView(generalProxyViewKey);
+    generalProxyViewKey = null;
+  }
+  const placement = ensureViewPlacement(viewEl);
+  if (!placement || !placement.parent) return;
+  if (viewEl.parentElement !== generalProxyContainer) {
+    placement.parent.replaceChild(placement.placeholder, viewEl);
+    generalProxyContainer.appendChild(viewEl);
+  }
+  viewEl.classList.add("general-proxy-active");
+  generalProxyViewKey = viewKey;
+}
+
+function clearGeneralProxy() {
+  if (generalProxyViewKey) {
+    restoreView(generalProxyViewKey);
+    generalProxyViewKey = null;
+  }
+  if (generalProxyContainer) {
+    generalProxyContainer.innerHTML = "";
+  }
+}
+
+function updateGeneralViewProxy() {
+  const shouldShowProxy = currentViewKey === "general" && Boolean(generalProxyTargetView);
+  if (shouldShowProxy) {
+    moveViewToGeneral(generalProxyTargetView);
+  } else {
+    clearGeneralProxy();
+  }
+
+  if (generalViewPanel) {
+    generalViewPanel.classList.toggle("general-view--has-proxy", shouldShowProxy);
+  }
+  if (generalDefaultContent) {
+    generalDefaultContent.hidden = shouldShowProxy;
+  }
+  if (generalProxyContainer) {
+    generalProxyContainer.hidden = !shouldShowProxy;
+  }
+  if (generalProxyStatus) {
+    if (shouldShowProxy && generalProxyAgentKey) {
+      const agentLabel = GENERAL_PROXY_AGENT_LABELS[generalProxyAgentKey] || generalProxyAgentKey;
+      const viewLabel = GENERAL_PROXY_VIEW_LABELS[generalProxyTargetView] || agentLabel;
+      const labelText = agentLabel && viewLabel && agentLabel !== viewLabel
+        ? `オーケストレーターは現在「${agentLabel}」（${viewLabel}）を使用しています。`
+        : `オーケストレーターは現在「${agentLabel || viewLabel}」を使用しています。`;
+      generalProxyStatus.textContent = `${labelText}下のビューで進行状況を確認できます。`;
+      generalProxyStatus.hidden = false;
+    } else {
+      generalProxyStatus.hidden = true;
+      generalProxyStatus.textContent = "";
+    }
+  }
+
+  if (!shouldShowProxy) {
+    return;
+  }
+
+  if (generalProxyTargetView === "browser") {
+    ensureBrowserAgentInitialized({ showLoading: true });
+  } else if (generalProxyTargetView === "iot") {
+    ensureIotDashboardInitialized({ showLoading: true });
+    ensureIotChatInitialized({ forceSidebar: true });
+  } else if (generalProxyTargetView === "chat") {
+    ensureChatInitialized({ showLoadingSummary: true });
+  }
+}
+
+function setGeneralProxyAgent(agentKey) {
+  const normalizedAgent = typeof agentKey === "string" ? agentKey.trim().toLowerCase() : "";
+  const targetView = resolveAgentToView(normalizedAgent);
+  generalProxyAgentKey = targetView ? normalizedAgent : null;
+  generalProxyTargetView = targetView;
+  updateGeneralViewProxy();
+}
+
+function determineGeneralProxyAgentFromResult(result) {
+  if (!result || typeof result !== "object") return null;
+  const executions = Array.isArray(result.executions) ? result.executions : [];
+  for (let index = executions.length - 1; index >= 0; index -= 1) {
+    const agent = executions[index]?.agent;
+    if (typeof agent === "string" && agent.trim()) {
+      return agent.trim().toLowerCase();
+    }
+  }
+  const tasks = Array.isArray(result.tasks) ? result.tasks : [];
+  const nextTask = tasks.find(task => typeof task?.agent === "string" && task.agent.trim());
+  return nextTask ? nextTask.agent.trim().toLowerCase() : null;
+}
+
+function activateView(viewKey) {
+  const target = Object.prototype.hasOwnProperty.call(views, viewKey) ? viewKey : "browser";
+  currentViewKey = target;
+  navButtons.forEach(button => {
+    button.classList.toggle("active", button.dataset.view === target);
+  });
+  Object.entries(views).forEach(([key, el]) => {
+    if (!el) return;
+    el.classList.toggle("active", key === target);
+  });
+  const titles = {
+    general: "一般ビュー",
+    browser: "リモートブラウザ",
+    iot: "IoT ダッシュボード",
+    chat: "要約チャット",
+  };
+  if (appTitle) {
+    appTitle.textContent = titles[target] ?? "リモートブラウザ";
+  }
+
+  const isBrowserView = target === "browser";
+  const isChatView = target === "chat";
+  const isIotView = target === "iot";
+  const isGeneralView = target === "general";
+
+  if (isChatView) {
+    ensureChatInitialized({ showLoadingSummary: true });
+  } else if (!isBrowserView && !isIotView && !isGeneralView) {
+    ensureChatInitialized();
+  }
+  if (isBrowserView) {
+    ensureBrowserAgentInitialized({ showLoading: true });
+  }
+  if (isIotView) {
+    ensureIotDashboardInitialized({ showLoading: true });
+    ensureIotChatInitialized({ forceSidebar: true });
+  }
+  if (isGeneralView) {
+    ensureOrchestratorInitialized({ forceSidebar: true });
+  }
+
+  const modeMap = {
+    browser: "browser",
+    iot: "iot",
+    general: "orchestrator",
+    chat: "general",
+  };
+  setChatMode(modeMap[target] ?? "general");
+  updateGeneralViewProxy();
+  scheduleSidebarTogglePosition();
+}
+
 navButtons.forEach(btn => {
   btn.addEventListener("click", () => {
-    const view = btn.dataset.view;
-    navButtons.forEach(b => b.classList.toggle("active", b === btn));
-    Object.entries(views).forEach(([k, el]) => el.classList.toggle("active", k === view));
-    const titles = {
-      general: "一般ビュー",
-      browser: "リモートブラウザ",
-      iot: "IoT ダッシュボード",
-      chat: "要約チャット",
-    };
-    appTitle.textContent = titles[view] ?? "リモートブラウザ";
-    const isBrowserView = view === "browser";
-    const isChatView = view === "chat";
-    const isIotView = view === "iot";
-    const isGeneralView = view === "general";
-    if (isChatView) {
-      ensureChatInitialized({ showLoadingSummary: true });
-    } else if (!isBrowserView && !isIotView && !isGeneralView) {
-      ensureChatInitialized();
-    }
-    if (isBrowserView) {
-      ensureBrowserAgentInitialized({ showLoading: true });
-    }
-    if (isIotView) {
-      ensureIotDashboardInitialized({ showLoading: true });
-      ensureIotChatInitialized({ forceSidebar: true });
-    }
-    if (isGeneralView) {
-      ensureOrchestratorInitialized({ forceSidebar: true });
-    }
-    const modeMap = {
-      browser: "browser",
-      iot: "iot",
-      general: "orchestrator",
-      chat: "general",
-    };
-    setChatMode(modeMap[view] ?? "general");
-    scheduleSidebarTogglePosition();
+    activateView(btn.dataset.view);
   });
 });
 
@@ -1792,9 +1962,11 @@ async function sendOrchestratorMessage(text) {
 
   const userMessage = addOrchestratorUserMessage(text);
   const pending = addOrchestratorAssistantMessage("タスクを計画しています…", { pending: true });
+  setGeneralProxyAgent(null);
 
   try {
     const data = await orchestratorRequest(text);
+    setGeneralProxyAgent(determineGeneralProxyAgentFromResult(data));
     const assistantMessages = Array.isArray(data.assistant_messages) ? data.assistant_messages : [];
 
     if (assistantMessages.length > 0) {
@@ -1842,6 +2014,7 @@ async function sendOrchestratorMessage(text) {
     pending.text = `エラー: ${error.message}`;
     pending.pending = false;
     pending.ts = Date.now();
+    setGeneralProxyAgent(null);
   } finally {
     userMessage.ts = userMessage.ts || Date.now();
     orchestratorState.sending = false;
@@ -1996,24 +2169,5 @@ if (sidebarResetBtn) {
   });
 }
 
-const initialActiveView = document.querySelector(".nav-btn.active")?.dataset.view;
-const initialIsBrowser = initialActiveView === "browser";
-const initialIsChat = initialActiveView === "chat";
-const initialIsIot = initialActiveView === "iot";
-const initialIsGeneral = initialActiveView === "general";
-if (initialIsChat) {
-  ensureChatInitialized({ showLoadingSummary: true });
-} else if (!initialIsBrowser && !initialIsIot && !initialIsGeneral) {
-  ensureChatInitialized();
-}
-if (initialIsBrowser) {
-  ensureBrowserAgentInitialized({ showLoading: true });
-}
-if (initialIsIot) {
-  ensureIotDashboardInitialized({ showLoading: true });
-  ensureIotChatInitialized({ forceSidebar: true });
-}
-if (initialIsGeneral) {
-  ensureOrchestratorInitialized({ forceSidebar: true });
-}
-setChatMode(initialIsBrowser ? "browser" : initialIsIot ? "iot" : initialIsGeneral ? "orchestrator" : "general");
+const initialActiveView = document.querySelector(".nav-btn.active")?.dataset.view || "browser";
+activateView(initialActiveView);
