@@ -59,8 +59,6 @@ PUBLIC_IOT_AGENT_BASE = "https://iot-agent.project-kk.com"
 
 DEFAULT_IOT_AGENT_BASES = (
     PUBLIC_IOT_AGENT_BASE,
-    "http://localhost:5005",
-    "http://iot_agent:5005",
 )
 IOT_AGENT_TIMEOUT = float(os.environ.get("IOT_AGENT_TIMEOUT", "30"))
 
