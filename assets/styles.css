@@ -460,15 +460,16 @@ body{
   flex-direction:column;
   flex:1;
   min-height:0;
+  height:100%;
   overflow:hidden;
   position:relative;
 }
 
 .stage{
   width:100%;
-  min-height:clamp(420px, 65vh, 900px);
-  flex:1;
+  flex:1 1 auto;
   min-width:0;
+  min-height:0;
   height:100%;
   background:#05060a;
   border-radius:0;
