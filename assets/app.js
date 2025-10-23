@@ -63,6 +63,89 @@ let generalBrowserSurface = null;
 let generalBrowserStage = null;
 let generalBrowserFullscreenBtn = null;
 
+let pendingFullscreenRequest = null;
+
+function clearPendingFullscreenRequest() {
+  if (!pendingFullscreenRequest) return;
+  const { listeners } = pendingFullscreenRequest;
+  if (Array.isArray(listeners)) {
+    listeners.forEach(({ type, handler }) => {
+      if (!type || typeof handler !== "function") return;
+      document.removeEventListener(type, handler);
+    });
+  }
+  pendingFullscreenRequest = null;
+}
+
+function scheduleFullscreenRetry(target) {
+  if (!target || typeof target.requestFullscreen !== "function") {
+    return;
+  }
+
+  clearPendingFullscreenRequest();
+
+  const handler = () => {
+    clearPendingFullscreenRequest();
+    requestFullscreenWithFallback(target);
+  };
+
+  const listeners = [
+    { type: "pointerdown", handler },
+    { type: "keydown", handler },
+  ];
+
+  listeners.forEach(({ type, handler }) => {
+    document.addEventListener(type, handler, { once: true });
+  });
+
+  pendingFullscreenRequest = { element: target, listeners };
+}
+
+function requestFullscreenWithFallback(target) {
+  if (!target || typeof target.requestFullscreen !== "function") {
+    return;
+  }
+
+  if (document.fullscreenElement === target) {
+    clearPendingFullscreenRequest();
+    return;
+  }
+
+  if (document.fullscreenEnabled === false) {
+    return;
+  }
+
+  clearPendingFullscreenRequest();
+
+  let requestResult;
+  try {
+    requestResult = target.requestFullscreen();
+  } catch (_error) {
+    scheduleFullscreenRetry(target);
+    return;
+  }
+
+  if (requestResult && typeof requestResult.then === "function") {
+    requestResult
+      .then(() => {
+        clearPendingFullscreenRequest();
+      })
+      .catch(() => {
+        scheduleFullscreenRetry(target);
+      });
+  }
+}
+
+document.addEventListener("fullscreenchange", () => {
+  if (document.fullscreenElement) {
+    clearPendingFullscreenRequest();
+  }
+});
+
+document.addEventListener("fullscreenerror", () => {
+  clearPendingFullscreenRequest();
+});
+
 const viewPlacements = new Map();
 const AGENT_TO_VIEW_MAP = { browser: "browser", iot: "iot", faq: "chat", chat: "chat" };
 const GENERAL_PROXY_AGENT_LABELS = {
@@ -199,6 +282,7 @@ function updateGeneralViewProxy() {
     ensureBrowserAgentInitialized({ showLoading: true });
     activateGeneralBrowserProxy();
     requestGeneralBrowserViewportSync({ reloadFallback: true });
+    requestGeneralBrowserAutoFullscreen();
   } else if (generalProxyTargetView === "iot") {
     ensureIotDashboardInitialized({ showLoading: true });
     ensureIotChatInitialized({ forceSidebar: true });
@@ -279,6 +363,9 @@ function activateView(viewKey) {
   };
   setChatMode(modeMap[target] ?? "general");
   updateGeneralViewProxy();
+  if (target === "general") {
+    requestGeneralBrowserAutoFullscreen();
+  }
   scheduleSidebarTogglePosition();
 }
 
@@ -757,6 +844,36 @@ function requestGeneralBrowserViewportSync({ reloadFallback = false } = {}) {
   if (generalBrowserSurface?.isConnected) {
     controller.requestSync({ reloadFallback });
   }
+}
+
+function requestGeneralBrowserAutoFullscreen() {
+  if (currentViewKey !== "general") {
+    return;
+  }
+  if (generalProxyTargetView !== "browser") {
+    return;
+  }
+  if (document.fullscreenElement) {
+    return;
+  }
+
+  const controller = ensureGeneralNoVncController();
+  if (!controller) {
+    return;
+  }
+
+  const iframe = typeof controller.getIframe === "function" ? controller.getIframe() : null;
+  const stage = typeof controller.getStage === "function" ? controller.getStage() : null;
+  const target = iframe || stage || generalBrowserSurface;
+  if (!target) {
+    return;
+  }
+
+  if (generalBrowserSurface?.hidden) {
+    return;
+  }
+
+  requestFullscreenWithFallback(target);
 }
 
 /* ---------- IoT Dashboard ---------- */
