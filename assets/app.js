@@ -325,7 +325,7 @@ function normalizeBrowserEmbedUrl(value) {
 
     const resizeValue = params.get("resize");
     if (!resizeValue || !ALLOWED_RESIZE_VALUES.has(resizeValue)) {
-      params.set("resize", "scale");
+      params.set("resize", "remote");
     }
 
     return url.toString();
@@ -364,7 +364,7 @@ function resolveBrowserEmbedUrl() {
     }
   }
 
-  return normalizeBrowserEmbedUrl("http://127.0.0.1:7900/?autoconnect=1&resize=scale");
+  return normalizeBrowserEmbedUrl("http://127.0.0.1:7900/?autoconnect=1&resize=remote");
 }
 
 const BROWSER_EMBED_URL = resolveBrowserEmbedUrl();
@@ -380,7 +380,6 @@ function ensureBrowserIframe() {
     iframe = document.createElement("iframe");
     iframe.setAttribute("title", "埋め込みブラウザ");
     iframe.setAttribute("allow", "fullscreen");
-    iframe.setAttribute("allowfullscreen", "");
     stage.appendChild(iframe);
   }
 
