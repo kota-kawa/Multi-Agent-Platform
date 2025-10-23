@@ -336,9 +336,8 @@ let generalBrowserController = null;
 const ALLOWED_RESIZE_VALUES = new Set(["scale", "remote", "off"]);
 const DEFAULT_NOVNC_PARAMS = {
   autoconnect: "1",
-  resize: "remote",
+  resize: "scale",
   scale: "auto",
-  view_clip: "1",
 };
 
 function normalizeBrowserEmbedUrl(value) {
@@ -355,10 +354,6 @@ function normalizeBrowserEmbedUrl(value) {
 
     if (!params.has("scale") || !params.get("scale")) {
       params.set("scale", DEFAULT_NOVNC_PARAMS.scale);
-    }
-
-    if (!params.has("view_clip") || !params.get("view_clip")) {
-      params.set("view_clip", DEFAULT_NOVNC_PARAMS.view_clip);
     }
 
     if (!params.has("autoconnect") || !params.get("autoconnect")) {
@@ -401,7 +396,7 @@ function resolveBrowserEmbedUrl() {
     }
   }
 
-  return normalizeBrowserEmbedUrl("http://127.0.0.1:7900/?autoconnect=1&resize=remote&scale=auto&view_clip=1");
+  return normalizeBrowserEmbedUrl("http://127.0.0.1:7900/?autoconnect=1&resize=scale&scale=auto");
 }
 
 const BROWSER_EMBED_URL = resolveBrowserEmbedUrl();
