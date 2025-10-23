@@ -1715,6 +1715,9 @@ function createMessageElement(message, { compact = false } = {}) {
   const time = message.ts ? new Date(message.ts).toLocaleString("ja-JP") : "";
   const text = message.text ?? "";
   const escapedText = escapeHTML(text);
+  const trimmedText = text.trim();
+  const hasDetail = trimmedText.length > 0;
+  const escapedDetail = hasDetail ? escapeHTML(trimmedText) : "";
 
   if (message.role === "assistant" && message.pending) {
     el.classList.add("thinking");
@@ -1724,15 +1727,8 @@ function createMessageElement(message, { compact = false } = {}) {
         <span class="thinking-labels">
           <span class="thinking-title">AI が考えています</span>
           <span class="thinking-sub">見つけた情報から回答を組み立て中…</span>
+          ${hasDetail ? `<span class="thinking-detail">${escapedDetail}</span>` : ""}
         </span>
-      </div>
-      <div class="thinking-body">
-        <p class="thinking-text">${escapedText || "回答を生成しています…"}</p>
-        <div class="thinking-steps" aria-hidden="true">
-          <span></span>
-          <span></span>
-          <span></span>
-        </div>
       </div>
       ${time ? `<span class="msg-time">${time}</span>` : ""}
     `;
@@ -2389,7 +2385,7 @@ function addUserMessage(text) {
 function addPendingAssistantMessage() {
   const message = {
     role: "assistant",
-    text: "回答を生成しています…",
+    text: "",
     pending: true,
   };
   chatState.messages.push(message);
