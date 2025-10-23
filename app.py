@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, TypedDict
+from urllib.parse import urlparse, urlunparse
 
 import requests
 from flask import Flask, Response, jsonify, request, send_from_directory
@@ -168,6 +169,46 @@ def _build_iot_agent_url(base: str, path: str) -> str:
     return f"{base}{path}"
 
 
+def _expand_browser_agent_base(base: str) -> Iterable[str]:
+    """Yield the original Browser Agent base along with hostname aliases."""
+
+    yield base
+
+    try:
+        parsed = urlparse(base)
+    except ValueError:
+        return
+
+    hostname = parsed.hostname or ""
+    if not hostname:
+        return
+
+    replacements: list[str] = []
+    if "_" in hostname:
+        replacements.append(hostname.replace("_", "-"))
+    if "-" in hostname:
+        replacements.append(hostname.replace("-", "_"))
+
+    if not replacements:
+        return
+
+    auth = ""
+    if parsed.username:
+        auth = parsed.username
+        if parsed.password:
+            auth += f":{parsed.password}"
+        auth += "@"
+    port = f":{parsed.port}" if parsed.port else ""
+
+    for replacement in replacements:
+        if replacement == hostname:
+            continue
+        netloc = f"{auth}{replacement}{port}"
+        alias = urlunparse(parsed._replace(netloc=netloc))
+        if alias:
+            yield alias
+
+
 def _iter_browser_agent_bases() -> list[str]:
     """Return configured Browser Agent base URLs in priority order."""
 
@@ -183,10 +224,15 @@ def _iter_browser_agent_bases() -> list[str]:
         if not base:
             continue
         normalized = base.rstrip("/")
-        if not normalized or normalized in seen:
+        if normalized.startswith("/"):
+            # Avoid proxying to self
             continue
-        seen.add(normalized)
-        deduped.append(normalized)
+        for expanded in _expand_browser_agent_base(normalized):
+            candidate = expanded.rstrip("/")
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            deduped.append(candidate)
     return deduped
 
 
