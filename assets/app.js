@@ -2136,7 +2136,7 @@ async function loadBrowserAgentHistory({ showLoading = false, forceSidebar = fal
   browserChatState.historyAbort = controller;
   if (showLoading) {
     browserChatState.messages = [
-      { id: null, role: "system", text: "履歴を読み込んでいます…", pending: true, ts: Date.now() },
+      { id: null, role: "system", text: THINKING_MESSAGE_TEXT, pending: true, ts: Date.now() },
     ];
     browserMessageIndex.clear();
     renderBrowserChat({ forceSidebar });
@@ -2321,7 +2321,7 @@ async function syncConversationHistory({ showLoading = false, force = false } = 
   if (showLoading && (!chatState.sending || force)) {
     chatState.messages = [
       getIntroMessage(),
-      { role: "system", text: "会話履歴を取得しています…", pending: true, ts: Date.now() },
+      { role: "system", text: THINKING_MESSAGE_TEXT, pending: true, ts: Date.now() },
     ];
     renderGeneralChat();
   }
