@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
+import threading
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Literal, TypedDict
+from typing import Any, Dict, Iterable, Iterator, List, Literal, TypedDict, cast
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -352,6 +354,24 @@ def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
     return data
 
 
+def _extract_browser_error_message(response: requests.Response, default_message: str) -> str:
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+
+    if isinstance(data, dict):
+        message = data.get("error")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+
+    text = response.text.strip()
+    if text:
+        return text
+
+    return default_message
+
+
 def _call_iot_agent_chat(command: str) -> Dict[str, Any]:
     """Send a chat request to the IoT Agent and return the JSON payload."""
 
@@ -632,6 +652,36 @@ class MultiAgentOrchestrator:
                 break
         return tasks
 
+    def _browser_result_from_payload(
+        self,
+        command: str,
+        payload: Dict[str, Any],
+        fallback_summary: str | None = None,
+    ) -> ExecutionResult:
+        summary = str(payload.get("run_summary") or "").strip()
+        if not summary:
+            summary = self._summarise_browser_messages(payload.get("messages"))
+        if not summary and fallback_summary:
+            summary = fallback_summary.strip()
+        if not summary:
+            summary = "ブラウザエージェントからの応答を取得できませんでした。"
+        return {
+            "agent": "browser",
+            "command": command,
+            "status": "success",
+            "response": summary,
+            "error": None,
+        }
+
+    def _browser_error_result(self, command: str, error: Exception) -> ExecutionResult:
+        return {
+            "agent": "browser",
+            "command": command,
+            "status": "error",
+            "response": None,
+            "error": str(error),
+        }
+
     def _execute_task(self, task: TaskSpec) -> ExecutionResult:
         agent = task["agent"]
         command = task["command"]
@@ -659,26 +709,8 @@ class MultiAgentOrchestrator:
             try:
                 data = _call_browser_agent_chat(command)
             except BrowserAgentError as exc:
-                return {
-                    "agent": agent,
-                    "command": command,
-                    "status": "error",
-                    "response": None,
-                    "error": str(exc),
-                }
-            summary = str(data.get("run_summary") or "").strip()
-            if not summary:
-                messages = data.get("messages")
-                summary = self._summarise_browser_messages(messages)
-            if not summary:
-                summary = "ブラウザエージェントからの応答を取得できませんでした。"
-            return {
-                "agent": agent,
-                "command": command,
-                "status": "success",
-                "response": summary,
-                "error": None,
-            }
+                return self._browser_error_result(command, exc)
+            return self._browser_result_from_payload(command, data)
 
         if agent == "iot":
             try:
@@ -708,6 +740,333 @@ class MultiAgentOrchestrator:
             "status": "error",
             "response": None,
             "error": f"未対応のエージェント種別です: {agent}",
+        }
+
+    def _execute_browser_task_with_progress(self, task: TaskSpec) -> Iterator[Dict[str, Any]]:
+        command = task["command"]
+
+        try:
+            yield from self._iter_browser_agent_progress(command)
+        except BrowserAgentError as exc:
+            logging.warning("Streaming browser execution failed, falling back to summary only: %s", exc)
+            try:
+                data = _call_browser_agent_chat(command)
+            except BrowserAgentError as fallback_exc:
+                yield {
+                    "type": "result",
+                    "result": self._browser_error_result(command, fallback_exc),
+                }
+                return
+
+            yield {
+                "type": "result",
+                "result": self._browser_result_from_payload(command, data),
+            }
+
+    def _iter_browser_agent_progress(self, command: str) -> Iterator[Dict[str, Any]]:
+        last_error: BrowserAgentError | None = None
+        for base in _iter_browser_agent_bases():
+            try:
+                for event in self._iter_browser_agent_progress_for_base(base, command):
+                    yield event
+                return
+            except BrowserAgentError as exc:
+                logging.warning("Browser agent streaming attempt failed for %s: %s", base, exc)
+                last_error = exc
+                continue
+
+        if last_error is not None:
+            raise last_error
+        raise BrowserAgentError("ブラウザエージェントへの接続に失敗しました。")
+
+    def _iter_browser_agent_progress_for_base(
+        self,
+        base: str,
+        command: str,
+    ) -> Iterator[Dict[str, Any]]:
+        history_url = _build_browser_agent_url(base, "/api/history")
+        try:
+            history_response = requests.get(history_url, timeout=BROWSER_AGENT_TIMEOUT)
+        except requests.exceptions.RequestException as exc:
+            raise BrowserAgentError(f"ブラウザエージェントの履歴取得に失敗しました: {exc}") from exc
+
+        if not history_response.ok:
+            message = _extract_browser_error_message(
+                history_response,
+                "ブラウザエージェントの履歴取得に失敗しました。",
+            )
+            raise BrowserAgentError(message, status_code=history_response.status_code)
+
+        try:
+            history_data = history_response.json()
+        except ValueError as exc:
+            raise BrowserAgentError("ブラウザエージェントの履歴レスポンスを解析できませんでした。") from exc
+
+        initial_baseline_id = -1
+        messages = history_data.get("messages") if isinstance(history_data, dict) else []
+        if isinstance(messages, list):
+            for entry in messages:
+                if not isinstance(entry, dict):
+                    continue
+                msg_id = entry.get("id")
+                if isinstance(msg_id, int) and msg_id > initial_baseline_id:
+                    initial_baseline_id = msg_id
+
+        event_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
+        stop_event = threading.Event()
+        stream_ready = threading.Event()
+        stream_status: Dict[str, Any] = {"ok": False, "error": None}
+        response_holder: Dict[str, requests.Response] = {}
+
+        stream_url = _build_browser_agent_url(base, "/api/stream")
+        chat_url = _build_browser_agent_url(base, "/api/chat")
+
+        def _stream_worker() -> None:
+            response: requests.Response | None = None
+            try:
+                response = requests.get(stream_url, stream=True, timeout=BROWSER_AGENT_TIMEOUT)
+            except requests.exceptions.RequestException as exc:
+                stream_status["error"] = BrowserAgentError(
+                    f"ブラウザエージェントのイベントストリームに接続できませんでした: {exc}",
+                )
+                stream_ready.set()
+                return
+
+            response_holder["response"] = response
+            if not response.ok:
+                stream_status["error"] = BrowserAgentError(
+                    _extract_browser_error_message(
+                        response,
+                        "ブラウザエージェントのイベントストリームへの接続に失敗しました。",
+                    ),
+                    status_code=response.status_code,
+                )
+                stream_ready.set()
+                response.close()
+                return
+
+            stream_status["ok"] = True
+            stream_ready.set()
+
+            event_type = "message"
+            data_lines: list[str] = []
+            try:
+                for raw_line in response.iter_lines(decode_unicode=True):
+                    if stop_event.is_set():
+                        break
+                    if raw_line == "":
+                        if data_lines:
+                            data_text = "\n".join(data_lines)
+                            event_queue.put({"kind": "stream_data", "event": event_type, "data": data_text})
+                            data_lines = []
+                            event_type = "message"
+                        continue
+                    if raw_line.startswith(":"):
+                        continue
+                    if raw_line.startswith("event:"):
+                        event_type = raw_line[6:].strip() or "message"
+                    elif raw_line.startswith("data:"):
+                        data_lines.append(raw_line[5:].lstrip())
+            except requests.exceptions.RequestException as exc:
+                event_queue.put(
+                    {
+                        "kind": "stream_error",
+                        "error": BrowserAgentError(
+                            f"ブラウザエージェントのイベントストリームでエラーが発生しました: {exc}",
+                        ),
+                    }
+                )
+            finally:
+                event_queue.put({"kind": "stream_closed"})
+                response.close()
+
+        def _chat_worker() -> None:
+            try:
+                response = requests.post(
+                    chat_url,
+                    json={"prompt": command, "new_task": True},
+                    timeout=BROWSER_AGENT_TIMEOUT,
+                )
+            except requests.exceptions.RequestException as exc:
+                event_queue.put(
+                    {
+                        "kind": "chat_error",
+                        "error": BrowserAgentError(
+                            f"ブラウザエージェントの呼び出しに失敗しました: {exc}",
+                        ),
+                    }
+                )
+                event_queue.put({"kind": "chat_complete"})
+                return
+
+            try:
+                data = response.json()
+            except ValueError:
+                data = None
+
+            if not response.ok:
+                message = _extract_browser_error_message(
+                    response,
+                    "ブラウザエージェントの呼び出しに失敗しました。",
+                )
+                event_queue.put(
+                    {
+                        "kind": "chat_error",
+                        "error": BrowserAgentError(message, status_code=response.status_code),
+                    }
+                )
+                event_queue.put({"kind": "chat_complete"})
+                return
+
+            if not isinstance(data, dict):
+                event_queue.put(
+                    {
+                        "kind": "chat_error",
+                        "error": BrowserAgentError(
+                            "ブラウザエージェントから不正なレスポンス形式が返されました。",
+                            status_code=response.status_code,
+                        ),
+                    }
+                )
+                event_queue.put({"kind": "chat_complete"})
+                return
+
+            event_queue.put({"kind": "chat_result", "data": data})
+            event_queue.put({"kind": "chat_complete"})
+
+        stream_thread = threading.Thread(target=_stream_worker, daemon=True)
+        stream_thread.start()
+
+        if not stream_ready.wait(timeout=5):
+            stop_event.set()
+            stored_response = response_holder.get("response")
+            if stored_response is not None:
+                stored_response.close()
+            raise BrowserAgentError("ブラウザエージェントのイベントストリーム初期化がタイムアウトしました。")
+
+        if stream_status.get("error"):
+            error_obj = stream_status["error"]
+            if isinstance(error_obj, BrowserAgentError):
+                raise error_obj
+            raise BrowserAgentError(str(error_obj))
+
+        chat_thread = threading.Thread(target=_chat_worker, daemon=True)
+        chat_thread.start()
+
+        progress_messages: Dict[Any, str] = {}
+        anon_counter = 0
+        latest_summary = ""
+        chat_result: Dict[str, Any] | None = None
+        chat_error: BrowserAgentError | None = None
+        stream_finished = False
+        stream_failed = False
+        chat_finished = False
+
+        def _stop_stream() -> None:
+            stop_event.set()
+            stored = response_holder.get("response")
+            if stored is not None:
+                try:
+                    stored.close()
+                except Exception:  # pragma: no cover - defensive close
+                    pass
+
+        try:
+            while True:
+                try:
+                    item = event_queue.get(timeout=0.5)
+                except queue.Empty:
+                    if chat_finished and (stream_finished or stream_failed):
+                        break
+                    continue
+
+                kind = item.get("kind")
+                if kind == "stream_data":
+                    data_text = item.get("data") or ""
+                    if not data_text:
+                        continue
+                    try:
+                        payload = json.loads(data_text)
+                    except json.JSONDecodeError:
+                        logging.debug("Failed to decode browser stream payload: %s", data_text)
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    event_type = str(payload.get("type") or "")
+                    body = payload.get("payload")
+                    if event_type in {"message", "update"} and isinstance(body, dict):
+                        msg_id_raw = body.get("id")
+                        role = str(body.get("role") or "").lower()
+                        content = body.get("content") or body.get("text")
+                        if not isinstance(content, str):
+                            continue
+                        text = content.strip()
+                        if not text:
+                            continue
+                        if role == "user":
+                            continue
+                        if isinstance(msg_id_raw, int):
+                            if msg_id_raw <= initial_baseline_id and msg_id_raw not in progress_messages:
+                                continue
+                            message_key: Any = msg_id_raw
+                        else:
+                            message_key = f"anon-{anon_counter}"
+                            anon_counter += 1
+                        previous_text = progress_messages.get(message_key)
+                        if previous_text == text:
+                            continue
+                        mode = "update" if previous_text is not None else "append"
+                        progress_messages[message_key] = text
+                        yield {
+                            "type": "progress",
+                            "text": text,
+                            "role": role or "assistant",
+                            "message_id": msg_id_raw if isinstance(msg_id_raw, int) else None,
+                            "mode": mode,
+                        }
+                    elif event_type == "status" and isinstance(body, dict):
+                        summary_text = body.get("run_summary")
+                        if isinstance(summary_text, str) and summary_text.strip():
+                            latest_summary = summary_text.strip()
+                        if body.get("agent_running") is False:
+                            stream_finished = True
+                elif kind == "stream_error":
+                    error = item.get("error")
+                    logging.warning("Browser agent stream error: %s", error)
+                    stream_failed = True
+                    stream_finished = True
+                elif kind == "stream_closed":
+                    stream_finished = True
+                elif kind == "chat_result":
+                    chat_result = item.get("data") or {}
+                    chat_finished = True
+                    _stop_stream()
+                elif kind == "chat_error":
+                    error = item.get("error")
+                    chat_error = error if isinstance(error, BrowserAgentError) else BrowserAgentError(str(error))
+                    chat_finished = True
+                    _stop_stream()
+                elif kind == "chat_complete":
+                    chat_finished = True
+
+                if chat_error is not None:
+                    break
+                if chat_finished and stream_finished:
+                    break
+        finally:
+            _stop_stream()
+            stream_thread.join(timeout=1.0)
+            chat_thread.join(timeout=1.0)
+
+        if chat_error is not None:
+            raise chat_error
+
+        if chat_result is None or not isinstance(chat_result, dict):
+            raise BrowserAgentError("ブラウザエージェントからの応答を取得できませんでした。")
+
+        yield {
+            "type": "result",
+            "result": self._browser_result_from_payload(command, chat_result, fallback_summary=latest_summary),
         }
 
     def _summarise_browser_messages(self, messages: Any) -> str:
@@ -816,7 +1175,29 @@ class MultiAgentOrchestrator:
             if task["agent"] == "browser":
                 yield self._event_payload("browser_init", state, task_index=index, task=task)
 
-            result = self._execute_task(task)
+            if task["agent"] == "browser":
+                result: ExecutionResult | None = None
+                for event in self._execute_browser_task_with_progress(task):
+                    event_type = event.get("type")
+                    if event_type == "progress":
+                        yield self._event_payload(
+                            "execution_progress",
+                            state,
+                            task_index=index,
+                            task=task,
+                            progress=event,
+                        )
+                    elif event_type == "result":
+                        maybe_result = event.get("result")
+                        if isinstance(maybe_result, dict):
+                            result = cast(ExecutionResult, maybe_result)
+                if result is None:
+                    result = self._browser_error_result(
+                        task["command"],
+                        BrowserAgentError("ブラウザエージェントからの結果を取得できませんでした。"),
+                    )
+            else:
+                result = self._execute_task(task)
 
             executions = state.get("executions")
             if not isinstance(executions, list):
