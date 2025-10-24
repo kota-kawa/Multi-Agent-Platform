@@ -1723,8 +1723,8 @@ function createMessageElement(message, { compact = false } = {}) {
   if (message.role === "assistant" && message.pending) {
     el.classList.add("thinking");
     el.innerHTML = `
-      <div class="thinking-header">
-        <span class="thinking-orb" aria-hidden="true"></span>
+      <div class="thinking-card" role="status">
+        <span class="thinking-icon" aria-hidden="true"></span>
         <span class="thinking-labels">
           <span class="thinking-title">${THINKING_TITLE_TEXT}</span>
           <span class="thinking-sub">${THINKING_SUBTITLE_TEXT}</span>

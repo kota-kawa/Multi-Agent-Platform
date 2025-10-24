@@ -871,61 +871,57 @@ body{
 .msg.system,
 .msg.assistant{align-self:flex-start; background:#1f2738; border:1px solid #33405d}
 .msg.assistant.thinking{
-  position:relative;
-  padding:16px 18px;
-  border-radius:16px;
-  background:linear-gradient(160deg, rgba(44,78,132,.92), rgba(20,36,70,.88));
-  border:1px solid rgba(91,209,255,.4);
-  box-shadow:0 18px 36px rgba(6,14,32,.55);
-  overflow:hidden;
+  padding:0;
+  border:none;
+  background:transparent;
+  box-shadow:none;
   color:#e6f0ff;
 }
 .msg.assistant.thinking.pending{opacity:1; font-style:normal;}
-.msg.assistant.thinking::before{
-  content:"";
-  position:absolute;
-  inset:-140% -60%;
-  background:conic-gradient(from 90deg at 50% 50%, rgba(91,209,255,.1), rgba(22,118,255,.25), rgba(91,209,255,.1));
-  animation:thinkingGlow 6s linear infinite;
-  opacity:.7;
-}
-.msg.assistant.thinking::after{
-  content:"";
-  position:absolute;
-  inset:0;
-  border-radius:inherit;
-  background:radial-gradient(120% 140% at 20% 20%, rgba(91,209,255,.18), transparent 55%);
-  pointer-events:none;
-  mix-blend-mode:screen;
-}
-.thinking-header{
+.thinking-card{
+  position:relative;
   display:flex;
-  align-items:flex-start;
-  gap:12px;
-  margin-bottom:0;
-  position:relative;
-  z-index:1;
+  align-items:center;
+  gap:16px;
+  padding:16px 18px;
+  border-radius:16px;
+  background:linear-gradient(135deg, rgba(22,44,88,.94), rgba(9,18,36,.94));
+  border:1px solid rgba(91,209,255,.35);
+  box-shadow:0 18px 36px rgba(6,14,32,.55);
+  overflow:hidden;
 }
-.thinking-labels{display:flex; flex-direction:column; gap:4px;}
-.thinking-title{font-size:13px; font-weight:600; letter-spacing:.04em; text-transform:none;}
-.thinking-sub{font-size:11px; color:rgba(230,233,239,.75); letter-spacing:.02em;}
-.thinking-orb{
-  width:14px;
-  height:14px;
-  border-radius:999px;
-  background:var(--accent);
-  box-shadow:0 0 18px rgba(91,209,255,.8);
-  position:relative;
-}
-.thinking-orb::after{
+.thinking-card::before{
   content:"";
   position:absolute;
-  inset:-5px;
-  border-radius:inherit;
-  border:2px solid rgba(91,209,255,.6);
-  opacity:.9;
-  animation:thinkingOrbPulse 2s ease-in-out infinite;
+  inset:-40% -20% auto auto;
+  width:160px;
+  height:160px;
+  background:radial-gradient(circle at center, rgba(91,209,255,.18), transparent 70%);
+  opacity:.7;
+  pointer-events:none;
 }
+.thinking-icon{
+  position:relative;
+  display:grid;
+  place-items:center;
+  width:28px;
+  height:28px;
+  border-radius:14px;
+  background:radial-gradient(circle at 30% 30%, #9ae5ff, #3a83ff 65%, #1c3d88 100%);
+  box-shadow:0 0 22px rgba(75,167,255,.85);
+  flex-shrink:0;
+}
+.thinking-icon::after{
+  content:"";
+  width:12px;
+  height:12px;
+  border-radius:999px;
+  background:rgba(255,255,255,.8);
+  box-shadow:0 0 14px rgba(255,255,255,.6);
+}
+.thinking-labels{display:flex; flex-direction:column; gap:4px; position:relative; z-index:1;}
+.thinking-title{font-size:14px; font-weight:600; letter-spacing:.02em;}
+.thinking-sub{font-size:12px; color:rgba(230,233,239,.75); letter-spacing:.02em;}
 .msg.assistant.thinking .msg-time{
   position:relative;
   z-index:1;
@@ -1104,17 +1100,6 @@ body{
   .summary-actions{width:100%; justify-content:flex-start;}
 }
 .footer .divider{opacity:.4}
-
-@keyframes thinkingOrbPulse{
-  0%{transform:scale(.8); opacity:.6;}
-  50%{transform:scale(1); opacity:1;}
-  100%{transform:scale(.8); opacity:.6;}
-}
-
-@keyframes thinkingGlow{
-  0%{transform:rotate(0deg);}
-  100%{transform:rotate(360deg);}
-}
 
 /* responsive */
 @media (max-width: 860px){
