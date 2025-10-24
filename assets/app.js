@@ -2405,6 +2405,23 @@ async function sendOrchestratorMessage(text) {
 
   const taskMessages = new Map();
 
+  const ensureTaskEntry = taskIndex => {
+    if (typeof taskIndex !== "number") return null;
+    let entry = taskMessages.get(taskIndex);
+    if (!entry || typeof entry !== "object" || entry === null) {
+      entry = { placeholder: null, progress: new Map() };
+      taskMessages.set(taskIndex, entry);
+      return entry;
+    }
+    if (!(entry.progress instanceof Map)) {
+      entry.progress = new Map();
+    }
+    if (!("placeholder" in entry)) {
+      entry.placeholder = null;
+    }
+    return entry;
+  };
+
   try {
     for await (const { event: eventType, data: payload } of orchestratorRequest(text)) {
       const eventData = payload && typeof payload === "object" ? payload : {};
@@ -2446,13 +2463,61 @@ async function sendOrchestratorMessage(text) {
         const message = addOrchestratorAssistantMessage(displayText, { pending: true });
         message.ts = Date.now();
         if (taskIndex !== null) {
-          taskMessages.set(taskIndex, message);
+          const entry = ensureTaskEntry(taskIndex);
+          if (entry) {
+            entry.placeholder = message;
+          }
         }
         continue;
       }
 
       if (eventType === "browser_init") {
         // 初期化イベントはクライアント側でハンドオフ済みなので何もしない
+        continue;
+      }
+
+      if (eventType === "execution_progress") {
+        const task = eventData.task && typeof eventData.task === "object" ? eventData.task : {};
+        const taskIndex = typeof eventData.task_index === "number" ? eventData.task_index : null;
+        const progress = eventData.progress && typeof eventData.progress === "object" ? eventData.progress : {};
+        const agentRaw = typeof task.agent === "string" ? task.agent.trim().toLowerCase() : "";
+        const agentLabel = agentRaw ? (ORCHESTRATOR_AGENT_LABELS[agentRaw] || agentRaw) : "エージェント";
+        const textValue = typeof progress.text === "string" ? progress.text.trim() : "";
+        if (!textValue) {
+          continue;
+        }
+        const messageId = typeof progress.message_id === "number" ? progress.message_id : null;
+        const formatted = `[${agentLabel}] ${textValue}`;
+        if (taskIndex === null) {
+          const fallbackMessage = addOrchestratorAssistantMessage(formatted);
+          fallbackMessage.pending = false;
+          fallbackMessage.ts = Date.now();
+          continue;
+        }
+        const entry = ensureTaskEntry(taskIndex);
+        if (!entry) {
+          const fallbackMessage = addOrchestratorAssistantMessage(formatted);
+          fallbackMessage.pending = false;
+          fallbackMessage.ts = Date.now();
+          continue;
+        }
+        if (!(entry.progress instanceof Map)) {
+          entry.progress = new Map();
+        }
+        const existingProgress = messageId !== null ? entry.progress.get(messageId) : null;
+        if (existingProgress) {
+          existingProgress.text = formatted;
+          existingProgress.pending = false;
+          existingProgress.ts = Date.now();
+        } else {
+          const progressMessage = addOrchestratorAssistantMessage(formatted);
+          progressMessage.pending = false;
+          progressMessage.ts = Date.now();
+          if (messageId !== null) {
+            entry.progress.set(messageId, progressMessage);
+          }
+        }
+        renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
         continue;
       }
 
@@ -2468,13 +2533,14 @@ async function sendOrchestratorMessage(text) {
         const finalText = status === "error"
           ? `[${agentLabel}] ${errorText || "タスクの実行に失敗しました。"}`
           : `[${agentLabel}] ${responseText || "タスクを完了しました。"}`;
-        const existing = taskIndex !== null ? taskMessages.get(taskIndex) : null;
+        const entry = taskIndex !== null ? ensureTaskEntry(taskIndex) : null;
+        const existing = entry && entry.placeholder ? entry.placeholder : null;
         const targetMessage = existing || addOrchestratorAssistantMessage(finalText);
         targetMessage.text = finalText;
         targetMessage.pending = false;
         targetMessage.ts = Date.now();
-        if (!existing && taskIndex !== null) {
-          taskMessages.set(taskIndex, targetMessage);
+        if (entry) {
+          entry.placeholder = targetMessage;
         }
         renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
         continue;
