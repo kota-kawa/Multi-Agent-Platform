@@ -886,9 +886,11 @@ body{
   padding:16px 18px;
   border-radius:16px;
   background:linear-gradient(135deg, rgba(22,44,88,.94), rgba(9,18,36,.94));
+  background-size:220% 220%;
   border:1px solid rgba(91,209,255,.35);
   box-shadow:0 18px 36px rgba(6,14,32,.55);
   overflow:hidden;
+  animation:thinkingWave 12s ease-in-out infinite;
 }
 .thinking-card::before{
   content:"";
@@ -899,6 +901,18 @@ body{
   background:radial-gradient(circle at center, rgba(91,209,255,.18), transparent 70%);
   opacity:.7;
   pointer-events:none;
+  animation:thinkingPulse 4s ease-in-out infinite;
+}
+.thinking-card::after{
+  content:"";
+  position:absolute;
+  inset:-60% auto auto -30%;
+  width:220px;
+  height:220px;
+  background:radial-gradient(circle at center, rgba(30,125,255,.18), transparent 70%);
+  opacity:.5;
+  pointer-events:none;
+  animation:thinkingPulse 5.2s ease-in-out infinite;
 }
 .thinking-icon{
   position:relative;
@@ -910,6 +924,7 @@ body{
   background:radial-gradient(circle at 30% 30%, #9ae5ff, #3a83ff 65%, #1c3d88 100%);
   box-shadow:0 0 22px rgba(75,167,255,.85);
   flex-shrink:0;
+  animation:thinkingFloat 3.6s ease-in-out infinite;
 }
 .thinking-icon::after{
   content:"";
@@ -918,6 +933,7 @@ body{
   border-radius:999px;
   background:rgba(255,255,255,.8);
   box-shadow:0 0 14px rgba(255,255,255,.6);
+  animation:thinkingPulseDot 2.4s ease-in-out infinite;
 }
 .thinking-labels{display:flex; flex-direction:column; gap:4px; position:relative; z-index:1;}
 .thinking-title{font-size:14px; font-weight:600; letter-spacing:.02em;}
@@ -1083,6 +1099,28 @@ body{
   .nav-btn span{display:none}
   .sidebar-chat{flex:1 1 100%; order:3;}
   .sidebar-chat-log{min-height:200px; max-height:320px;}
+}
+
+@keyframes thinkingWave{
+  0%{background-position:0% 50%;}
+  50%{background-position:100% 50%;}
+  100%{background-position:0% 50%;}
+}
+
+@keyframes thinkingPulse{
+  0%,100%{transform:scale(.95); opacity:.5;}
+  40%{transform:scale(1); opacity:.7;}
+  70%{transform:scale(1.08); opacity:.6;}
+}
+
+@keyframes thinkingFloat{
+  0%,100%{transform:translateY(0);}
+  50%{transform:translateY(-4px);}
+}
+
+@keyframes thinkingPulseDot{
+  0%,100%{transform:scale(1); box-shadow:0 0 14px rgba(255,255,255,.6);}
+  50%{transform:scale(1.18); box-shadow:0 0 22px rgba(255,255,255,.75);}
 }
 
 @media (max-width: 520px){
