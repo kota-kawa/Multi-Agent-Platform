@@ -210,6 +210,9 @@ function updateGeneralViewProxy() {
 function setGeneralProxyAgent(agentKey) {
   const normalizedAgent = typeof agentKey === "string" ? agentKey.trim().toLowerCase() : "";
   const targetView = resolveAgentToView(normalizedAgent);
+  if (generalProxyAgentKey === "browser" && normalizedAgent !== "browser") {
+    stopOrchestratorBrowserMirror();
+  }
   generalProxyAgentKey = targetView ? normalizedAgent : null;
   generalProxyTargetView = targetView;
   updateGeneralViewProxy();
@@ -1482,6 +1485,13 @@ const orchestratorState = {
   sending: false,
 };
 
+const orchestratorBrowserMirrorState = {
+  active: false,
+  useSseFallback: false,
+  messages: new Map(),
+  placeholder: null,
+};
+
 const ORCHESTRATOR_AGENT_LABELS = {
   faq: "FAQ Gemini",
   browser: "ブラウザエージェント",
@@ -1766,6 +1776,72 @@ function renderOrchestratorChat({ forceSidebar = false } = {}) {
   }
 }
 
+function resetOrchestratorBrowserMirror() {
+  orchestratorBrowserMirrorState.active = false;
+  orchestratorBrowserMirrorState.useSseFallback = false;
+  orchestratorBrowserMirrorState.messages.clear();
+  orchestratorBrowserMirrorState.placeholder = null;
+}
+
+function startOrchestratorBrowserMirror({ placeholder = null } = {}) {
+  orchestratorBrowserMirrorState.active = true;
+  orchestratorBrowserMirrorState.useSseFallback = true;
+  orchestratorBrowserMirrorState.messages.clear();
+  orchestratorBrowserMirrorState.placeholder = placeholder || null;
+}
+
+function stopOrchestratorBrowserMirror() {
+  resetOrchestratorBrowserMirror();
+}
+
+function disableOrchestratorBrowserMirrorFallback() {
+  orchestratorBrowserMirrorState.useSseFallback = false;
+}
+
+function mirrorBrowserMessageToOrchestrator(message) {
+  if (!orchestratorBrowserMirrorState.active || !orchestratorBrowserMirrorState.useSseFallback) {
+    return;
+  }
+  if (!message || message.role !== "assistant") return;
+  const text = typeof message.text === "string" ? message.text.trim() : "";
+  if (!text) return;
+
+  ensureOrchestratorInitialized({ forceSidebar: currentChatMode === "orchestrator" });
+
+  const label = ORCHESTRATOR_AGENT_LABELS.browser || "ブラウザエージェント";
+  const formatted = `[${label}] ${text}`;
+
+  const key =
+    typeof message.id === "number"
+      ? `id:${message.id}`
+      : typeof message.ts === "number"
+        ? `ts:${message.ts}`
+        : `text:${formatted}`;
+
+  let target = orchestratorBrowserMirrorState.messages.get(key) || null;
+  if (!target && orchestratorBrowserMirrorState.placeholder) {
+    target = orchestratorBrowserMirrorState.placeholder;
+    orchestratorBrowserMirrorState.placeholder = null;
+  }
+
+  if (target) {
+    target.text = formatted;
+    target.pending = false;
+    target.ts = Date.now();
+  } else {
+    const appended = addOrchestratorAssistantMessage(formatted);
+    appended.pending = false;
+    appended.ts = Date.now();
+    target = appended;
+  }
+
+  orchestratorBrowserMirrorState.messages.set(key, target);
+
+  if (currentChatMode === "orchestrator") {
+    renderOrchestratorChat({ forceSidebar: true });
+  }
+}
+
 function ensureOrchestratorInitialized({ forceSidebar = false } = {}) {
   if (!orchestratorState.initialized) {
     orchestratorState.initialized = true;
@@ -1988,6 +2064,7 @@ function appendBrowserChatMessage(raw) {
     browserChatState.messages.push(message);
   }
   renderBrowserChat();
+  mirrorBrowserMessageToOrchestrator(message);
 }
 
 function updateBrowserChatMessage(raw) {
@@ -1997,6 +2074,7 @@ function updateBrowserChatMessage(raw) {
     if (index !== undefined) {
       browserChatState.messages[index] = message;
       renderBrowserChat();
+      mirrorBrowserMessageToOrchestrator(message);
       return;
     }
   }
@@ -2402,6 +2480,7 @@ async function sendOrchestratorMessage(text) {
   const userMessage = addOrchestratorUserMessage(text);
   const planMessage = addOrchestratorAssistantMessage(THINKING_MESSAGE_TEXT, { pending: true });
   setGeneralProxyAgent(null);
+  resetOrchestratorBrowserMirror();
 
   const taskMessages = new Map();
 
@@ -2452,6 +2531,7 @@ async function sendOrchestratorMessage(text) {
           setGeneralProxyAgent(agentRaw);
           if (agentRaw === "browser") {
             ensureBrowserAgentInitialized({ showLoading: true });
+            startOrchestratorBrowserMirror({ placeholder: message });
             if (commandText) {
               const runPromise = sendBrowserAgentPrompt(commandText);
               runPromise.catch(error => {
@@ -2495,6 +2575,9 @@ async function sendOrchestratorMessage(text) {
         const textValue = typeof progress.text === "string" ? progress.text.trim() : "";
         if (!textValue) {
           continue;
+        }
+        if (agentRaw === "browser") {
+          disableOrchestratorBrowserMirrorFallback();
         }
         const messageId = typeof progress.message_id === "number" ? progress.message_id : null;
         const formatted = `[${agentLabel}] ${textValue}`;
@@ -2552,6 +2635,9 @@ async function sendOrchestratorMessage(text) {
         if (entry) {
           entry.placeholder = targetMessage;
         }
+        if (agentRaw === "browser") {
+          stopOrchestratorBrowserMirror();
+        }
         renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
         continue;
       }
@@ -2562,6 +2648,7 @@ async function sendOrchestratorMessage(text) {
         planMessage.pending = false;
         planMessage.ts = Date.now();
         setGeneralProxyAgent(null);
+        stopOrchestratorBrowserMirror();
         renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
         break;
       }
@@ -2601,6 +2688,7 @@ async function sendOrchestratorMessage(text) {
           tasks: state.tasks,
         });
         setGeneralProxyAgent(finalProxyAgent);
+        stopOrchestratorBrowserMirror();
         renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
         break;
       }
@@ -2610,9 +2698,11 @@ async function sendOrchestratorMessage(text) {
     planMessage.pending = false;
     planMessage.ts = Date.now();
     setGeneralProxyAgent(null);
+    stopOrchestratorBrowserMirror();
   } finally {
     userMessage.ts = userMessage.ts || Date.now();
     orchestratorState.sending = false;
+    stopOrchestratorBrowserMirror();
     renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
     updateSidebarControlsForMode(currentChatMode);
   }
