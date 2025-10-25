@@ -79,6 +79,32 @@ DEFAULT_BROWSER_AGENT_BASES = (
 )
 BROWSER_AGENT_TIMEOUT = float(os.environ.get("BROWSER_AGENT_TIMEOUT", "120"))
 
+_BROWSER_AGENT_STATUS_LOCK = threading.Lock()
+_BROWSER_AGENT_STATUS: Literal["unknown", "available", "manual"] = "unknown"
+
+
+def _set_browser_agent_status(status: Literal["unknown", "available", "manual"]) -> None:
+    global _BROWSER_AGENT_STATUS
+    with _BROWSER_AGENT_STATUS_LOCK:
+        _BROWSER_AGENT_STATUS = status
+
+
+def _get_browser_agent_status() -> Literal["unknown", "available", "manual"]:
+    with _BROWSER_AGENT_STATUS_LOCK:
+        return _BROWSER_AGENT_STATUS
+
+
+def _mark_browser_agent_available() -> None:
+    _set_browser_agent_status("available")
+
+
+def _mark_browser_agent_manual() -> None:
+    _set_browser_agent_status("manual")
+
+
+def _browser_agent_manual_mode_enabled() -> bool:
+    return _get_browser_agent_status() == "manual"
+
 ORCHESTRATOR_MODEL = os.environ.get("ORCHESTRATOR_MODEL", "gpt-4.1-2025-04-14")
 ORCHESTRATOR_MAX_TASKS = int(os.environ.get("ORCHESTRATOR_MAX_TASKS", "5"))
 
@@ -288,6 +314,29 @@ def _build_browser_agent_url(base: str, path: str) -> str:
     return f"{base}{path}"
 
 
+def _build_manual_browser_payload(command: str) -> Dict[str, Any]:
+    """Return a pseudo Browser Agent payload describing manual execution."""
+
+    instruction = command.strip()
+    if instruction:
+        summary = (
+            "ブラウザエージェントサービスに接続できなかったため、自動操作をスキップしました。"
+            "ビュー「ブラウザ」で次の指示を手動で実行してください: "
+            f"{instruction}"
+        )
+    else:
+        summary = (
+            "ブラウザエージェントサービスに接続できなかったため、自動操作をスキップしました。"
+            "ビュー「ブラウザ」で必要な操作を手動で実行してください。"
+        )
+
+    return {
+        "run_summary": summary,
+        "messages": [],
+        "manual_execution": True,
+    }
+
+
 def _call_gemini(path: str, *, method: str = "GET", payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Call the upstream FAQ_Gemini API and return the JSON payload."""
 
@@ -334,14 +383,24 @@ def _call_gemini(path: str, *, method: str = "GET", payload: Dict[str, Any] | No
     return data
 
 
+def _is_browser_agent_connection_issue(exc: Exception | None) -> bool:
+    if exc is None:
+        return False
+    return isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout))
+
+
 def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
     """Send a chat request to the Browser Agent and return the JSON payload."""
+
+    if _browser_agent_manual_mode_enabled():
+        return _build_manual_browser_payload(prompt)
 
     bases = _iter_browser_agent_bases()
     if not bases:
         raise BrowserAgentError("Browser Agent API の接続先が設定されていません。", status_code=500)
 
     connection_errors: list[str] = []
+    connection_exceptions: list[Exception] = []
     last_exception: Exception | None = None
     response = None
     for base in bases:
@@ -354,6 +413,7 @@ def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
             )
         except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
             connection_errors.append(f"{url}: {exc}")
+            connection_exceptions.append(exc)
             last_exception = exc
             continue
         else:
@@ -365,6 +425,11 @@ def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
                 "Browser Agent API connection attempts failed: %s",
                 "; ".join(connection_errors),
             )
+        if connection_exceptions and all(_is_browser_agent_connection_issue(exc) for exc in connection_exceptions):
+            logging.info("Browser Agent service unreachable. Falling back to manual execution mode.")
+            _mark_browser_agent_manual()
+            return _build_manual_browser_payload(prompt)
+
         hint = (
             "BROWSER_AGENT_API_BASE 環境変数で有効なエンドポイントを設定するか、"
             "ブラウザエージェントサービスを起動してください。"
@@ -387,6 +452,7 @@ def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise BrowserAgentError("Browser Agent API から不正なレスポンス形式が返されました。", status_code=502)
 
+    _mark_browser_agent_available()
     return data
 
 
@@ -525,6 +591,7 @@ class ExecutionResult(TypedDict, total=False):
     status: Literal["success", "error"]
     response: str | None
     error: str | None
+    metadata: Dict[str, Any]
 
 
 class OrchestratorState(TypedDict, total=False):
@@ -701,13 +768,16 @@ class MultiAgentOrchestrator:
             summary = fallback_summary.strip()
         if not summary:
             summary = "ブラウザエージェントからの応答を取得できませんでした。"
-        return {
+        result: ExecutionResult = {
             "agent": "browser",
             "command": command,
             "status": "success",
             "response": summary,
             "error": None,
         }
+        if payload.get("manual_execution"):
+            result["metadata"] = {"manual_execution": True}
+        return result
 
     def _browser_error_result(self, command: str, error: Exception) -> ExecutionResult:
         return {
@@ -800,6 +870,16 @@ class MultiAgentOrchestrator:
             }
 
     def _iter_browser_agent_progress(self, command: str) -> Iterator[Dict[str, Any]]:
+        if _browser_agent_manual_mode_enabled():
+            yield {
+                "type": "result",
+                "result": self._browser_result_from_payload(
+                    command,
+                    _build_manual_browser_payload(command),
+                ),
+            }
+            return
+
         last_error: BrowserAgentError | None = None
         for base in _iter_browser_agent_bases():
             try:
@@ -824,6 +904,8 @@ class MultiAgentOrchestrator:
         try:
             history_response = requests.get(history_url, timeout=BROWSER_AGENT_TIMEOUT)
         except requests.exceptions.RequestException as exc:
+            if _is_browser_agent_connection_issue(exc):
+                _mark_browser_agent_manual()
             raise BrowserAgentError(f"ブラウザエージェントの履歴取得に失敗しました: {exc}") from exc
 
         if not history_response.ok:
@@ -837,6 +919,8 @@ class MultiAgentOrchestrator:
             history_data = history_response.json()
         except ValueError as exc:
             raise BrowserAgentError("ブラウザエージェントの履歴レスポンスを解析できませんでした。") from exc
+
+        _mark_browser_agent_available()
 
         initial_baseline_id = -1
         messages = history_data.get("messages") if isinstance(history_data, dict) else []
@@ -862,6 +946,8 @@ class MultiAgentOrchestrator:
             try:
                 response = requests.get(stream_url, stream=True, timeout=BROWSER_AGENT_TIMEOUT)
             except requests.exceptions.RequestException as exc:
+                if _is_browser_agent_connection_issue(exc):
+                    _mark_browser_agent_manual()
                 stream_status["error"] = BrowserAgentError(
                     f"ブラウザエージェントのイベントストリームに接続できませんでした: {exc}",
                 )
@@ -924,6 +1010,8 @@ class MultiAgentOrchestrator:
                     timeout=BROWSER_AGENT_TIMEOUT,
                 )
             except requests.exceptions.RequestException as exc:
+                if _is_browser_agent_connection_issue(exc):
+                    _mark_browser_agent_manual()
                 event_queue.put(
                     {
                         "kind": "chat_error",

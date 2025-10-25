@@ -1521,6 +1521,7 @@ const browserChatState = {
 };
 
 const browserMessageIndex = new Map();
+const browserAgentStatus = { available: null };
 
 function getIntroMessage() {
   return {
@@ -2254,10 +2255,29 @@ async function loadBrowserAgentHistory({ showLoading = false, forceSidebar = fal
     const { data } = await browserAgentRequest("/api/history", { signal: controller.signal });
     if (controller.signal.aborted) return;
     setBrowserChatHistory(data.messages || [], { forceSidebar });
+    browserAgentStatus.available = true;
+    if (!browserChatState.eventSource) {
+      connectBrowserEventStream();
+    }
   } catch (error) {
     if (controller.signal.aborted) return;
+    browserAgentStatus.available = false;
+    if (browserChatState.eventSource) {
+      try {
+        browserChatState.eventSource.close();
+      } catch (_) {
+        // ignore close errors
+      }
+      browserChatState.eventSource = null;
+    }
+    const reason = error && typeof error.message === "string" ? error.message : "接続に失敗しました。";
     browserChatState.messages = [
-      { id: null, role: "system", text: `履歴の取得に失敗しました: ${error.message}`, ts: Date.now() },
+      {
+        id: null,
+        role: "system",
+        text: `ブラウザエージェントの自動操作サービスに接続できませんでした。ブラウザビューで手動操作を行ってください。 (${reason})`,
+        ts: Date.now(),
+      },
     ];
     browserMessageIndex.clear();
     renderBrowserChat({ forceSidebar });
@@ -2269,6 +2289,7 @@ async function loadBrowserAgentHistory({ showLoading = false, forceSidebar = fal
 }
 
 function connectBrowserEventStream() {
+  if (browserAgentStatus.available === false) return;
   if (typeof EventSource === "undefined") return;
   if (browserChatState.eventSource) return;
   try {
@@ -2313,7 +2334,9 @@ function connectBrowserEventStream() {
 }
 
 function ensureBrowserAgentInitialized({ showLoading = false, forceSidebar = false } = {}) {
-  connectBrowserEventStream();
+  if (browserAgentStatus.available !== false) {
+    connectBrowserEventStream();
+  }
   if (!browserChatState.initialized) {
     browserChatState.initialized = true;
     loadBrowserAgentHistory({ showLoading: true, forceSidebar });
@@ -2338,7 +2361,17 @@ async function sendBrowserAgentPrompt(text) {
     if (typeof data.run_summary === "string" && data.run_summary.trim()) {
       // 既に履歴に含まれているため、ここでは追加しない
     }
+    browserAgentStatus.available = true;
   } catch (error) {
+    browserAgentStatus.available = false;
+    if (browserChatState.eventSource) {
+      try {
+        browserChatState.eventSource.close();
+      } catch (_) {
+        // ignore
+      }
+      browserChatState.eventSource = null;
+    }
     addBrowserSystemMessage(`送信に失敗しました: ${error.message}`, { forceSidebar: currentChatMode === "browser" });
   } finally {
     browserChatState.sending = false;
@@ -2574,7 +2607,8 @@ async function sendOrchestratorMessage(text) {
           if (agentRaw === "browser") {
             ensureBrowserAgentInitialized({ showLoading: true });
             startOrchestratorBrowserMirror({ placeholder: message });
-            if (commandText) {
+            const canAutoExecuteBrowser = browserAgentStatus.available !== false;
+            if (commandText && canAutoExecuteBrowser) {
               const runPromise = sendBrowserAgentPrompt(commandText);
               runPromise.catch(error => {
                 console.error("Browser agent prompt failed", error);
