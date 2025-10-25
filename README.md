@@ -47,7 +47,7 @@ Flask をベースにしたマルチエージェント・プラットフォー�
 | `OPENAI_API_KEY` | LangGraph オーケストレーターが利用する OpenAI API キー。`.env` に記述して読み込まれます。 | (必須) |
 | `FAQ_GEMINI_API_BASE` | FAQ_Gemini のベース URL をカンマ区切りで列挙。先頭から順に接続を試行します。 | `http://localhost:5000,http://faq_gemini:5000` |
 | `FAQ_GEMINI_TIMEOUT` | FAQ_Gemini へのタイムアウト (秒)。 | `30` |
-| `BROWSER_AGENT_API_BASE` | Browser Agent のベース URL をカンマ区切りで列挙。 | `http://localhost:5005,http://web:5005` |
+| `BROWSER_AGENT_API_BASE` | Browser Agent のベース URL をカンマ区切りで列挙。 | `http://browser-agent:5005,http://localhost:5005` |
 | `BROWSER_AGENT_TIMEOUT` | Browser Agent へのタイムアウト (秒)。 | `120` |
 | `IOT_AGENT_API_BASE` | IoT Agent のベース URL をカンマ区切りで列挙。 | `https://iot-agent.project-kk.com` |
 | `IOT_AGENT_TIMEOUT` | IoT Agent へのタイムアウト (秒)。 | `30` |
@@ -92,6 +92,12 @@ Docker を利用すると依存関係をホストにインストールせずに�
 ```bash
 docker compose up --build
 ```
+
+- Browser Agent を Docker コンテナとして起動している場合は、`docker run` などでポート `5005` を公開し、`multi_agent_platform_net`
+  (または `MULTI_AGENT_NETWORK` で指定したネットワーク名) に接続してください。例: `docker run --rm -p 5005:5005 --network multi_agent_platform_net browser-agent`。
+- すでに起動済みの Browser Agent に接続する場合は、`.env` や `docker-compose.yml` の `BROWSER_AGENT_API_BASE` をそのホスト名
+  (例: `http://browser-agent:5005` または `http://host.docker.internal:5005`) に合わせてください。
+- 上記の準備が整ったら `docker compose up --build` で `web` サービスを再起動し、`/orchestrator/chat` からブラウザタスクが実行できることを確認します。
 
 - `docker-compose.yml` はホットリロード向けにリポジトリをボリュームマウントし、`FLASK_DEBUG=1` で開発モードを有効にします。
 - 外部の FAQ_Gemini / Browser Agent / IoT Agent コンテナを同じネットワークに接続する場合は、`MULTI_AGENT_NETWORK` 環境変数で共有ネットワーク名を指定してください (既定: `multi_agent_platform_net`)。

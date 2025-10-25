@@ -5,7 +5,7 @@ services:
       - "5050:5050"
     environment:
       FAQ_GEMINI_API_BASE: "http://faq_gemini:5000,http://localhost:5000"
-      BROWSER_AGENT_API_BASE: "http://web:5005,http://localhost:5005"
+      BROWSER_AGENT_API_BASE: "http://browser-agent:5005,http://localhost:5005"
       FLASK_DEBUG: "1"
     volumes:
       - .:/app
