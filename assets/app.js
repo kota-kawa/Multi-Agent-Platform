@@ -260,7 +260,7 @@ function activateView(viewKey) {
     ensureChatInitialized();
   }
   if (isBrowserView) {
-    ensureBrowserAgentInitialized({ showLoading: true });
+    ensureBrowserAgentInitialized({ showLoading: true, forceSidebar: true });
     requestMainBrowserViewportSync({ reloadFallback: true });
   }
   if (isIotView) {
@@ -2203,13 +2203,13 @@ function connectBrowserEventStream() {
   }
 }
 
-function ensureBrowserAgentInitialized({ showLoading = false } = {}) {
+function ensureBrowserAgentInitialized({ showLoading = false, forceSidebar = false } = {}) {
   connectBrowserEventStream();
   if (!browserChatState.initialized) {
     browserChatState.initialized = true;
-    loadBrowserAgentHistory({ showLoading: true, forceSidebar: true });
+    loadBrowserAgentHistory({ showLoading: true, forceSidebar });
   } else {
-    loadBrowserAgentHistory({ showLoading, forceSidebar: true });
+    loadBrowserAgentHistory({ showLoading, forceSidebar });
   }
 }
 
