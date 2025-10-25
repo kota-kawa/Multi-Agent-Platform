@@ -2453,7 +2453,17 @@ async function sendOrchestratorMessage(text) {
           if (agentRaw === "browser") {
             ensureBrowserAgentInitialized({ showLoading: true });
             if (commandText) {
-              await sendBrowserAgentPrompt(commandText);
+              const runPromise = sendBrowserAgentPrompt(commandText);
+              runPromise.catch(error => {
+                console.error("Browser agent prompt failed", error);
+                const errorMessage = error && typeof error.message === "string"
+                  ? error.message
+                  : String(error ?? "不明なエラー");
+                addOrchestratorAssistantMessage(
+                  `[ブラウザエージェント] ブラウザ操作の実行中にエラーが発生しました: ${errorMessage}`
+                );
+                renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
+              });
             }
           }
         }
