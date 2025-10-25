@@ -47,14 +47,14 @@ Flask をベースにしたマルチエージェント・プラットフォー�
 | `OPENAI_API_KEY` | LangGraph オーケストレーターが利用する OpenAI API キー。`.env` に記述して読み込まれます。 | (必須) |
 | `FAQ_GEMINI_API_BASE` | FAQ_Gemini のベース URL をカンマ区切りで列挙。先頭から順に接続を試行します。 | `http://localhost:5000,http://faq_gemini:5000` |
 | `FAQ_GEMINI_TIMEOUT` | FAQ_Gemini へのタイムアウト (秒)。 | `30` |
-| `BROWSER_AGENT_API_BASE` | Browser Agent のベース URL をカンマ区切りで列挙。 | `http://localhost:5005,http://browser_agent:5005` |
+| `BROWSER_AGENT_API_BASE` | Browser Agent のベース URL をカンマ区切りで列挙。 | `http://localhost:5005,http://web:5005` |
 | `BROWSER_AGENT_TIMEOUT` | Browser Agent へのタイムアウト (秒)。 | `120` |
 | `IOT_AGENT_API_BASE` | IoT Agent のベース URL をカンマ区切りで列挙。 | `https://iot-agent.project-kk.com` |
 | `IOT_AGENT_TIMEOUT` | IoT Agent へのタイムアウト (秒)。 | `30` |
 | `ORCHESTRATOR_MODEL` | ChatOpenAI で使用するモデル名。 | `gpt-4.1-2025-04-14` |
 | `ORCHESTRATOR_MAX_TASKS` | プランで生成されるタスクの最大数。 | `5` |
 
-`.env` ファイルを作成すると `app.py` の `_load_env_file()` により自動で読み込まれます。
+`.env` ファイルを作成すると `app.py` の `_load_env_file()` により自動で読み込まれます。Browser Agent など Docker 上のサービスに接続する場合は、Compose ファイルで指定したサービス名やネットワークエイリアス (例: `web`) と `*_API_BASE` のホスト部分を一致させてください。
 
 ## ローカル開発手順
 
