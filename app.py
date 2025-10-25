@@ -66,7 +66,7 @@ IOT_AGENT_TIMEOUT = float(os.environ.get("IOT_AGENT_TIMEOUT", "30"))
 
 DEFAULT_BROWSER_AGENT_BASES = (
     "http://localhost:5005",
-    "http://browser_agent:5005",
+    "http://web:5005",
 )
 BROWSER_AGENT_TIMEOUT = float(os.environ.get("BROWSER_AGENT_TIMEOUT", "120"))
 
