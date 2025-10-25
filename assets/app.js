@@ -2527,6 +2527,17 @@ async function sendOrchestratorMessage(text) {
         const agentRaw = typeof task.agent === "string" ? task.agent.trim().toLowerCase() : "";
         const commandText = typeof task.command === "string" ? task.command.trim() : "";
         const agentLabel = agentRaw ? (ORCHESTRATOR_AGENT_LABELS[agentRaw] || agentRaw) : "エージェント";
+        const displayText = commandText
+          ? `[${agentLabel}] ${commandText}`
+          : `[${agentLabel}] タスクを実行しています…`;
+        const message = addOrchestratorAssistantMessage(displayText, { pending: true });
+        message.ts = Date.now();
+        if (taskIndex !== null) {
+          const entry = ensureTaskEntry(taskIndex);
+          if (entry) {
+            entry.placeholder = message;
+          }
+        }
         if (agentRaw) {
           setGeneralProxyAgent(agentRaw);
           if (agentRaw === "browser") {
@@ -2545,17 +2556,6 @@ async function sendOrchestratorMessage(text) {
                 renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
               });
             }
-          }
-        }
-        const displayText = commandText
-          ? `[${agentLabel}] ${commandText}`
-          : `[${agentLabel}] タスクを実行しています…`;
-        const message = addOrchestratorAssistantMessage(displayText, { pending: true });
-        message.ts = Date.now();
-        if (taskIndex !== null) {
-          const entry = ensureTaskEntry(taskIndex);
-          if (entry) {
-            entry.placeholder = message;
           }
         }
         continue;
