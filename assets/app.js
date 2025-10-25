@@ -1636,10 +1636,18 @@ function parseSseEventBlock(block) {
 }
 
 async function* orchestratorRequest(message, { signal } = {}) {
+  const payload = { message };
+  if (BROWSER_AGENT_API_BASE) {
+    payload.browser_agent_base = BROWSER_AGENT_API_BASE;
+  }
+  if (Array.isArray(BROWSER_AGENT_BASE_HINTS) && BROWSER_AGENT_BASE_HINTS.length) {
+    payload.browser_agent_bases = BROWSER_AGENT_BASE_HINTS;
+  }
+
   const response = await fetch("/orchestrator/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify(payload),
     signal,
   });
 
@@ -1939,21 +1947,44 @@ function ensureIotChatInitialized({ forceSidebar = false } = {}) {
   }
 }
 
+const BROWSER_AGENT_BASE_HINTS = (() => {
+  const sanitize = value => (typeof value === "string" ? value.trim() : "");
+  const entries = new Set();
+
+  const addCandidate = value => {
+    if (!value) return;
+    const stringValue = sanitize(value);
+    if (!stringValue) return;
+    stringValue.split(",").forEach(part => {
+      const trimmed = sanitize(part);
+      if (trimmed) {
+        entries.add(trimmed);
+      }
+    });
+  };
+
+  let queryValue = "";
+  try {
+    queryValue = new URLSearchParams(window.location.search).get("browser_agent_base") || "";
+  } catch (_) {
+    queryValue = "";
+  }
+
+  addCandidate(queryValue);
+  addCandidate(window.BROWSER_AGENT_API_BASE);
+  const metaContent = document.querySelector("meta[name='browser-agent-api-base']")?.content;
+  addCandidate(metaContent);
+
+  return Array.from(entries);
+})();
+
 function resolveBrowserAgentBase() {
   const sanitize = value => (typeof value === "string" ? value.trim().replace(/\/+$/, "") : "");
-  let queryBase = "";
-  try {
-    queryBase = new URLSearchParams(window.location.search).get("browser_agent_base") || "";
-  } catch (_) {
-    queryBase = "";
-  }
-  const sources = [
-    sanitize(queryBase),
-    sanitize(window.BROWSER_AGENT_API_BASE),
-    sanitize(document.querySelector("meta[name='browser-agent-api-base']")?.content),
-  ];
-  for (const src of sources) {
-    if (src) return src;
+  for (const hint of BROWSER_AGENT_BASE_HINTS) {
+    const cleaned = sanitize(hint);
+    if (cleaned) {
+      return cleaned;
+    }
   }
   if (window.location.origin && window.location.origin !== "null") {
     return window.location.origin.replace(/\/+$/, "");

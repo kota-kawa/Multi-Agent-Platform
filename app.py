@@ -12,7 +12,16 @@ from typing import Any, Dict, Iterable, Iterator, List, Literal, TypedDict, cast
 from urllib.parse import urlparse, urlunparse
 
 import requests
-from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
+from flask import (
+    Flask,
+    Response,
+    g,
+    has_request_context,
+    jsonify,
+    request,
+    send_from_directory,
+    stream_with_context,
+)
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
@@ -217,11 +226,38 @@ def _expand_browser_agent_base(base: str) -> Iterable[str]:
             yield alias
 
 
+def _normalise_browser_base_values(values: Any) -> list[str]:
+    """Return a flat list of browser agent base URL strings from client payloads."""
+
+    cleaned: list[str] = []
+
+    def _consume(value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, str):
+            parts = [part.strip() for part in value.split(",")]
+            cleaned.extend(part for part in parts if part)
+            return
+        if isinstance(value, Iterable):
+            for item in value:
+                _consume(item)
+
+    _consume(values)
+    return cleaned
+
+
 def _iter_browser_agent_bases() -> list[str]:
     """Return configured Browser Agent base URLs in priority order."""
 
     configured = os.environ.get("BROWSER_AGENT_API_BASE", "")
     candidates: list[str] = []
+    if has_request_context():
+        overrides = getattr(g, "browser_agent_bases", None)
+        if overrides:
+            if isinstance(overrides, list):
+                candidates.extend(overrides)
+            else:  # Defensive fallback
+                candidates.extend(_normalise_browser_base_values(overrides))
     if configured:
         candidates.extend(part.strip() for part in configured.split(","))
     candidates.extend(DEFAULT_BROWSER_AGENT_BASES)
@@ -1271,6 +1307,12 @@ def orchestrator_chat() -> Any:
     message = (payload.get("message") or "").strip()
     if not message:
         return jsonify({"error": "メッセージを入力してください。"}), 400
+
+    overrides: list[str] = []
+    overrides.extend(_normalise_browser_base_values(payload.get("browser_agent_base")))
+    overrides.extend(_normalise_browser_base_values(payload.get("browser_agent_bases")))
+    if has_request_context():
+        g.browser_agent_bases = overrides
 
     try:
         orchestrator = _get_orchestrator()
