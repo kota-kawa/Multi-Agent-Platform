@@ -5,15 +5,19 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta
     name="browser-embed-url"
-    content="http://127.0.0.1:7900/vnc_lite.html?autoconnect=1&resize=scale&scale=auto&view_clip=false"
+    content="{{ browser_embed_url | e }}"
   />
-  <meta name="browser-agent-api-base" content="http://localhost:5005" />
+  <meta name="browser-agent-api-base" content="{{ browser_agent_client_base | e }}" />
   <meta name="iot-agent-api-base" content="/iot_agent" />
   <title>リモートブラウザ / IoT / 要約チャット - Single Page UI</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./assets/styles.css" />
+  <script>
+    window.BROWSER_EMBED_URL = {{ browser_embed_url | tojson }};
+    window.BROWSER_AGENT_API_BASE = {{ browser_agent_client_base | tojson }};
+  </script>
   <script src="./assets/app.js" defer></script>
 </head>
 <body>

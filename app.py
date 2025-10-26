@@ -18,6 +18,7 @@ from flask import (
     g,
     has_request_context,
     jsonify,
+    render_template,
     request,
     send_from_directory,
     stream_with_context,
@@ -79,6 +80,12 @@ DEFAULT_BROWSER_AGENT_BASES = (
 )
 BROWSER_AGENT_TIMEOUT = float(os.environ.get("BROWSER_AGENT_TIMEOUT", "120"))
 
+DEFAULT_BROWSER_EMBED_URL = (
+    "http://127.0.0.1:7900/"
+    "vnc_lite.html?autoconnect=1&resize=scale&scale=auto&view_clip=false"
+)
+DEFAULT_BROWSER_AGENT_CLIENT_BASE = "http://localhost:5005"
+
 ORCHESTRATOR_MODEL = os.environ.get("ORCHESTRATOR_MODEL", "gpt-4.1-2025-04-14")
 ORCHESTRATOR_MAX_TASKS = int(os.environ.get("ORCHESTRATOR_MAX_TASKS", "5"))
 
@@ -121,6 +128,24 @@ def _format_sse_event(payload: Dict[str, Any]) -> str:
     event_type = str(payload.get("event") or "message").strip() or "message"
     data = json.dumps(payload, ensure_ascii=False)
     return f"event: {event_type}\ndata: {data}\n\n"
+
+
+def _resolve_browser_embed_url() -> str:
+    """Return the browser embed URL exposed to the frontend."""
+
+    configured = os.environ.get("BROWSER_EMBED_URL", "").strip()
+    if configured:
+        return configured
+    return DEFAULT_BROWSER_EMBED_URL
+
+
+def _resolve_browser_agent_client_base() -> str:
+    """Return the Browser Agent API base URL for browser clients."""
+
+    configured = os.environ.get("BROWSER_AGENT_CLIENT_BASE", "").strip()
+    if configured:
+        return configured
+    return DEFAULT_BROWSER_AGENT_CLIENT_BASE
 
 
 def _iter_gemini_bases() -> list[str]:
@@ -1415,13 +1440,21 @@ def proxy_iot_agent(path: str) -> Response:
 def serve_index() -> Any:
     """Serve the main single-page application."""
 
-    return send_from_directory(app.root_path, "index.html")
+    browser_embed_url = _resolve_browser_embed_url()
+    browser_agent_client_base = _resolve_browser_agent_client_base()
+    return render_template(
+        "index.html",
+        browser_embed_url=browser_embed_url,
+        browser_agent_client_base=browser_agent_client_base,
+    )
 
 
 @app.route("/<path:path>")
 def serve_file(path: str) -> Any:
     """Serve any additional static files that live alongside index.html."""
 
+    if path == "index.html":
+        return serve_index()
     return send_from_directory(app.root_path, path)
 
 
