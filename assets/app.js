@@ -341,6 +341,7 @@ const DEFAULT_NOVNC_PARAMS = {
   autoconnect: "1",
   resize: "scale",
   scale: "auto",
+  view_clip: "false",
 };
 
 function normalizeBrowserEmbedUrl(value) {
@@ -349,6 +350,10 @@ function normalizeBrowserEmbedUrl(value) {
   try {
     const url = new URL(value, window.location.origin);
     const params = url.searchParams;
+
+    if (!url.pathname || url.pathname === "/") {
+      url.pathname = "/vnc_lite.html";
+    }
 
     const resizeValue = params.get("resize");
     if (!resizeValue || !ALLOWED_RESIZE_VALUES.has(resizeValue)) {
@@ -361,6 +366,10 @@ function normalizeBrowserEmbedUrl(value) {
 
     if (!params.has("autoconnect") || !params.get("autoconnect")) {
       params.set("autoconnect", DEFAULT_NOVNC_PARAMS.autoconnect);
+    }
+
+    if (!params.has("view_clip") || params.get("view_clip") !== "false") {
+      params.set("view_clip", DEFAULT_NOVNC_PARAMS.view_clip);
     }
 
     return url.toString();
@@ -399,7 +408,9 @@ function resolveBrowserEmbedUrl() {
     }
   }
 
-  return normalizeBrowserEmbedUrl("http://127.0.0.1:7900/?autoconnect=1&resize=scale&scale=auto");
+  return normalizeBrowserEmbedUrl(
+    "http://127.0.0.1:7900/vnc_lite.html?autoconnect=1&resize=scale&scale=auto&view_clip=false",
+  );
 }
 
 const BROWSER_EMBED_URL = resolveBrowserEmbedUrl();
