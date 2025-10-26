@@ -9,7 +9,7 @@ import queue
 import threading
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Literal, TypedDict, cast
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 from flask import (
@@ -79,8 +79,57 @@ DEFAULT_BROWSER_AGENT_BASES = (
 )
 BROWSER_AGENT_TIMEOUT = float(os.environ.get("BROWSER_AGENT_TIMEOUT", "120"))
 
+DEFAULT_BROWSER_EMBED_URL = (
+    "http://127.0.0.1:7900/"
+    "vnc_lite.html?autoconnect=1&resize=scale&scale=auto&view_clip=false"
+)
+ALLOWED_NOVNC_RESIZE_VALUES = {"scale", "remote", "off"}
+
 ORCHESTRATOR_MODEL = os.environ.get("ORCHESTRATOR_MODEL", "gpt-4.1-2025-04-14")
 ORCHESTRATOR_MAX_TASKS = int(os.environ.get("ORCHESTRATOR_MAX_TASKS", "5"))
+
+
+def _normalise_browser_embed_url(value: str | None) -> str:
+    """Return a normalised noVNC URL that fills the available stage."""
+
+    if not value:
+        return DEFAULT_BROWSER_EMBED_URL
+
+    cleaned = value.strip()
+    if not cleaned:
+        return DEFAULT_BROWSER_EMBED_URL
+
+    try:
+        parsed = urlparse(cleaned)
+    except ValueError:
+        return cleaned
+
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+
+    has_scale = any(key == "scale" for key, _ in query_items)
+    if not has_scale:
+        query_items.append(("scale", "auto"))
+
+    normalised_items: list[tuple[str, str]] = []
+    resize_present = False
+    for key, item_value in query_items:
+        if key == "resize":
+            resize_present = True
+            if item_value in ALLOWED_NOVNC_RESIZE_VALUES:
+                normalised_items.append((key, item_value))
+            else:
+                normalised_items.append((key, "scale"))
+        else:
+            normalised_items.append((key, item_value))
+
+    if not resize_present:
+        normalised_items.append(("resize", "scale"))
+
+    normalised_query = urlencode(normalised_items)
+    return urlunparse(parsed._replace(query=normalised_query))
+
+
+BROWSER_EMBED_URL = _normalise_browser_embed_url(os.environ.get("BROWSER_EMBED_URL"))
 
 
 app = Flask(__name__, static_folder="assets", static_url_path="/assets")
@@ -1409,6 +1458,31 @@ def proxy_iot_agent(path: str) -> Response:
     """Forward IoT Agent API requests to the configured upstream service."""
 
     return _proxy_iot_agent_request(path)
+
+
+@app.route("/config.js")
+def serve_runtime_config() -> Response:
+    """Expose runtime configuration for the front-end SPA."""
+
+    config: dict[str, Any] = {}
+
+    if BROWSER_EMBED_URL:
+        config["BROWSER_EMBED_URL"] = BROWSER_EMBED_URL
+
+    browser_bases = _iter_browser_agent_bases()
+    if browser_bases:
+        config["BROWSER_AGENT_API_BASE"] = browser_bases[0]
+        config["BROWSER_AGENT_BASE_HINTS"] = browser_bases
+
+    payload_lines = [
+        f"window.{key} = {json.dumps(value, ensure_ascii=False)};" for key, value in config.items()
+    ]
+    payload = "\n".join(payload_lines) + ("\n" if payload_lines else "")
+
+    response = Response(payload, mimetype="application/javascript")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.route("/")

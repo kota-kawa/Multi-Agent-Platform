@@ -48,11 +48,16 @@ Flask をベースにしたマルチエージェント・プラットフォー�
 | `FAQ_GEMINI_API_BASE` | FAQ_Gemini のベース URL をカンマ区切りで列挙。先頭から順に接続を試行します。 | `http://localhost:5000,http://faq_gemini:5000` |
 | `FAQ_GEMINI_TIMEOUT` | FAQ_Gemini へのタイムアウト (秒)。 | `30` |
 | `BROWSER_AGENT_API_BASE` | Browser Agent のベース URL をカンマ区切りで列挙。 | `http://browser-agent:5005,http://localhost:5005` |
+| `BROWSER_EMBED_URL` | リモートブラウザ iframe の noVNC URL。未設定時は `config.js` が既定の 7900 ポート URL を提供します。 | *(省略時は既定値)* |
 | `BROWSER_AGENT_TIMEOUT` | Browser Agent へのタイムアウト (秒)。 | `120` |
 | `IOT_AGENT_API_BASE` | IoT Agent のベース URL をカンマ区切りで列挙。 | `https://iot-agent.project-kk.com` |
 | `IOT_AGENT_TIMEOUT` | IoT Agent へのタイムアウト (秒)。 | `30` |
 | `ORCHESTRATOR_MODEL` | ChatOpenAI で使用するモデル名。 | `gpt-4.1-2025-04-14` |
 | `ORCHESTRATOR_MAX_TASKS` | プランで生成されるタスクの最大数。 | `5` |
+
+`BROWSER_EMBED_URL` は [kota-kawa/web_agent02](https://github.com/kota-kawa/web_agent02) のブラウザエージェントが提供する noVNC
+エンドポイント（例: `http://browser-agent:7900/vnc_lite.html?autoconnect=1&resize=scale&scale=auto&view_clip=false`）を指定すると、最大化された
+Chrome ウィンドウをそのまま埋め込み表示できます。
 
 `.env` ファイルを作成すると `app.py` の `_load_env_file()` により自動で読み込まれます。Browser Agent など Docker 上のサービスに接続する場合は、Compose ファイルで指定したサービス名やネットワークエイリアス (例: `web`) と `*_API_BASE` のホスト部分を一致させてください。
 
@@ -73,6 +78,7 @@ Flask をベースにしたマルチエージェント・プラットフォー�
    OPENAI_API_KEY=sk-...
    FAQ_GEMINI_API_BASE=http://localhost:5000
    BROWSER_AGENT_API_BASE=http://localhost:5005
+   BROWSER_EMBED_URL=http://127.0.0.1:7900/vnc_lite.html?autoconnect=1&resize=scale&scale=auto&view_clip=false
    IOT_AGENT_API_BASE=http://localhost:6000
    EOF
    ```

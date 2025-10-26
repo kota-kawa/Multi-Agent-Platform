@@ -1981,6 +1981,12 @@ const BROWSER_AGENT_BASE_HINTS = (() => {
     queryValue = "";
   }
 
+  if (Array.isArray(window.BROWSER_AGENT_BASE_HINTS)) {
+    for (const hint of window.BROWSER_AGENT_BASE_HINTS) {
+      addCandidate(hint);
+    }
+  }
+
   addCandidate(queryValue);
   addCandidate(window.BROWSER_AGENT_API_BASE);
   const metaContent = document.querySelector("meta[name='browser-agent-api-base']")?.content;
