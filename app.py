@@ -79,6 +79,10 @@ DEFAULT_BROWSER_AGENT_BASES = (
 )
 BROWSER_AGENT_TIMEOUT = float(os.environ.get("BROWSER_AGENT_TIMEOUT", "120"))
 
+
+_browser_agent_warm_lock = threading.Lock()
+_browser_agent_warmed = False
+
 ORCHESTRATOR_MODEL = os.environ.get("ORCHESTRATOR_MODEL", "gpt-4.1-2025-04-14")
 ORCHESTRATOR_MAX_TASKS = int(os.environ.get("ORCHESTRATOR_MAX_TASKS", "5"))
 
@@ -278,6 +282,33 @@ def _iter_browser_agent_bases() -> list[str]:
             seen.add(candidate)
             deduped.append(candidate)
     return deduped
+
+
+def _warm_browser_agent_session() -> None:
+    """Best-effort warm-up of the Browser Agent dashboard."""
+
+    global _browser_agent_warmed
+    if _browser_agent_warmed:
+        return
+
+    with _browser_agent_warm_lock:
+        if _browser_agent_warmed:
+            return
+
+        for base in _iter_browser_agent_bases():
+            try:
+                url = _build_browser_agent_url(base, "/")
+            except ValueError:
+                continue
+
+            try:
+                response = requests.get(url, timeout=5)
+            except requests.exceptions.RequestException:
+                continue
+
+            if response.ok:
+                _browser_agent_warmed = True
+                break
 
 
 def _build_browser_agent_url(base: str, path: str) -> str:
@@ -1414,6 +1445,11 @@ def proxy_iot_agent(path: str) -> Response:
 @app.route("/")
 def serve_index() -> Any:
     """Serve the main single-page application."""
+
+    try:
+        _warm_browser_agent_session()
+    except Exception:  # noqa: BLE001 - best effort warm-up
+        logging.debug("Browser agent warm-up failed", exc_info=True)
 
     return send_from_directory(app.root_path, "index.html")
 
