@@ -23,7 +23,7 @@ from flask import (
     send_from_directory,
     stream_with_context,
 )
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
@@ -669,15 +669,22 @@ class MultiAgentOrchestrator:
             history = []
 
         recent_history = history[-10:]
-        history_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_history])
 
         prompt = self._PLANNER_PROMPT.format(max_tasks=ORCHESTRATOR_MAX_TASKS)
         if long_term_memory:
             prompt += "\n\n長期記憶:\n" + long_term_memory
         if short_term_memory:
             prompt += "\n\n短期記憶:\n" + short_term_memory
-        prompt += "\n\n以下は直近の会話履歴です:\n" + history_prompt
-        messages = [SystemMessage(content=prompt), HumanMessage(content=user_input)]
+
+        messages: list[HumanMessage | SystemMessage | AIMessage] = [SystemMessage(content=prompt)]
+        for msg in recent_history:
+            role = msg.get("role")
+            content = msg.get("content") or ""
+            if role == "user":
+                messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                messages.append(AIMessage(content=content))
+        messages.append(HumanMessage(content=user_input))
 
         try:
             response = self._llm.invoke(messages)
