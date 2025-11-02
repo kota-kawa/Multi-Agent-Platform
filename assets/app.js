@@ -80,7 +80,7 @@ const GENERAL_PROXY_VIEW_LABELS = {
 let generalProxyTargetView = null;
 let generalProxyAgentKey = null;
 let generalProxyViewKey = null;
-let currentViewKey = document.querySelector(".nav-btn.active")?.dataset.view || "browser";
+let currentViewKey = document.querySelector(".nav-btn.active")?.dataset.view || "general";
 
 function resolveAgentToView(agentKey) {
   if (typeof agentKey !== "string") return null;
@@ -2896,5 +2896,5 @@ if (sidebarResetBtn) {
   });
 }
 
-const initialActiveView = document.querySelector(".nav-btn.active")?.dataset.view || "browser";
+const initialActiveView = document.querySelector(".nav-btn.active")?.dataset.view || "general";
 activateView(initialActiveView);
