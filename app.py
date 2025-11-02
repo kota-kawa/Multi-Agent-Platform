@@ -673,9 +673,9 @@ class MultiAgentOrchestrator:
 
         prompt = self._PLANNER_PROMPT.format(max_tasks=ORCHESTRATOR_MAX_TASKS)
         if long_term_memory:
-            prompt += "\n\n長期記憶:\n" + long_term_memory
+            prompt += "\n\nユーザーの特性:\n" + long_term_memory
         if short_term_memory:
-            prompt += "\n\n短期記憶:\n" + short_term_memory
+            prompt += "\n\nユーザーの最近の動向:\n" + short_term_memory
         prompt += "\n\n以下は直近の会話履歴です:\n" + history_prompt
         messages = [SystemMessage(content=prompt), HumanMessage(content=user_input)]
 
