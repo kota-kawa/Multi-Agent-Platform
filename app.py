@@ -1501,16 +1501,24 @@ def chat_history() -> Any:
     return jsonify(history)
 
 
-@app.route("/memory", methods=["GET", "POST"])
-def memory() -> Any:
+@app.route("/memory")
+def serve_memory_page() -> Any:
+    """Serve the memory management page."""
+    return render_template("memory.html")
+
+
+@app.route("/api/memory", methods=["GET", "POST"])
+def api_memory() -> Any:
     """Handle memory file operations."""
     if request.method == "POST":
         data = request.get_json()
+        if data is None:
+            return jsonify({"error": "Invalid JSON"}), 400
         with open("long_term_memory.json", "w", encoding="utf-8") as f:
             json.dump({"memory": data.get("long_term_memory", "")}, f, ensure_ascii=False, indent=2)
         with open("short_term_memory.json", "w", encoding="utf-8") as f:
             json.dump({"memory": data.get("short_term_memory", "")}, f, ensure_ascii=False, indent=2)
-        return jsonify({"status": "ok"})
+        return jsonify({"message": "Memory saved successfully."})
 
     try:
         with open("long_term_memory.json", "r", encoding="utf-8") as f:

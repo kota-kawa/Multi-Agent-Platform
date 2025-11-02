@@ -55,13 +55,6 @@
           </svg>
           <span>チャット</span>
           </button>
-          <button class="nav-btn" data-view="memory" title="記憶">
-            <!-- 記憶アイコン -->
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8zm-1-12h2v6h-2zm0 8h2v2h-2z"/>
-            </svg>
-            <span>記憶</span>
-            </button>
         </div>
         <section class="sidebar-chat" aria-label="共通チャット">
           <div class="sidebar-chat-header">
@@ -224,33 +217,6 @@
               </div>
               <div id="summaryBox" class="summary-box">
                 左側のチャットでメッセージを送信すると、ここに要約が表示されます。
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- 4) 記憶ビュー -->
-        <section id="view-memory" class="view" aria-label="記憶">
-          <div class="memory-layout">
-            <div class="memory-panel">
-              <div class="memory-panel-header">
-                <div class="memory-heading">
-                  <h2>記憶</h2>
-                  <p>長期記憶と短期記憶の内容を確認・編集できます。</p>
-                </div>
-                <div class="memory-actions">
-                  <button id="saveMemoryBtn" class="btn primary" type="button">保存</button>
-                </div>
-              </div>
-              <div class="memory-box">
-                <div class="memory-group">
-                  <label for="longTermMemory">長期記憶</label>
-                  <textarea id="longTermMemory" class="memory-textarea" rows="10"></textarea>
-                </div>
-                <div class="memory-group">
-                  <label for="shortTermMemory">短期記憶</label>
-                  <textarea id="shortTermMemory" class="memory-textarea" rows="5"></textarea>
-                </div>
               </div>
             </div>
           </div>
