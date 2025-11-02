@@ -1572,6 +1572,16 @@ def chat_history() -> Any:
     return jsonify(history)
 
 
+@app.route("/reset_chat_history", methods=["POST"])
+def reset_chat_history() -> Any:
+    """Clear the chat history."""
+    try:
+        with open("chat_history.json", "w", encoding="utf-8") as f:
+            json.dump([], f)
+    except FileNotFoundError:
+        pass  # File doesn't exist, nothing to clear
+    return jsonify({"message": "Chat history cleared successfully."})
+
 
 @app.route("/memory")
 def serve_memory_page() -> Any:
