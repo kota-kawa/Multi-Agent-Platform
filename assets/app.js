@@ -50,6 +50,7 @@ const views = {
   browser: $("#view-browser"),
   iot: $("#view-iot"),
   chat: $("#view-chat"),
+  memory: $("#view-memory"),
 };
 
 const appTitle = $("#appTitle");
@@ -247,6 +248,7 @@ function activateView(viewKey) {
     browser: "リモートブラウザ",
     iot: "IoT ダッシュボード",
     chat: "要約チャット",
+    memory: "記憶",
   };
   if (appTitle) {
     appTitle.textContent = titles[target] ?? "リモートブラウザ";
@@ -256,7 +258,11 @@ function activateView(viewKey) {
   const isChatView = target === "chat";
   const isIotView = target === "iot";
   const isGeneralView = target === "general";
+  const isMemoryView = target === "memory";
 
+  if (isMemoryView) {
+    ensureMemoryInitialized();
+  }
   if (isChatView) {
     ensureChatInitialized({ showLoadingSummary: true });
   } else if (!isBrowserView && !isIotView && !isGeneralView) {
@@ -2948,3 +2954,49 @@ if (sidebarResetBtn) {
 
 const initialActiveView = document.querySelector(".nav-btn.active")?.dataset.view || "general";
 activateView(initialActiveView);
+
+/* ---------- Memory ---------- */
+
+const memoryState = {
+  initialized: false,
+};
+
+const longTermMemory = $("#longTermMemory");
+const shortTermMemory = $("#shortTermMemory");
+const saveMemoryBtn = $("#saveMemoryBtn");
+
+async function fetchMemory() {
+  try {
+    const response = await fetch("/memory");
+    const data = await response.json();
+    longTermMemory.value = data.long_term_memory;
+    shortTermMemory.value = data.short_term_memory;
+  } catch (error) {
+    console.error("Error fetching memory:", error);
+  }
+}
+
+async function saveMemory() {
+  try {
+    await fetch("/memory", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        long_term_memory: longTermMemory.value,
+        short_term_memory: shortTermMemory.value,
+      }),
+    });
+  } catch (error) {
+    console.error("Error saving memory:", error);
+  }
+}
+
+function ensureMemoryInitialized() {
+  if (!memoryState.initialized) {
+    memoryState.initialized = true;
+    fetchMemory();
+    saveMemoryBtn.addEventListener("click", saveMemory);
+  }
+}

@@ -998,6 +998,76 @@ body{
   border-color:rgba(156,204,255,.45);
 }
 
+/* memory */
+.memory-layout{display:flex; justify-content:center}
+.memory-panel{
+  position:relative;
+  width:min(720px, 100%);
+  background:linear-gradient(155deg, rgba(24,30,46,.95), rgba(12,17,27,.92));
+  border:1px solid rgba(91,209,255,.2);
+  border-radius:20px;
+  padding:32px;
+  box-shadow:var(--shadow);
+  display:flex;
+  flex-direction:column;
+  gap:24px;
+  overflow:hidden;
+}
+.memory-panel::after{
+  content:"";
+  position:absolute;
+  top:-100px; right:-140px;
+  width:260px; height:260px;
+  background:radial-gradient(circle at center, rgba(91,209,255,.28), transparent 70%);
+  pointer-events:none;
+}
+.memory-panel-header{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:24px;
+  position:relative;
+  z-index:1;
+}
+.memory-heading h2{
+  margin:0;
+  font-size:26px;
+  font-weight:700;
+}
+.memory-heading p{margin:8px 0 0; font-size:14px; color:var(--muted)}
+.memory-actions{display:flex; gap:12px; flex-wrap:wrap}
+.memory-actions .btn{min-width:96px}
+.memory-box{
+  position:relative;
+  z-index:1;
+  display:flex;
+  flex-direction:column;
+  gap:16px;
+}
+.memory-group{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+.memory-group label{
+  font-size:14px;
+  font-weight:600;
+  color:var(--muted);
+}
+.memory-textarea{
+  background:rgba(8,12,22,.88);
+  border:1px solid rgba(91,209,255,.2);
+  border-radius:16px;
+  padding:22px 24px;
+  min-height:120px;
+  color:#dce6f7;
+  line-height:1.8;
+  font-size:15px;
+  white-space:pre-wrap;
+  box-shadow:inset 0 0 0 1px rgba(12,36,66,.4);
+  resize:vertical;
+}
+
 .sidebar-chat-log::-webkit-scrollbar-corner,
 .sidebar-chat-input::-webkit-scrollbar-corner,
 .chat-log::-webkit-scrollbar-corner,
