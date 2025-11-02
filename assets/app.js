@@ -2190,7 +2190,8 @@ function updateSidebarControlsForMode(mode) {
       sidebarResetBtn.disabled = !isBrowserAgentActive;
     }
     if (sidebarChatSend) {
-      sidebarChatSend.disabled = orchestratorState.sending;
+      const sending = isBrowserAgentActive ? browserChatState.sending : orchestratorState.sending;
+      sidebarChatSend.disabled = sending;
     }
     if (isBrowserAgentActive) {
       updatePauseButtonState(mode);
@@ -2800,10 +2801,19 @@ if (chatForm) {
     if (!value) return;
     chatInput.value = "";
     if (sidebarChatInput) sidebarChatInput.value = "";
-    if (currentChatMode === "browser") await sendBrowserAgentPrompt(value);
-    else if (currentChatMode === "iot") await sendIotChatMessage(value);
-    else if (currentChatMode === "orchestrator") await sendOrchestratorMessage(value);
-    else await sendChatMessage(value);
+    if (currentChatMode === "browser") {
+      await sendBrowserAgentPrompt(value);
+    } else if (currentChatMode === "iot") {
+      await sendIotChatMessage(value);
+    } else if (currentChatMode === "orchestrator") {
+      if (generalProxyAgentKey === "browser") {
+        await sendBrowserAgentPrompt(value);
+      } else {
+        await sendOrchestratorMessage(value);
+      }
+    } else {
+      await sendChatMessage(value);
+    }
   });
 }
 
@@ -2814,10 +2824,19 @@ if (sidebarChatForm) {
     if (!value) return;
     sidebarChatInput.value = "";
     if (chatInput) chatInput.value = "";
-    if (currentChatMode === "browser") await sendBrowserAgentPrompt(value);
-    else if (currentChatMode === "iot") await sendIotChatMessage(value);
-    else if (currentChatMode === "orchestrator") await sendOrchestratorMessage(value);
-    else await sendChatMessage(value);
+    if (currentChatMode === "browser") {
+      await sendBrowserAgentPrompt(value);
+    } else if (currentChatMode === "iot") {
+      await sendIotChatMessage(value);
+    } else if (currentChatMode === "orchestrator") {
+      if (generalProxyAgentKey === "browser") {
+        await sendBrowserAgentPrompt(value);
+      } else {
+        await sendOrchestratorMessage(value);
+      }
+    } else {
+      await sendChatMessage(value);
+    }
   });
 }
 
