@@ -27,14 +27,14 @@
       <aside class="sidebar" role="navigation" aria-label="ビュー切替">
         <p class="sidebar-title">ビュー</p>
         <div class="sidebar-nav" role="group" aria-label="ビュー選択">
-          <button class="nav-btn" data-view="general" title="一般">
+          <button class="nav-btn active" data-view="general" title="一般">
           <!-- 一般ビュー用アイコン -->
           <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
             <path d="M12 2a10 10 0 1 0 10 10A10.011 10.011 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8.009 8.009 0 0 1-8 8zm0-11a3 3 0 1 0 3 3 3 3 0 0 0-3-3z"/>
           </svg>
           <span>一般</span>
           </button>
-          <button class="nav-btn active" data-view="browser" title="ブラウザ">
+          <button class="nav-btn" data-view="browser" title="ブラウザ">
           <!-- モニタ風アイコン（SVG） -->
           <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
             <path d="M3 4h18a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm0 2v9h18V6H3zm7 13h4v2h-4v-2z"/>
@@ -142,11 +142,11 @@
       <!-- メイン領域 -->
       <main class="content" role="main">
         <header class="content-header" role="presentation">
-          <h1 class="content-title" id="appTitle">リモートブラウザ</h1>
+          <h1 class="content-title" id="appTitle">一般ビュー</h1>
           <p class="content-subtitle">左のサイドバーからビューを切り替えできます。</p>
         </header>
         <!-- 0) 一般ビュー -->
-        <section id="view-general" class="view" aria-labelledby="appTitle">
+        <section id="view-general" class="view active" aria-labelledby="appTitle">
           <div class="general-view">
             <div id="generalDefaultContent" class="general-view__default">
               <h2>ようこそ</h2>
@@ -159,7 +159,7 @@
         </section>
 
         <!-- 1) リモートブラウザ風ビュー -->
-        <section id="view-browser" class="view active" aria-labelledby="appTitle">
+        <section id="view-browser" class="view" aria-labelledby="appTitle">
           <div class="no-vnc-surface">
             <div id="browserStage" class="stage" role="region" aria-label="リモートブラウザ">
               <p class="stage-fallback">リモートブラウザを読み込んでいます…</p>
