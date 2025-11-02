@@ -122,6 +122,23 @@ class OrchestratorError(RuntimeError):
     """Raised when the orchestrator cannot complete a request."""
 
 
+def _append_to_chat_history(role: str, content: str):
+    """Append a message to the chat history file."""
+    try:
+        with open("chat_history.json", "r+", encoding="utf-8") as f:
+            try:
+                history = json.load(f)
+            except json.JSONDecodeError:
+                history = []
+            history.append({"role": role, "content": content})
+            f.seek(0)
+            json.dump(history, f, ensure_ascii=False, indent=2)
+            f.truncate()
+    except FileNotFoundError:
+        with open("chat_history.json", "w", encoding="utf-8") as f:
+            json.dump([{"role": role, "content": content}], f, ensure_ascii=False, indent=2)
+
+
 def _format_sse_event(payload: Dict[str, Any]) -> str:
     """Serialise an SSE event line with the payload JSON."""
 
@@ -633,7 +650,17 @@ class MultiAgentOrchestrator:
         if not user_input:
             raise OrchestratorError("オーケストレーターに渡された入力が空でした。")
 
+        try:
+            with open("chat_history.json", "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            history = []
+
+        recent_history = history[-10:]
+        history_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_history])
+
         prompt = self._PLANNER_PROMPT.format(max_tasks=ORCHESTRATOR_MAX_TASKS)
+        prompt += "\n\n以下は直近の会話履歴です:\n" + history_prompt
         messages = [SystemMessage(content=prompt), HumanMessage(content=user_input)]
 
         try:
@@ -1212,6 +1239,7 @@ class MultiAgentOrchestrator:
         return payload
 
     def run_stream(self, user_input: str) -> Iterator[Dict[str, Any]]:
+        _append_to_chat_history("user", user_input)
         state: OrchestratorState = {
             "user_input": user_input,
             "plan_summary": None,
@@ -1279,6 +1307,10 @@ class MultiAgentOrchestrator:
         plan_summary = state.get("plan_summary") or ""
         executions = state.get("executions") or []
         assistant_messages = self._format_assistant_messages(plan_summary, executions)
+
+        for msg in assistant_messages:
+            _append_to_chat_history("assistant", msg.get("text", ""))
+
         yield self._event_payload(
             "complete",
             state,
@@ -1381,11 +1413,16 @@ def rag_answer() -> Any:
     if not question:
         return jsonify({"error": "質問を入力してください。"}), 400
 
+    _append_to_chat_history("user", question)
+
     try:
         data = _call_gemini("/rag_answer", method="POST", payload={"question": question})
     except GeminiAPIError as exc:
         logging.exception("FAQ_Gemini rag_answer failed: %s", exc)
         return jsonify({"error": str(exc)}), exc.status_code
+
+    if "answer" in data:
+        _append_to_chat_history("assistant", data["answer"])
 
     return jsonify(data)
 
@@ -1435,6 +1472,17 @@ def proxy_iot_agent(path: str) -> Response:
     """Forward IoT Agent API requests to the configured upstream service."""
 
     return _proxy_iot_agent_request(path)
+
+
+@app.route("/chat_history", methods=["GET"])
+def chat_history() -> Any:
+    """Fetch the entire chat history."""
+    try:
+        with open("chat_history.json", "r", encoding="utf-8") as f:
+            history = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        history = []
+    return jsonify(history)
 
 
 @app.route("/")
