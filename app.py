@@ -122,6 +122,28 @@ class OrchestratorError(RuntimeError):
     """Raised when the orchestrator cannot complete a request."""
 
 
+def _send_recent_history_to_agents(history: List[Dict[str, str]]):
+    """Send the last 5 chat history entries to all agents."""
+    recent_history = history[-5:]
+    formatted_history = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_history])
+
+    # Ignore the response.
+    try:
+        _call_gemini("/rag_answer", method="POST", payload={"question": formatted_history})
+    except GeminiAPIError as e:
+        logging.warning("Error sending history to gemini: %s", e)
+
+    try:
+        _call_browser_agent_chat(formatted_history)
+    except BrowserAgentError as e:
+        logging.warning("Error sending history to browser agent: %s", e)
+
+    try:
+        _call_iot_agent_chat(formatted_history)
+    except IotAgentError as e:
+        logging.warning("Error sending history to iot agent: %s", e)
+
+
 def _append_to_chat_history(role: str, content: str):
     """Append a message to the chat history file."""
     try:
@@ -134,6 +156,9 @@ def _append_to_chat_history(role: str, content: str):
             f.seek(0)
             json.dump(history, f, ensure_ascii=False, indent=2)
             f.truncate()
+            if len(history) > 0 and len(history) % 5 == 0:
+                # Run in a separate thread to avoid blocking.
+                threading.Thread(target=_send_recent_history_to_agents, args=(history,)).start()
     except FileNotFoundError:
         with open("chat_history.json", "w", encoding="utf-8") as f:
             json.dump([{"role": role, "content": content}], f, ensure_ascii=False, indent=2)
