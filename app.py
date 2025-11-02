@@ -1501,6 +1501,7 @@ def chat_history() -> Any:
     return jsonify(history)
 
 
+
 @app.route("/memory")
 def serve_memory_page() -> Any:
     """Serve the memory management page."""
@@ -1536,6 +1537,7 @@ def api_memory() -> Any:
         "long_term_memory": long_term_memory,
         "short_term_memory": short_term_memory,
     })
+
 
 
 @app.route("/")
