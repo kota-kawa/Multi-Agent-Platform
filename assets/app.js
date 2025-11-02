@@ -2919,8 +2919,7 @@ if (sidebarPauseBtn) {
 
 if (sidebarResetBtn) {
   sidebarResetBtn.addEventListener("click", async () => {
-    const isBrowserContext = currentChatMode === "browser" || (currentChatMode === "orchestrator" && generalProxyAgentKey === "browser");
-    if (isBrowserContext) {
+    if (currentChatMode === "browser") {
       if (!confirm("ブラウザエージェントの履歴をリセットしますか？")) return;
       try {
         const { data } = await browserAgentRequest("/api/reset", { method: "POST" });
@@ -2946,14 +2945,34 @@ if (sidebarResetBtn) {
     }
 
     if (currentChatMode === "orchestrator") {
-      if (!confirm("チャット履歴をリセットしますか？")) return;
-      try {
-        await fetch("/reset_chat_history", { method: "POST" });
-        await fetchChatHistory();
-      } catch (error) {
-        console.error("Error resetting chat history:", error);
-        alert(`チャット履歴のリセットに失敗しました: ${error.message}`);
+      if (generalProxyAgentKey === "browser") {
+        if (!confirm("会話履歴をリセットしますか？ブラウザエージェントは一時停止されます。")) return;
+        try {
+          await fetch("/reset_chat_history", { method: "POST" });
+          try {
+            await browserAgentRequest("/api/pause", { method: "POST" });
+            browserChatState.paused = true;
+          } catch (pauseError) {
+            console.warn("Failed to pause browser agent during reset:", pauseError);
+          }
+          setGeneralProxyAgent(null);
+          await fetchChatHistory();
+          updateSidebarControlsForMode(currentChatMode);
+        } catch (error) {
+          console.error("Error resetting chat history:", error);
+          alert(`チャット履歴のリセットに失敗しました: ${error.message}`);
+        }
+      } else {
+        if (!confirm("チャット履歴をリセットしますか？")) return;
+        try {
+          await fetch("/reset_chat_history", { method: "POST" });
+          await fetchChatHistory();
+        } catch (error) {
+          console.error("Error resetting chat history:", error);
+          alert(`チャット履歴のリセットに失敗しました: ${error.message}`);
+        }
       }
+      return;
     }
   });
 }
