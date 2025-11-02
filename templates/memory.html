@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Memory Management</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+  <style>
+    body {
+      padding: 20px;
+    }
+    .memory-container {
+      max-width: 800px;
+      margin: 0 auto;
+      background-color: var(--panel-2);
+      padding: 20px;
+      border-radius: 8px;
+    }
+    h1 {
+      color: var(--text);
+    }
+    .memory-form {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .memory-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    label {
+      font-weight: bold;
+      color: var(--text);
+    }
+    textarea {
+      width: 100%;
+      min-height: 150px;
+      padding: 10px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: inherit;
+    }
+    .save-button {
+      align-self: flex-end;
+      padding: 10px 20px;
+      border: none;
+      border-radius: 4px;
+      background-color: var(--primary);
+      color: white;
+      cursor: pointer;
+    }
+    .save-button:hover {
+      background-color: var(--primary-2);
+    }
+  </style>
+</head>
+<body>
+  <div class="memory-container">
+    <h1>Memory Management</h1>
+    <form id="memoryForm" class="memory-form">
+      <div class="memory-group">
+        <label for="longTermMemory">Long-Term Memory</label>
+        <textarea id="longTermMemory" name="long_term_memory"></textarea>
+      </div>
+      <div class="memory-group">
+        <label for="shortTermMemory">Short-Term Memory</label>
+        <textarea id="shortTermMemory" name="short_term_memory"></textarea>
+      </div>
+      <button type="submit" class="save-button">Save</button>
+    </form>
+    <p id="statusMessage" style="color: var(--accent);"></p>
+  </div>
+  <script src="/assets/memory.js" defer></script>
+</body>
+</html>

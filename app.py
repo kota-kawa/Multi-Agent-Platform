@@ -651,6 +651,18 @@ class MultiAgentOrchestrator:
             raise OrchestratorError("オーケストレーターに渡された入力が空でした。")
 
         try:
+            with open("long_term_memory.json", "r", encoding="utf-8") as f:
+                long_term_memory = json.load(f).get("memory", "")
+        except (FileNotFoundError, json.JSONDecodeError):
+            long_term_memory = ""
+
+        try:
+            with open("short_term_memory.json", "r", encoding="utf-8") as f:
+                short_term_memory = json.load(f).get("memory", "")
+        except (FileNotFoundError, json.JSONDecodeError):
+            short_term_memory = ""
+
+        try:
             with open("chat_history.json", "r", encoding="utf-8") as f:
                 history = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
@@ -660,6 +672,10 @@ class MultiAgentOrchestrator:
         history_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_history])
 
         prompt = self._PLANNER_PROMPT.format(max_tasks=ORCHESTRATOR_MAX_TASKS)
+        if long_term_memory:
+            prompt += "\n\n長期記憶:\n" + long_term_memory
+        if short_term_memory:
+            prompt += "\n\n短期記憶:\n" + short_term_memory
         prompt += "\n\n以下は直近の会話履歴です:\n" + history_prompt
         messages = [SystemMessage(content=prompt), HumanMessage(content=user_input)]
 
@@ -1485,15 +1501,43 @@ def chat_history() -> Any:
     return jsonify(history)
 
 
-@app.route("/reset_chat_history", methods=["POST"])
-def reset_chat_history() -> Any:
-    """Clear the chat history file."""
+
+@app.route("/memory")
+def serve_memory_page() -> Any:
+    """Serve the memory management page."""
+    return render_template("memory.html")
+
+
+@app.route("/api/memory", methods=["GET", "POST"])
+def api_memory() -> Any:
+    """Handle memory file operations."""
+    if request.method == "POST":
+        data = request.get_json()
+        if data is None:
+            return jsonify({"error": "Invalid JSON"}), 400
+        with open("long_term_memory.json", "w", encoding="utf-8") as f:
+            json.dump({"memory": data.get("long_term_memory", "")}, f, ensure_ascii=False, indent=2)
+        with open("short_term_memory.json", "w", encoding="utf-8") as f:
+            json.dump({"memory": data.get("short_term_memory", "")}, f, ensure_ascii=False, indent=2)
+        return jsonify({"message": "Memory saved successfully."})
+
     try:
-        with open("chat_history.json", "w", encoding="utf-8") as f:
-            json.dump([], f)
-    except OSError as e:
-        return jsonify({"error": f"Failed to reset chat history: {e}"}), 500
-    return jsonify({"message": "Chat history cleared."})
+        with open("long_term_memory.json", "r", encoding="utf-8") as f:
+            long_term_memory = json.load(f).get("memory", "")
+    except (FileNotFoundError, json.JSONDecodeError):
+        long_term_memory = ""
+
+    try:
+        with open("short_term_memory.json", "r", encoding="utf-8") as f:
+            short_term_memory = json.load(f).get("memory", "")
+    except (FileNotFoundError, json.JSONDecodeError):
+        short_term_memory = ""
+
+    return jsonify({
+        "long_term_memory": long_term_memory,
+        "short_term_memory": short_term_memory,
+    })
+
 
 
 @app.route("/")
