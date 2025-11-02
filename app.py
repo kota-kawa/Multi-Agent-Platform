@@ -567,6 +567,8 @@ class ExecutionResult(TypedDict, total=False):
     status: Literal["success", "error"]
     response: str | None
     error: str | None
+    review_status: Literal["ok", "retry"] | None
+    review_reason: str | None
 
 
 class OrchestratorState(TypedDict, total=False):
@@ -576,6 +578,7 @@ class OrchestratorState(TypedDict, total=False):
     tasks: List[TaskSpec]
     executions: List[ExecutionResult]
     current_index: int
+    retry_counts: Dict[int, int]
 
 
 class MultiAgentOrchestrator:
@@ -603,6 +606,25 @@ class MultiAgentOrchestrator:
         "browser": "ブラウザエージェント",
         "iot": "IoT エージェント",
     }
+
+    MAX_RETRIES = 2
+
+    _REVIEWER_PROMPT = """
+あなたはマルチエージェントシステムのオーケストレーターで、エージェントの実行結果をレビューする役割を担っています。
+
+- ユーザーの当初の依頼とエージェントの実行結果を比較し、結果が依頼内容を満たしているか確認してください。
+- 結果が不十分な場合、エージェントに再実行を指示できます。
+- 出力は JSON オブジェクトのみで、追加の説明やマークダウンを含めてはいけません。
+- JSON には必ず次のキーを含めてください:
+  - "review_status": "ok" または "retry" のいずれかの文字列。
+  - "review_reason": "ok" の場合は簡単な承認理由、"retry" の場合は再実行を指示する具体的な理由や修正点を記述した文字列。
+
+レビュー対象の情報:
+- ユーザーの依頼: {user_input}
+- エージェント名: {agent_name}
+- 実行コマンド: {command}
+- 実行結果: {result}
+""".strip()
 
     _PLANNER_PROMPT = """
 あなたはマルチエージェントシステムのオーケストレーターです。与えられたユーザーの依頼を読み、実行すべきタスクを分析して下さい。
@@ -635,8 +657,10 @@ class MultiAgentOrchestrator:
         graph: StateGraph[OrchestratorState] = StateGraph(OrchestratorState)
         graph.add_node("plan", self._plan_node)
         graph.add_node("execute", self._execute_node)
+        graph.add_node("review", self._review_node)
         graph.add_edge("plan", "execute")
-        graph.add_conditional_edges("execute", self._continue_or_end, {"continue": "execute", "end": END})
+        graph.add_edge("execute", "review")
+        graph.add_conditional_edges("review", self._continue_or_end, {"continue": "execute", "end": END})
         graph.set_entry_point("plan")
         return graph.compile()
 
@@ -644,6 +668,52 @@ class MultiAgentOrchestrator:
         tasks = state.get("tasks") or []
         index = state.get("current_index", 0)
         return "continue" if index < len(tasks) else "end"
+
+    def _review_node(self, state: OrchestratorState) -> OrchestratorState:
+        executions = list(state.get("executions") or [])
+        if not executions:
+            return state
+
+        last_execution = executions[-1]
+        if last_execution.get("status") == "error":
+            return state
+
+        user_input = state["user_input"]
+        agent_name = self._AGENT_DISPLAY_NAMES.get(last_execution["agent"], last_execution["agent"])
+        command = last_execution["command"]
+        result = last_execution.get("response") or last_execution.get("error") or "結果なし"
+
+        prompt = self._REVIEWER_PROMPT.format(
+            user_input=user_input,
+            agent_name=agent_name,
+            command=command,
+            result=result,
+        )
+        messages = [SystemMessage(content=prompt)]
+
+        try:
+            response = self._llm.invoke(messages)
+            review_text = self._extract_text(response.content)
+            review_data = self._parse_plan(review_text)
+        except (OrchestratorError, Exception) as exc:
+            logging.warning("Review LLM call failed, defaulting to 'ok': %s", exc)
+            review_data = {"review_status": "ok", "review_reason": "レビューに失敗したため自動承認されました。"}
+
+        review_status = "ok" if review_data.get("review_status") == "ok" else "retry"
+        review_reason = str(review_data.get("review_reason") or "").strip()
+        last_execution["review_status"] = review_status
+        last_execution["review_reason"] = review_reason
+
+        if review_status == "retry":
+            index = state["current_index"] - 1
+            retry_counts = state.get("retry_counts") or {}
+            count = retry_counts.get(index, 0)
+            if count < self.MAX_RETRIES:
+                retry_counts[index] = count + 1
+                state["current_index"] = index  # Re-run the same task
+            state["retry_counts"] = retry_counts
+
+        return {"executions": executions, **state}
 
     def _plan_node(self, state: OrchestratorState) -> OrchestratorState:
         user_input = state.get("user_input", "")
@@ -698,6 +768,7 @@ class MultiAgentOrchestrator:
             "tasks": tasks,
             "executions": [],
             "current_index": 0,
+            "retry_counts": {},
         }
 
     def _execute_node(self, state: OrchestratorState) -> OrchestratorState:
