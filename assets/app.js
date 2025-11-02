@@ -2131,7 +2131,7 @@ function addBrowserSystemMessage(text, { forceSidebar = false } = {}) {
 
 function updatePauseButtonState(mode = currentChatMode) {
   if (!sidebarPauseBtn) return;
-  const showBrowserControls = mode === "browser";
+  const showBrowserControls = mode === "browser" || (mode === "orchestrator" && generalProxyAgentKey === "browser");
   const label = browserChatState.paused ? "再開" : "一時停止";
   sidebarPauseBtn.setAttribute("aria-pressed", browserChatState.paused ? "true" : "false");
   sidebarPauseBtn.setAttribute("aria-label", label);
@@ -2185,22 +2185,27 @@ function updateSidebarControlsForMode(mode) {
   }
 
   if (mode === "orchestrator") {
+    const isBrowserAgentActive = generalProxyAgentKey === "browser";
     if (sidebarResetBtn) {
-      sidebarResetBtn.disabled = true;
+      sidebarResetBtn.disabled = !isBrowserAgentActive;
     }
     if (sidebarChatSend) {
       sidebarChatSend.disabled = orchestratorState.sending;
     }
-    if (sidebarPauseBtn) {
-      sidebarPauseBtn.setAttribute("aria-pressed", "false");
-      sidebarPauseBtn.setAttribute("aria-label", "一時停止");
-      if (sidebarPauseSr) {
-        sidebarPauseSr.textContent = "一時停止";
+    if (isBrowserAgentActive) {
+      updatePauseButtonState(mode);
+    } else {
+      if (sidebarPauseBtn) {
+        sidebarPauseBtn.setAttribute("aria-pressed", "false");
+        sidebarPauseBtn.setAttribute("aria-label", "一時停止");
+        if (sidebarPauseSr) {
+          sidebarPauseSr.textContent = "一時停止";
+        }
+        if (sidebarPauseIcon) {
+          sidebarPauseIcon.innerHTML = ICON_PAUSE;
+        }
+        sidebarPauseBtn.disabled = true;
       }
-      if (sidebarPauseIcon) {
-        sidebarPauseIcon.innerHTML = ICON_PAUSE;
-      }
-      sidebarPauseBtn.disabled = true;
     }
     return;
   }
@@ -2832,7 +2837,8 @@ if (clearChatBtn) {
 
 if (sidebarPauseBtn) {
   sidebarPauseBtn.addEventListener("click", async () => {
-    if (currentChatMode === "browser") {
+    const isBrowserContext = currentChatMode === "browser" || (currentChatMode === "orchestrator" && generalProxyAgentKey === "browser");
+    if (isBrowserContext) {
       try {
         if (browserChatState.paused) {
           const { data } = await browserAgentRequest("/api/resume", { method: "POST" });
@@ -2870,7 +2876,8 @@ if (sidebarPauseBtn) {
 
 if (sidebarResetBtn) {
   sidebarResetBtn.addEventListener("click", async () => {
-    if (currentChatMode === "browser") {
+    const isBrowserContext = currentChatMode === "browser" || (currentChatMode === "orchestrator" && generalProxyAgentKey === "browser");
+    if (isBrowserContext) {
       if (!confirm("ブラウザエージェントの履歴をリセットしますか？")) return;
       try {
         const { data } = await browserAgentRequest("/api/reset", { method: "POST" });
