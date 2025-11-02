@@ -8,6 +8,7 @@
 *.json
 *.Identifier
 # ログファイルを無視
+flask_output.log
 
 *.cgi
 *.htaccess

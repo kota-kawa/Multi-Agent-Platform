@@ -2211,7 +2211,7 @@ function updateSidebarControlsForMode(mode) {
   if (mode === "orchestrator") {
     const isBrowserAgentActive = generalProxyAgentKey === "browser";
     if (sidebarResetBtn) {
-      sidebarResetBtn.disabled = !isBrowserAgentActive;
+      sidebarResetBtn.disabled = false;
     }
     if (sidebarChatSend) {
       const sending = isBrowserAgentActive ? browserChatState.sending : orchestratorState.sending;
@@ -2236,7 +2236,7 @@ function updateSidebarControlsForMode(mode) {
   }
 
   if (sidebarResetBtn) {
-    sidebarResetBtn.disabled = true;
+      sidebarResetBtn.disabled = false;
   }
   if (sidebarChatSend) {
     sidebarChatSend.disabled = chatState.sending;
@@ -2942,6 +2942,18 @@ if (sidebarResetBtn) {
       iotChatState.paused = false;
       ensureIotChatInitialized({ forceSidebar: true });
       updateSidebarControlsForMode(currentChatMode);
+      return;
+    }
+
+    if (currentChatMode === "orchestrator") {
+      if (!confirm("チャット履歴をリセットしますか？")) return;
+      try {
+        await fetch("/reset_chat_history", { method: "POST" });
+        await fetchChatHistory();
+      } catch (error) {
+        console.error("Error resetting chat history:", error);
+        alert(`チャット履歴のリセットに失敗しました: ${error.message}`);
+      }
     }
   });
 }

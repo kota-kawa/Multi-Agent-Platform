@@ -1485,6 +1485,17 @@ def chat_history() -> Any:
     return jsonify(history)
 
 
+@app.route("/reset_chat_history", methods=["POST"])
+def reset_chat_history() -> Any:
+    """Clear the chat history file."""
+    try:
+        with open("chat_history.json", "w", encoding="utf-8") as f:
+            json.dump([], f)
+    except OSError as e:
+        return jsonify({"error": f"Failed to reset chat history: {e}"}), 500
+    return jsonify({"message": "Chat history cleared."})
+
+
 @app.route("/")
 def serve_index() -> Any:
     """Serve the main single-page application."""
