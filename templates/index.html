@@ -55,6 +55,13 @@
           </svg>
           <span>チャット</span>
           </button>
+          <button class="nav-btn" data-view="memory" title="記憶">
+          <!-- 記憶アイコン -->
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 2a10 10 0 1 0 10 10A10.011 10.011 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8.009 8.009 0 0 1-8 8zm0-11a3 3 0 1 0 3 3 3 3 0 0 0-3-3z"/>
+          </svg>
+          <span>記憶</span>
+          </button>
         </div>
         <section class="sidebar-chat" aria-label="共通チャット">
           <div class="sidebar-chat-header">
@@ -220,6 +227,21 @@
               </div>
             </div>
           </div>
+        </section>
+
+        <!-- 4) Memory View -->
+        <section id="view-memory" class="view" aria-label="記憶管理">
+          <div class="memory-container">
+            <div class="memory-section">
+              <h2>長期記憶</h2>
+              <textarea id="long-term-memory" rows="10" class="memory-textarea"></textarea>
+            </div>
+            <div class="memory-section">
+              <h2>短期記憶</h2>
+              <textarea id="short-term-memory" rows="10" class="memory-textarea"></textarea>
+            </div>
+          </div>
+          <button id="save-memory" class="btn primary">保存</button>
         </section>
       </main>
     </div>

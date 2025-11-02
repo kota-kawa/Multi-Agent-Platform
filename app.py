@@ -656,10 +656,27 @@ class MultiAgentOrchestrator:
         except (FileNotFoundError, json.JSONDecodeError):
             history = []
 
+        try:
+            with open("long_term_memory.json", "r", encoding="utf-8") as f:
+                long_term_memory = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            long_term_memory = {}
+
+        try:
+            with open("short_term_memory.json", "r", encoding="utf-8") as f:
+                short_term_memory = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            short_term_memory = {}
+
         recent_history = history[-10:]
         history_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_history])
 
+        long_term_memory_prompt = json.dumps(long_term_memory, ensure_ascii=False, indent=2)
+        short_term_memory_prompt = json.dumps(short_term_memory, ensure_ascii=False, indent=2)
+
         prompt = self._PLANNER_PROMPT.format(max_tasks=ORCHESTRATOR_MAX_TASKS)
+        prompt += "\n\n以下は長期記憶です:\n" + long_term_memory_prompt
+        prompt += "\n\n以下は短期記憶です:\n" + short_term_memory_prompt
         prompt += "\n\n以下は直近の会話履歴です:\n" + history_prompt
         messages = [SystemMessage(content=prompt), HumanMessage(content=user_input)]
 
@@ -1483,6 +1500,34 @@ def chat_history() -> Any:
     except (FileNotFoundError, json.JSONDecodeError):
         history = []
     return jsonify(history)
+
+
+@app.route("/memory", methods=["GET", "POST"])
+def memory() -> Any:
+    """Fetch or update the memory files."""
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        long_term = payload.get("long_term")
+        short_term = payload.get("short_term")
+        if long_term is not None:
+            with open("long_term_memory.json", "w", encoding="utf-8") as f:
+                json.dump(long_term, f, ensure_ascii=False, indent=2)
+        if short_term is not None:
+            with open("short_term_memory.json", "w", encoding="utf-8") as f:
+                json.dump(short_term, f, ensure_ascii=False, indent=2)
+        return jsonify({"status": "ok"})
+
+    try:
+        with open("long_term_memory.json", "r", encoding="utf-8") as f:
+            long_term = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        long_term = {}
+    try:
+        with open("short_term_memory.json", "r", encoding="utf-8") as f:
+            short_term = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        short_term = {}
+    return jsonify({"long_term": long_term, "short_term": short_term})
 
 
 @app.route("/")

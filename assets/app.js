@@ -50,6 +50,7 @@ const views = {
   browser: $("#view-browser"),
   iot: $("#view-iot"),
   chat: $("#view-chat"),
+  memory: $("#view-memory"),
 };
 
 const appTitle = $("#appTitle");
@@ -247,6 +248,7 @@ function activateView(viewKey) {
     browser: "リモートブラウザ",
     iot: "IoT ダッシュボード",
     chat: "要約チャット",
+    memory: "記憶管理",
   };
   if (appTitle) {
     appTitle.textContent = titles[target] ?? "リモートブラウザ";
@@ -2948,3 +2950,62 @@ if (sidebarResetBtn) {
 
 const initialActiveView = document.querySelector(".nav-btn.active")?.dataset.view || "general";
 activateView(initialActiveView);
+
+/* ---------- Memory Management ---------- */
+const longTermMemory = $("#long-term-memory");
+const shortTermMemory = $("#short-term-memory");
+const saveMemoryBtn = $("#save-memory");
+
+async function fetchMemory() {
+  try {
+    const response = await fetch("/memory");
+    if (!response.ok) {
+      throw new Error("Failed to fetch memory");
+    }
+    const data = await response.json();
+    longTermMemory.value = JSON.stringify(data.long_term, null, 2);
+    shortTermMemory.value = JSON.stringify(data.short_term, null, 2);
+  } catch (error) {
+    console.error("Error fetching memory:", error);
+  }
+}
+
+async function saveMemory() {
+  try {
+    const longTerm = JSON.parse(longTermMemory.value);
+    const shortTerm = JSON.parse(shortTermMemory.value);
+    const response = await fetch("/memory", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ long_term: longTerm, short_term: shortTerm }),
+    });
+    if (!response.ok) {
+      throw new Error("Failed to save memory");
+    }
+    alert("Memory saved successfully!");
+  } catch (error) {
+    console.error("Error saving memory:", error);
+    alert("Error saving memory. Please check the console for details.");
+  }
+}
+
+if (saveMemoryBtn) {
+  saveMemoryBtn.addEventListener("click", saveMemory);
+}
+
+const memoryViewObserver = new MutationObserver((mutationsList) => {
+  for (const mutation of mutationsList) {
+    if (mutation.type === "attributes" && mutation.attributeName === "class") {
+      const target = mutation.target;
+      if (target.classList.contains("active")) {
+        fetchMemory();
+      }
+    }
+  }
+});
+
+if (views.memory) {
+  memoryViewObserver.observe(views.memory, { attributes: true });
+}
