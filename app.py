@@ -124,22 +124,48 @@ class OrchestratorError(RuntimeError):
 
 def _send_recent_history_to_agents(history: List[Dict[str, str]]):
     """Send the last 5 chat history entries to all agents."""
-    recent_history = history[-5:]
-    formatted_history = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_history])
 
-    # Ignore the response.
+    recent_history = history[-5:]
+
+    normalized_history: List[Dict[str, str]] = []
+    for entry in recent_history:
+        role = entry.get("role") if isinstance(entry, dict) else None
+        content = entry.get("content") if isinstance(entry, dict) else None
+        if not isinstance(role, str) or not isinstance(content, str):
+            continue
+        normalized_history.append({"role": role, "content": content})
+
+    if not normalized_history:
+        return
+
+    gemini_history = []
+    for entry in normalized_history:
+        role = entry["role"].strip()
+        role_lower = role.lower()
+        if role_lower == "user":
+            mapped_role = "User"
+        elif role_lower == "assistant":
+            mapped_role = "AI"
+        else:
+            mapped_role = role or "System"
+        gemini_history.append({"role": mapped_role, "message": entry["content"]})
+
     try:
-        _call_gemini("/rag_answer", method="POST", payload={"question": formatted_history})
+        _call_gemini(
+            "/analyze_conversation",
+            method="POST",
+            payload={"conversation_history": gemini_history},
+        )
     except GeminiAPIError as e:
         logging.warning("Error sending history to gemini: %s", e)
 
     try:
-        _call_browser_agent_chat(formatted_history)
+        _call_browser_agent_history_check(normalized_history)
     except BrowserAgentError as e:
         logging.warning("Error sending history to browser agent: %s", e)
 
     try:
-        _call_iot_agent_chat(formatted_history)
+        _call_iot_agent_conversation_review(normalized_history)
     except IotAgentError as e:
         logging.warning("Error sending history to iot agent: %s", e)
 
@@ -401,8 +427,8 @@ def _call_gemini(path: str, *, method: str = "GET", payload: Dict[str, Any] | No
     return data
 
 
-def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
-    """Send a chat request to the Browser Agent and return the JSON payload."""
+def _post_browser_agent(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Send a POST request to the Browser Agent and return the JSON payload."""
 
     bases = _iter_browser_agent_bases()
     if not bases:
@@ -412,11 +438,11 @@ def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
     last_exception: Exception | None = None
     response = None
     for base in bases:
-        url = _build_browser_agent_url(base, "/api/chat")
+        url = _build_browser_agent_url(base, path)
         try:
             response = requests.post(
                 url,
-                json={"prompt": prompt, "new_task": True},
+                json=payload,
                 timeout=BROWSER_AGENT_TIMEOUT,
             )
         except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
@@ -457,6 +483,26 @@ def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
     return data
 
 
+def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
+    """Send a chat request to the Browser Agent and return the JSON payload."""
+
+    return _post_browser_agent(
+        "/api/chat",
+        {"prompt": prompt, "new_task": True},
+    )
+
+
+def _call_browser_agent_history_check(
+    conversation_history: List[Dict[str, str]]
+) -> Dict[str, Any]:
+    """Send conversation history to the Browser Agent review endpoint."""
+
+    return _post_browser_agent(
+        "/api/check-conversation-history",
+        {"conversation_history": conversation_history},
+    )
+
+
 def _extract_browser_error_message(response: requests.Response, default_message: str) -> str:
     try:
         data = response.json()
@@ -475,19 +521,18 @@ def _extract_browser_error_message(response: requests.Response, default_message:
     return default_message
 
 
-def _call_iot_agent_chat(command: str) -> Dict[str, Any]:
-    """Send a chat request to the IoT Agent and return the JSON payload."""
+def _post_iot_agent(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Send a POST request to the IoT Agent and return the JSON payload."""
 
     bases = _iter_iot_agent_bases()
     if not bases:
         raise IotAgentError("IoT Agent API の接続先が設定されていません。", status_code=500)
 
-    payload = {"messages": [{"role": "user", "content": command}]}
     connection_errors: list[str] = []
     last_exception: Exception | None = None
     response = None
     for base in bases:
-        url = _build_iot_agent_url(base, "/api/chat")
+        url = _build_iot_agent_url(base, path)
         try:
             response = requests.post(url, json=payload, timeout=IOT_AGENT_TIMEOUT)
         except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
@@ -520,6 +565,26 @@ def _call_iot_agent_chat(command: str) -> Dict[str, Any]:
         raise IotAgentError("IoT Agent API から不正なレスポンス形式が返されました。", status_code=502)
 
     return data
+
+
+def _call_iot_agent_chat(command: str) -> Dict[str, Any]:
+    """Send a chat request to the IoT Agent and return the JSON payload."""
+
+    return _post_iot_agent(
+        "/api/chat",
+        {"messages": [{"role": "user", "content": command}]},
+    )
+
+
+def _call_iot_agent_conversation_review(
+    conversation_history: List[Dict[str, str]]
+) -> Dict[str, Any]:
+    """Send conversation history to the IoT Agent review endpoint."""
+
+    return _post_iot_agent(
+        "/api/conversations/review",
+        {"history": conversation_history},
+    )
 
 
 def _proxy_iot_agent_request(path: str) -> Response:
