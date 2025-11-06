@@ -201,7 +201,7 @@ function updateGeneralViewProxy() {
     requestGeneralBrowserViewportSync({ reloadFallback: true });
   } else if (generalProxyTargetView === "iot") {
     ensureIotDashboardInitialized({ showLoading: true });
-    ensureIotChatInitialized({ forceSidebar: true });
+    ensureIotChatInitialized({ forceSidebar: currentChatMode === "iot" });
   } else if (generalProxyTargetView === "chat") {
     ensureChatInitialized({ showLoadingSummary: true });
   }
@@ -1529,6 +1529,7 @@ const browserChatState = {
   agentRunning: false,
   eventSource: null,
   historyAbort: null,
+  promptQueue: [],
 };
 
 const browserMessageIndex = new Map();
@@ -1796,19 +1797,54 @@ async function fetchChatHistory() {
       throw new Error("Failed to fetch chat history");
     }
     const history = await response.json();
-    if (history.length === 0) {
-      orchestratorState.messages = [getOrchestratorIntroMessage()];
-    } else {
-      orchestratorState.messages = history.map(item => ({
-        role: item.role,
-        text: item.content,
-        ts: Date.now(),
-      }));
+    const records = Array.isArray(history) ? history : [];
+    const now = Date.now();
+    const normalisedHistory = records.length === 0
+      ? [getOrchestratorIntroMessage()]
+      : records.map((item, index) => {
+          const rawRole = typeof item?.role === "string" ? item.role.trim().toLowerCase() : "";
+          const role = rawRole === "user" ? "user" : rawRole === "assistant" ? "assistant" : "system";
+          const text = typeof item?.content === "string" ? item.content : "";
+          return { role, text, ts: now + index };
+        });
+
+    const localMessages = orchestratorState.messages.filter(message => message && message.local === true);
+    if (localMessages.length) {
+      const keyFor = message => `${message.role}:::${message.text}`;
+      const indexMap = new Map();
+      normalisedHistory.forEach((message, index) => {
+        const key = keyFor(message);
+        const bucket = indexMap.get(key);
+        if (bucket) {
+          bucket.push(index);
+        } else {
+          indexMap.set(key, [index]);
+        }
+      });
+      localMessages.forEach(local => {
+        const key = keyFor(local);
+        const bucket = indexMap.get(key);
+        if (bucket && bucket.length) {
+          const index = bucket.shift();
+          if (index !== undefined) {
+            local.ts = normalisedHistory[index].ts;
+            local.local = false;
+            normalisedHistory[index] = local;
+          }
+        } else {
+          normalisedHistory.push(local);
+          indexMap.set(key, []);
+        }
+      });
     }
+
+    orchestratorState.messages = normalisedHistory;
     renderOrchestratorChat({ forceSidebar: true });
   } catch (error) {
     console.error("Error fetching chat history:", error);
-    orchestratorState.messages = [getOrchestratorIntroMessage()];
+    if (orchestratorState.messages.length === 0) {
+      orchestratorState.messages = [getOrchestratorIntroMessage()];
+    }
     renderOrchestratorChat({ forceSidebar: true });
   }
 }
@@ -1894,7 +1930,7 @@ function ensureOrchestratorInitialized({ forceSidebar = false } = {}) {
 }
 
 function addOrchestratorUserMessage(text) {
-  const message = { role: "user", text, ts: Date.now() };
+  const message = { role: "user", text, ts: Date.now(), local: true };
   orchestratorState.messages.push(message);
   renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
   return message;
@@ -2107,6 +2143,7 @@ function setBrowserChatHistory(history, { forceSidebar = false } = {}) {
       ts: Date.now(),
     },
   ];
+  browserChatState.promptQueue = [];
   browserMessageIndex.clear();
   browserChatState.messages.forEach((message, index) => {
     if (typeof message.id === "number") {
@@ -2191,7 +2228,7 @@ function updateSidebarControlsForMode(mode) {
       sidebarResetBtn.disabled = false;
     }
     if (sidebarChatSend) {
-      sidebarChatSend.disabled = browserChatState.sending;
+      sidebarChatSend.disabled = browserChatState.paused;
     }
     updatePauseButtonState(mode);
     return;
@@ -2214,8 +2251,7 @@ function updateSidebarControlsForMode(mode) {
       sidebarResetBtn.disabled = false;
     }
     if (sidebarChatSend) {
-      const sending = isBrowserAgentActive ? browserChatState.sending : orchestratorState.sending;
-      sidebarChatSend.disabled = sending;
+      sidebarChatSend.disabled = isBrowserAgentActive ? browserChatState.paused : orchestratorState.sending;
     }
     if (isBrowserAgentActive) {
       updatePauseButtonState(mode);
@@ -2236,7 +2272,7 @@ function updateSidebarControlsForMode(mode) {
   }
 
   if (sidebarResetBtn) {
-      sidebarResetBtn.disabled = false;
+    sidebarResetBtn.disabled = false;
   }
   if (sidebarChatSend) {
     sidebarChatSend.disabled = chatState.sending;
@@ -2363,15 +2399,59 @@ function ensureBrowserAgentInitialized({ showLoading = false, forceSidebar = fal
   }
 }
 
-async function sendBrowserAgentPrompt(text) {
-  if (!text || browserChatState.sending) return;
+async function sendBrowserAgentPrompt(text, options = {}) {
+  const {
+    allowQueue = true,
+    queuePriority = "tail",
+    silentQueue = false,
+    allowDuringSend = false,
+  } = options;
+
+  const prompt = typeof text === "string" ? text.trim() : "";
+  if (!prompt) return;
+
+  const isBrowserContextActive = currentChatMode === "browser"
+    || (currentChatMode === "orchestrator" && generalProxyAgentKey === "browser");
+  const isFollowUpWhileSending = Boolean(allowDuringSend && browserChatState.sending);
+
+  const enqueuePrompt = () => {
+    if (!allowQueue) {
+      return false;
+    }
+    const entryOptions = { ...options, allowQueue: false, silentQueue: true };
+    const entry = { text: prompt, options: entryOptions };
+    if (queuePriority === "front") {
+      browserChatState.promptQueue.unshift(entry);
+    } else {
+      browserChatState.promptQueue.push(entry);
+    }
+    if (!silentQueue) {
+      const preview = prompt.length > 80 ? `${prompt.slice(0, 77)}...` : prompt;
+      addBrowserSystemMessage(`前の操作が完了したら実行します: ${preview}`, {
+        forceSidebar: isBrowserContextActive,
+      });
+    }
+    return true;
+  };
+
+  if (browserChatState.sending && !isFollowUpWhileSending) {
+    if (enqueuePrompt()) {
+      updateSidebarControlsForMode(currentChatMode);
+    }
+    return;
+  }
+
   connectBrowserEventStream();
-  browserChatState.sending = true;
+  let shouldResetSending = false;
   browserChatState.agentRunning = true;
   browserChatState.paused = false;
+  if (!isFollowUpWhileSending) {
+    browserChatState.sending = true;
+    shouldResetSending = true;
+  }
   updateSidebarControlsForMode(currentChatMode);
   try {
-    const payload = JSON.stringify({ prompt: text });
+    const payload = JSON.stringify({ prompt });
     const { data } = await browserAgentRequest("/api/chat", { method: "POST", body: payload });
     if (Array.isArray(data.messages)) {
       setBrowserChatHistory(data.messages, { forceSidebar: currentChatMode === "browser" });
@@ -2380,10 +2460,20 @@ async function sendBrowserAgentPrompt(text) {
       // 既に履歴に含まれているため、ここでは追加しない
     }
   } catch (error) {
-    addBrowserSystemMessage(`送信に失敗しました: ${error.message}`, { forceSidebar: currentChatMode === "browser" });
+    addBrowserSystemMessage(`送信に失敗しました: ${error.message}`, { forceSidebar: isBrowserContextActive });
   } finally {
-    browserChatState.sending = false;
-    updateSidebarControlsForMode(currentChatMode);
+    if (shouldResetSending) {
+      browserChatState.sending = false;
+      updateSidebarControlsForMode(currentChatMode);
+      const nextEntry = browserChatState.promptQueue.shift();
+      if (nextEntry) {
+        setTimeout(() => {
+          sendBrowserAgentPrompt(nextEntry.text, nextEntry.options);
+        }, 0);
+      }
+    } else {
+      updateSidebarControlsForMode(currentChatMode);
+    }
   }
 }
 
@@ -2616,7 +2706,11 @@ async function sendOrchestratorMessage(text) {
             ensureBrowserAgentInitialized({ showLoading: true });
             startOrchestratorBrowserMirror({ placeholder: message });
             if (commandText) {
-              const runPromise = sendBrowserAgentPrompt(commandText);
+              const runPromise = sendBrowserAgentPrompt(commandText, {
+                allowQueue: true,
+                queuePriority: "front",
+                silentQueue: true,
+              });
               runPromise.catch(error => {
                 console.error("Browser agent prompt failed", error);
                 const errorMessage = error && typeof error.message === "string"
@@ -2772,6 +2866,9 @@ async function sendOrchestratorMessage(text) {
     setGeneralProxyAgent(null);
     stopOrchestratorBrowserMirror();
   } finally {
+    if (userMessage) {
+      userMessage.local = false;
+    }
     userMessage.ts = userMessage.ts || Date.now();
     orchestratorState.sending = false;
     stopOrchestratorBrowserMirror();
@@ -2830,11 +2927,20 @@ if (chatForm) {
     } else if (currentChatMode === "iot") {
       await sendIotChatMessage(value);
     } else if (currentChatMode === "orchestrator") {
-      if (generalProxyAgentKey === "browser") {
-        await sendBrowserAgentPrompt(value);
-      } else {
-        await sendOrchestratorMessage(value);
+      if (orchestratorState.sending) {
+        if (generalProxyAgentKey === "browser") {
+          ensureOrchestratorInitialized({ forceSidebar: currentChatMode === "orchestrator" });
+          addOrchestratorUserMessage(value);
+          await sendBrowserAgentPrompt(value, {
+            allowQueue: false,
+            allowDuringSend: true,
+            silentQueue: true,
+          });
+        }
+        return;
       }
+      setGeneralProxyAgent(null);
+      await sendOrchestratorMessage(value);
     } else {
       await sendChatMessage(value);
     }
@@ -2853,11 +2959,20 @@ if (sidebarChatForm) {
     } else if (currentChatMode === "iot") {
       await sendIotChatMessage(value);
     } else if (currentChatMode === "orchestrator") {
-      if (generalProxyAgentKey === "browser") {
-        await sendBrowserAgentPrompt(value);
-      } else {
-        await sendOrchestratorMessage(value);
+      if (orchestratorState.sending) {
+        if (generalProxyAgentKey === "browser") {
+          ensureOrchestratorInitialized({ forceSidebar: currentChatMode === "orchestrator" });
+          addOrchestratorUserMessage(value);
+          await sendBrowserAgentPrompt(value, {
+            allowQueue: false,
+            allowDuringSend: true,
+            silentQueue: true,
+          });
+        }
+        return;
       }
+      setGeneralProxyAgent(null);
+      await sendOrchestratorMessage(value);
     } else {
       await sendChatMessage(value);
     }

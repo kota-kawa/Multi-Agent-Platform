@@ -60,6 +60,21 @@ def _load_env_file(path: str = ".env") -> None:
 _load_env_file()
 
 
+def _parse_timeout_env(name: str, default: float | None, *, allow_none: bool = False) -> float | None:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    cleaned = raw_value.strip()
+    if not cleaned:
+        return default
+    if allow_none and cleaned.lower() in {"none", "null"}:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return default
+
+
 DEFAULT_GEMINI_BASES = (
     "http://localhost:5000",
     "http://faq_gemini:5000",
@@ -78,7 +93,16 @@ DEFAULT_BROWSER_AGENT_BASES = (
     "http://browser-agent:5005",
     "http://localhost:5005",
 )
-BROWSER_AGENT_TIMEOUT = float(os.environ.get("BROWSER_AGENT_TIMEOUT", "120"))
+BROWSER_AGENT_CONNECT_TIMEOUT = float(
+    _parse_timeout_env("BROWSER_AGENT_CONNECT_TIMEOUT", 10.0) or 10.0
+)
+BROWSER_AGENT_TIMEOUT = float(_parse_timeout_env("BROWSER_AGENT_TIMEOUT", 120.0) or 120.0)
+BROWSER_AGENT_STREAM_TIMEOUT = _parse_timeout_env(
+    "BROWSER_AGENT_STREAM_TIMEOUT", None, allow_none=True
+)
+BROWSER_AGENT_CHAT_TIMEOUT = _parse_timeout_env(
+    "BROWSER_AGENT_CHAT_TIMEOUT", None, allow_none=True
+)
 
 DEFAULT_BROWSER_EMBED_URL = (
     "http://127.0.0.1:7900/"
@@ -116,6 +140,10 @@ class IotAgentError(RuntimeError):
     def __init__(self, message: str, status_code: int = 502) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+def _browser_agent_timeout(read_timeout: float | None) -> tuple[float, float | None]:
+    return (BROWSER_AGENT_CONNECT_TIMEOUT, read_timeout)
 
 
 class OrchestratorError(RuntimeError):
@@ -296,8 +324,6 @@ def _expand_browser_agent_base(base: str) -> Iterable[str]:
     replacements: list[str] = []
     if "_" in hostname:
         replacements.append(hostname.replace("_", "-"))
-    if "-" in hostname:
-        replacements.append(hostname.replace("-", "_"))
 
     if not replacements:
         return
@@ -319,6 +345,51 @@ def _expand_browser_agent_base(base: str) -> Iterable[str]:
             yield alias
 
 
+def _canonicalise_browser_agent_base(value: str) -> str:
+    """Normalise Browser Agent base URLs and remap localhost aliases."""
+
+    trimmed = value.strip()
+    if not trimmed:
+        return ""
+
+    candidate = trimmed
+    if "://" not in candidate:
+        candidate = f"http://{candidate}"
+
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        return ""
+
+    scheme = parsed.scheme or "http"
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return ""
+
+    username = parsed.username or ""
+    password = parsed.password or ""
+    auth = ""
+    if username:
+        auth = username
+        if password:
+            auth += f":{password}"
+        auth += "@"
+
+    port = parsed.port
+    if host in {"localhost", "127.0.0.1"}:
+        host = "browser-agent"
+        if port is None:
+            port = 5005
+
+    netloc = f"{auth}{host}"
+    if port is not None:
+        netloc += f":{port}"
+
+    path = parsed.path if parsed.path not in ("", "/") else ""
+    canonical = urlunparse((scheme, netloc, path, "", "", ""))
+    return canonical.rstrip("/")
+
+
 def _normalise_browser_base_values(values: Any) -> list[str]:
     """Return a flat list of browser agent base URL strings from client payloads."""
 
@@ -329,7 +400,12 @@ def _normalise_browser_base_values(values: Any) -> list[str]:
             return
         if isinstance(value, str):
             parts = [part.strip() for part in value.split(",")]
-            cleaned.extend(part for part in parts if part)
+            for part in parts:
+                if not part:
+                    continue
+                canonical = _canonicalise_browser_agent_base(part)
+                if canonical:
+                    cleaned.append(canonical)
             return
         if isinstance(value, Iterable):
             for item in value:
@@ -348,12 +424,23 @@ def _iter_browser_agent_bases() -> list[str]:
         overrides = getattr(g, "browser_agent_bases", None)
         if overrides:
             if isinstance(overrides, list):
-                candidates.extend(overrides)
+                for value in overrides:
+                    if not isinstance(value, str):
+                        continue
+                    canonical = _canonicalise_browser_agent_base(value)
+                    if canonical:
+                        candidates.append(canonical)
             else:  # Defensive fallback
                 candidates.extend(_normalise_browser_base_values(overrides))
     if configured:
-        candidates.extend(part.strip() for part in configured.split(","))
-    candidates.extend(DEFAULT_BROWSER_AGENT_BASES)
+        for part in configured.split(","):
+            canonical = _canonicalise_browser_agent_base(part)
+            if canonical:
+                candidates.append(canonical)
+    for default_base in DEFAULT_BROWSER_AGENT_BASES:
+        canonical = _canonicalise_browser_agent_base(default_base)
+        if canonical:
+            candidates.append(canonical)
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -427,7 +514,12 @@ def _call_gemini(path: str, *, method: str = "GET", payload: Dict[str, Any] | No
     return data
 
 
-def _post_browser_agent(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _post_browser_agent(
+    path: str,
+    payload: Dict[str, Any],
+    *,
+    read_timeout: float | None = BROWSER_AGENT_TIMEOUT,
+) -> Dict[str, Any]:
     """Send a POST request to the Browser Agent and return the JSON payload."""
 
     bases = _iter_browser_agent_bases()
@@ -443,7 +535,7 @@ def _post_browser_agent(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             response = requests.post(
                 url,
                 json=payload,
-                timeout=BROWSER_AGENT_TIMEOUT,
+                timeout=_browser_agent_timeout(read_timeout),
             )
         except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
             connection_errors.append(f"{url}: {exc}")
@@ -489,6 +581,7 @@ def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
     return _post_browser_agent(
         "/api/chat",
         {"prompt": prompt, "new_task": True},
+        read_timeout=BROWSER_AGENT_CHAT_TIMEOUT,
     )
 
 
@@ -1052,7 +1145,9 @@ class MultiAgentOrchestrator:
     ) -> Iterator[Dict[str, Any]]:
         history_url = _build_browser_agent_url(base, "/api/history")
         try:
-            history_response = requests.get(history_url, timeout=BROWSER_AGENT_TIMEOUT)
+            history_response = requests.get(
+                history_url, timeout=_browser_agent_timeout(BROWSER_AGENT_TIMEOUT)
+            )
         except requests.exceptions.RequestException as exc:
             raise BrowserAgentError(f"ブラウザエージェントの履歴取得に失敗しました: {exc}") from exc
 
@@ -1090,7 +1185,11 @@ class MultiAgentOrchestrator:
         def _stream_worker() -> None:
             response: requests.Response | None = None
             try:
-                response = requests.get(stream_url, stream=True, timeout=BROWSER_AGENT_TIMEOUT)
+                response = requests.get(
+                    stream_url,
+                    stream=True,
+                    timeout=_browser_agent_timeout(BROWSER_AGENT_STREAM_TIMEOUT),
+                )
             except requests.exceptions.RequestException as exc:
                 stream_status["error"] = BrowserAgentError(
                     f"ブラウザエージェントのイベントストリームに接続できませんでした: {exc}",
@@ -1133,7 +1232,7 @@ class MultiAgentOrchestrator:
                         event_type = raw_line[6:].strip() or "message"
                     elif raw_line.startswith("data:"):
                         data_lines.append(raw_line[5:].lstrip())
-            except requests.exceptions.RequestException as exc:
+            except (requests.exceptions.RequestException, AttributeError) as exc:
                 event_queue.put(
                     {
                         "kind": "stream_error",
@@ -1142,16 +1241,30 @@ class MultiAgentOrchestrator:
                         ),
                     }
                 )
+            except Exception as exc:  # noqa: BLE001
+                logging.exception("Unexpected error while consuming browser agent stream: %s", exc)
+                event_queue.put(
+                    {
+                        "kind": "stream_error",
+                        "error": BrowserAgentError(
+                            "ブラウザエージェントのイベントストリームで予期しないエラーが発生しました。",
+                        ),
+                    }
+                )
             finally:
                 event_queue.put({"kind": "stream_closed"})
-                response.close()
+                if response is not None:
+                    try:
+                        response.close()
+                    except Exception:  # noqa: BLE001
+                        pass
 
         def _chat_worker() -> None:
             try:
                 response = requests.post(
                     chat_url,
                     json={"prompt": command, "new_task": True},
-                    timeout=BROWSER_AGENT_TIMEOUT,
+                    timeout=_browser_agent_timeout(BROWSER_AGENT_CHAT_TIMEOUT),
                 )
             except requests.exceptions.RequestException as exc:
                 event_queue.put(
@@ -1485,8 +1598,18 @@ class MultiAgentOrchestrator:
         executions = state.get("executions") or []
         assistant_messages = self._format_assistant_messages(plan_summary, executions)
 
-        for msg in assistant_messages:
-            _append_to_chat_history("assistant", msg.get("text", ""))
+        has_browser_execution = any(
+            isinstance(result, dict) and result.get("agent") == "browser" for result in executions
+        )
+        if has_browser_execution:
+            for msg in reversed(assistant_messages):
+                text = msg.get("text")
+                if isinstance(text, str) and text.strip():
+                    _append_to_chat_history("assistant", text)
+                    break
+        else:
+            for msg in assistant_messages:
+                _append_to_chat_history("assistant", msg.get("text", ""))
 
         yield self._event_payload(
             "complete",
@@ -1546,6 +1669,10 @@ def orchestrator_chat() -> Any:
     overrides: list[str] = []
     overrides.extend(_normalise_browser_base_values(payload.get("browser_agent_base")))
     overrides.extend(_normalise_browser_base_values(payload.get("browser_agent_bases")))
+    overrides = [value for value in overrides if value]
+    service_default = _canonicalise_browser_agent_base("http://browser-agent:5005")
+    if service_default and service_default not in overrides:
+        overrides.append(service_default)
     if has_request_context():
         g.browser_agent_bases = overrides
 
