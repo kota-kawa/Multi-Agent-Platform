@@ -1782,6 +1782,13 @@ function renderSidebarMessages(messages) {
   sidebarChatLog.scrollTop = sidebarChatLog.scrollHeight;
 }
 
+function normalizeAssistantText(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.replace(/\s+/g, " ").trim();
+}
+
 function getOrchestratorIntroMessage() {
   return {
     role: "assistant",
@@ -2405,6 +2412,7 @@ async function sendBrowserAgentPrompt(text, options = {}) {
     queuePriority = "tail",
     silentQueue = false,
     allowDuringSend = false,
+    startNewTask = false,
   } = options;
 
   const prompt = typeof text === "string" ? text.trim() : "";
@@ -2451,8 +2459,14 @@ async function sendBrowserAgentPrompt(text, options = {}) {
   }
   updateSidebarControlsForMode(currentChatMode);
   try {
-    const payload = JSON.stringify({ prompt });
-    const { data } = await browserAgentRequest("/api/chat", { method: "POST", body: payload });
+    const payload = { prompt };
+    if (startNewTask) {
+      payload.new_task = true;
+    }
+    const { data } = await browserAgentRequest("/api/chat", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
     if (Array.isArray(data.messages)) {
       setBrowserChatHistory(data.messages, { forceSidebar: currentChatMode === "browser" });
     }
@@ -2710,6 +2724,7 @@ async function sendOrchestratorMessage(text) {
                 allowQueue: true,
                 queuePriority: "front",
                 silentQueue: true,
+                startNewTask: true,
               });
               runPromise.catch(error => {
                 console.error("Browser agent prompt failed", error);
@@ -2842,7 +2857,11 @@ async function sendOrchestratorMessage(text) {
           remaining.forEach(entry => {
             const textValue = typeof entry?.text === "string" ? entry.text.trim() : "";
             if (!textValue) return;
-            const alreadyExists = orchestratorState.messages.some(message => message.role === "assistant" && message.text === textValue);
+            const normalizedValue = normalizeAssistantText(textValue);
+            if (!normalizedValue) return;
+            const alreadyExists = orchestratorState.messages.some(
+              message => message.role === "assistant" && normalizeAssistantText(message.text) === normalizedValue,
+            );
             if (!alreadyExists) {
               addOrchestratorAssistantMessage(textValue);
             }
@@ -2915,6 +2934,41 @@ async function sendChatMessage(text) {
   }
 }
 
+function shouldRouteGeneralInputToBrowserAgent() {
+  return (
+    currentChatMode === "orchestrator"
+    && generalProxyAgentKey === "browser"
+    && browserChatState.agentRunning
+  );
+}
+
+async function forwardGeneralInputToBrowserAgent(value) {
+  if (!value) return;
+  ensureOrchestratorInitialized({ forceSidebar: currentChatMode === "orchestrator" });
+  addOrchestratorUserMessage(value);
+  await sendBrowserAgentPrompt(value, {
+    allowQueue: false,
+    allowDuringSend: true,
+    silentQueue: true,
+  });
+}
+
+async function handleGeneralModeSubmission(value) {
+  if (!value) return;
+  if (shouldRouteGeneralInputToBrowserAgent()) {
+    await forwardGeneralInputToBrowserAgent(value);
+    return;
+  }
+  if (orchestratorState.sending) {
+    if (generalProxyAgentKey === "browser") {
+      await forwardGeneralInputToBrowserAgent(value);
+    }
+    return;
+  }
+  setGeneralProxyAgent(null);
+  await sendOrchestratorMessage(value);
+}
+
 if (chatForm) {
   chatForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -2927,20 +2981,7 @@ if (chatForm) {
     } else if (currentChatMode === "iot") {
       await sendIotChatMessage(value);
     } else if (currentChatMode === "orchestrator") {
-      if (orchestratorState.sending) {
-        if (generalProxyAgentKey === "browser") {
-          ensureOrchestratorInitialized({ forceSidebar: currentChatMode === "orchestrator" });
-          addOrchestratorUserMessage(value);
-          await sendBrowserAgentPrompt(value, {
-            allowQueue: false,
-            allowDuringSend: true,
-            silentQueue: true,
-          });
-        }
-        return;
-      }
-      setGeneralProxyAgent(null);
-      await sendOrchestratorMessage(value);
+      await handleGeneralModeSubmission(value);
     } else {
       await sendChatMessage(value);
     }
@@ -2959,20 +3000,7 @@ if (sidebarChatForm) {
     } else if (currentChatMode === "iot") {
       await sendIotChatMessage(value);
     } else if (currentChatMode === "orchestrator") {
-      if (orchestratorState.sending) {
-        if (generalProxyAgentKey === "browser") {
-          ensureOrchestratorInitialized({ forceSidebar: currentChatMode === "orchestrator" });
-          addOrchestratorUserMessage(value);
-          await sendBrowserAgentPrompt(value, {
-            allowQueue: false,
-            allowDuringSend: true,
-            silentQueue: true,
-          });
-        }
-        return;
-      }
-      setGeneralProxyAgent(null);
-      await sendOrchestratorMessage(value);
+      await handleGeneralModeSubmission(value);
     } else {
       await sendChatMessage(value);
     }

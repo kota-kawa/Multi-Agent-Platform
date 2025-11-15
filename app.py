@@ -1163,15 +1163,7 @@ class MultiAgentOrchestrator:
         except ValueError as exc:
             raise BrowserAgentError("ブラウザエージェントの履歴レスポンスを解析できませんでした。") from exc
 
-        initial_baseline_id = -1
         messages = history_data.get("messages") if isinstance(history_data, dict) else []
-        if isinstance(messages, list):
-            for entry in messages:
-                if not isinstance(entry, dict):
-                    continue
-                msg_id = entry.get("id")
-                if isinstance(msg_id, int) and msg_id > initial_baseline_id:
-                    initial_baseline_id = msg_id
 
         event_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         stop_event = threading.Event()
@@ -1385,9 +1377,7 @@ class MultiAgentOrchestrator:
                         if role == "user":
                             continue
                         if isinstance(msg_id_raw, int):
-                            if msg_id_raw <= initial_baseline_id and msg_id_raw not in progress_messages:
-                                continue
-                            message_key: Any = msg_id_raw
+                            message_key = msg_id_raw
                         else:
                             message_key = f"anon-{anon_counter}"
                             anon_counter += 1
@@ -1409,6 +1399,8 @@ class MultiAgentOrchestrator:
                             latest_summary = summary_text.strip()
                         if body.get("agent_running") is False:
                             stream_finished = True
+                    elif event_type == "reset":
+                        progress_messages.clear()
                 elif kind == "stream_error":
                     error = item.get("error")
                     logging.warning("Browser agent stream error: %s", error)
