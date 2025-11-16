@@ -12,6 +12,8 @@ from .errors import BrowserAgentError, GeminiAPIError, IotAgentError
 from .gemini import _call_gemini
 from .iot import _call_iot_agent_conversation_review
 
+_browser_history_supported = True
+
 
 def _send_recent_history_to_agents(history: List[Dict[str, str]]) -> None:
     """Send the last 5 chat history entries to all agents."""
@@ -50,10 +52,19 @@ def _send_recent_history_to_agents(history: List[Dict[str, str]]) -> None:
     except GeminiAPIError as e:
         logging.warning("Error sending history to gemini: %s", e)
 
-    try:
-        _call_browser_agent_history_check(normalized_history)
-    except BrowserAgentError as e:
-        logging.warning("Error sending history to browser agent: %s", e)
+    global _browser_history_supported
+    if _browser_history_supported:
+        try:
+            _call_browser_agent_history_check(normalized_history)
+        except BrowserAgentError as e:
+            if getattr(e, "status_code", None) == 404:
+                _browser_history_supported = False
+                logging.info(
+                    "Browser agent history check endpoint not available. "
+                    "Disabling future history check requests."
+                )
+            else:
+                logging.warning("Error sending history to browser agent: %s", e)
 
     try:
         _call_iot_agent_conversation_review(normalized_history)
