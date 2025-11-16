@@ -221,6 +221,7 @@ function setGeneralProxyAgent(agentKey) {
   generalProxyAgentKey = targetView ? normalizedAgent : null;
   generalProxyTargetView = targetView;
   updateGeneralViewProxy();
+  updateSidebarControlsForMode(currentChatMode);
 }
 
 function determineGeneralProxyAgentFromResult(result) {
@@ -1508,6 +1509,21 @@ const orchestratorBrowserMirrorState = {
   placeholder: null,
 };
 
+function clearOrchestratorBrowserMirrorMessages({ preserve } = {}) {
+  const list = Array.isArray(preserve) ? preserve : preserve ? [preserve] : [];
+  const keep = new Set(list.filter(Boolean));
+  orchestratorBrowserMirrorState.messages.forEach(message => {
+    if (!keep.has(message)) {
+      const index = orchestratorState.messages.indexOf(message);
+      if (index !== -1) {
+        orchestratorState.messages.splice(index, 1);
+      }
+    }
+  });
+  orchestratorBrowserMirrorState.messages.clear();
+  orchestratorBrowserMirrorState.placeholder = null;
+}
+
 let orchestratorBrowserTaskActive = false;
 
 const ORCHESTRATOR_AGENT_LABELS = {
@@ -1782,8 +1798,7 @@ function createMessageElement(message, { compact = false } = {}) {
 function renderSidebarMessages(messages) {
   if (!sidebarChatLog) return;
   sidebarChatLog.innerHTML = "";
-  const recent = messages.slice(-20);
-  recent.forEach(message => {
+  messages.forEach(message => {
     sidebarChatLog.appendChild(createMessageElement(message, { compact: true }));
   });
   sidebarChatLog.scrollTop = sidebarChatLog.scrollHeight;
@@ -1959,6 +1974,7 @@ function mirrorBrowserMessageToOrchestrator(message) {
   }
 
   orchestratorBrowserMirrorState.messages.set(key, target);
+  moveOrchestratorMessageToEnd(target);
 
   if (currentChatMode === "orchestrator") {
     renderOrchestratorChat({ forceSidebar: true });
@@ -2475,6 +2491,14 @@ async function sendBrowserAgentPrompt(text, options = {}) {
     || (currentChatMode === "orchestrator" && generalProxyAgentKey === "browser");
   const isFollowUpWhileSending = Boolean(allowDuringSend && browserChatState.sending);
 
+  if (startNewTask && orchestratorBrowserTaskActive) {
+    addBrowserSystemMessage(
+      "オーケストレーターがブラウザエージェントを使用中のため、新しいタスクを開始できません。",
+      { forceSidebar: isBrowserContextActive },
+    );
+    return;
+  }
+
   const enqueuePrompt = () => {
     if (!allowQueue) {
       return false;
@@ -2730,6 +2754,22 @@ async function sendOrchestratorMessage(text) {
     return entry;
   };
 
+  const clearTaskProgressMessages = entry => {
+    if (!entry || !(entry.progress instanceof Map)) {
+      return;
+    }
+    entry.progress.forEach(message => {
+      if (!message) {
+        return;
+      }
+      const index = orchestratorState.messages.indexOf(message);
+      if (index !== -1) {
+        orchestratorState.messages.splice(index, 1);
+      }
+    });
+    entry.progress.clear();
+  };
+
   try {
     for await (const { event: eventType, data: payload } of orchestratorRequest(text)) {
       const eventData = payload && typeof payload === "object" ? payload : {};
@@ -2779,24 +2819,8 @@ async function sendOrchestratorMessage(text) {
           if (agentRaw === "browser") {
             ensureBrowserAgentInitialized({ showLoading: true });
             startOrchestratorBrowserMirror({ placeholder: message });
-            if (commandText) {
-              const runPromise = sendBrowserAgentPrompt(commandText, {
-                allowQueue: true,
-                queuePriority: "front",
-                silentQueue: true,
-                startNewTask: true,
-              });
-              runPromise.catch(error => {
-                console.error("Browser agent prompt failed", error);
-                const errorMessage = error && typeof error.message === "string"
-                  ? error.message
-                  : String(error ?? "不明なエラー");
-                addOrchestratorAssistantMessage(
-                  `[ブラウザエージェント] ブラウザ操作の実行中にエラーが発生しました: ${errorMessage}`
-                );
-                renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
-              });
-            }
+            // オーケストレーター側でブラウザエージェントが既に起動しているため、
+            // フロントエンドから同じコマンドを再送しない。
           }
         }
         continue;
@@ -2879,6 +2903,8 @@ async function sendOrchestratorMessage(text) {
           entry.placeholder = targetMessage;
         }
         if (agentRaw === "browser") {
+          clearTaskProgressMessages(entry);
+          clearOrchestratorBrowserMirrorMessages({ preserve: targetMessage });
           orchestratorBrowserTaskActive = false;
           stopOrchestratorBrowserMirror();
           if (isFinalized && generalProxyAgentKey === "browser") {
@@ -2896,6 +2922,7 @@ async function sendOrchestratorMessage(text) {
         planMessage.ts = Date.now();
         orchestratorBrowserTaskActive = false;
         setGeneralProxyAgent(null);
+        clearOrchestratorBrowserMirrorMessages();
         stopOrchestratorBrowserMirror();
         renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
         break;
@@ -2952,6 +2979,7 @@ async function sendOrchestratorMessage(text) {
     planMessage.ts = Date.now();
     orchestratorBrowserTaskActive = false;
     setGeneralProxyAgent(null);
+    clearOrchestratorBrowserMirrorMessages();
     stopOrchestratorBrowserMirror();
   } finally {
     if (userMessage) {
