@@ -64,9 +64,10 @@ let generalBrowserStage = null;
 let generalBrowserFullscreenBtn = null;
 
 const viewPlacements = new Map();
-const AGENT_TO_VIEW_MAP = { browser: "browser", iot: "iot", faq: "chat", chat: "chat" };
+const AGENT_TO_VIEW_MAP = { browser: "browser", iot: "iot", faq: "chat", qa: "chat", chat: "chat" };
 const GENERAL_PROXY_AGENT_LABELS = {
-  faq: "FAQ Gemini",
+  faq: "QAエージェント",
+  qa: "QAエージェント",
   browser: "ブラウザエージェント",
   iot: "IoT エージェント",
   chat: "要約チャット",
@@ -1527,7 +1528,8 @@ function clearOrchestratorBrowserMirrorMessages({ preserve } = {}) {
 let orchestratorBrowserTaskActive = false;
 
 const ORCHESTRATOR_AGENT_LABELS = {
-  faq: "FAQ Gemini",
+  faq: "QAエージェント",
+  qa: "QAエージェント",
   browser: "ブラウザエージェント",
   iot: "IoT エージェント",
 };
@@ -1805,7 +1807,7 @@ function renderSidebarMessages(messages) {
 }
 
 const ASSISTANT_AGENT_LABEL_SYNONYMS = {
-  faq: ["faq gemini", "家庭内エージェント", "qa agent", "qa-agent"],
+  faq: ["qa gemini", "qaエージェント", "qa エージェント", "qa agent", "qa-agent", "qa", "家庭内エージェント", "faq gemini"],
   browser: ["browser agent", "ブラウザエージェント"],
   iot: ["iot agent", "iot エージェント", "iotエージェント"],
 };

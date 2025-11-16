@@ -1,8 +1,8 @@
-"""Application entrypoint for the Multi-Agent Platform."""
+"""Flask application module that exposes the create_app factory."""
 
 from __future__ import annotations
 
-from app_module import create_app
+from multi_agent_app import create_app
 
 app = create_app()
 
