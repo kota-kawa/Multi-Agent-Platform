@@ -8,6 +8,7 @@ import os
 import queue
 import threading
 from pathlib import Path
+from datetime import datetime
 from typing import Any, Dict, Iterable, Iterator, List, Literal, TypedDict, cast
 from urllib.parse import urlparse, urlunparse
 
@@ -60,6 +61,11 @@ def _load_env_file(path: str = ".env") -> None:
 _load_env_file()
 
 
+def _current_datetime_line() -> str:
+    """Return the timestamp text embedded into system prompts."""
+    return datetime.now().strftime("現在の日時ー%Y年%m月%d日%H時%M分")
+
+
 def _parse_timeout_env(name: str, default: float | None, *, allow_none: bool = False) -> float | None:
     raw_value = os.environ.get(name)
     if raw_value is None:
@@ -109,6 +115,8 @@ DEFAULT_BROWSER_EMBED_URL = (
     "vnc_lite.html?autoconnect=1&resize=scale&scale=auto&view_clip=false"
 )
 DEFAULT_BROWSER_AGENT_CLIENT_BASE = "http://localhost:5005"
+BROWSER_AGENT_FINAL_MARKER = "[browser-agent-final]"
+BROWSER_AGENT_FINAL_NOTICE = "※ ブラウザエージェントの応答はここで終了です。"
 
 ORCHESTRATOR_MODEL = os.environ.get("ORCHESTRATOR_MODEL", "gpt-4.1-2025-04-14")
 ORCHESTRATOR_MAX_TASKS = int(os.environ.get("ORCHESTRATOR_MAX_TASKS", "5"))
@@ -750,6 +758,7 @@ class ExecutionResult(TypedDict, total=False):
     status: Literal["success", "error"]
     response: str | None
     error: str | None
+    finalized: bool | None
     review_status: Literal["ok", "retry"] | None
     review_reason: str | None
 
@@ -793,6 +802,8 @@ class MultiAgentOrchestrator:
     MAX_RETRIES = 2
 
     _REVIEWER_PROMPT = """
+現在の日時ー{current_datetime}
+
 あなたはマルチエージェントシステムのオーケストレーターで、エージェントの実行結果をレビューする役割を担っています。
 
 - ユーザーの当初の依頼とエージェントの実行結果を比較し、結果が依頼内容を満たしているか確認してください。
@@ -810,6 +821,8 @@ class MultiAgentOrchestrator:
 """.strip()
 
     _PLANNER_PROMPT = """
+現在の日時ー{current_datetime}
+
 あなたはマルチエージェントシステムのオーケストレーターです。与えられたユーザーの依頼を読み、実行すべきタスクを分析して下さい。
 
 - 利用可能なエージェント:
@@ -821,8 +834,10 @@ class MultiAgentOrchestrator:
   - "plan_summary": 実行方針を 1 文でまとめた文字列。
   - "tasks": タスクの配列。各要素は {{"agent": <上記のいずれか>, "command": <エージェントに渡す命令>}} です。
 - タスク数は 0〜{max_tasks} 件の範囲に収めてください。不要なタスクは作成しないでください。
-- エージェントで対応できない内容はタスクを生成せず、plan_summary でその旨を説明してください。
+- エージェントを使わずに回答できる場合（一般的な知識質問や現在日時のような確認など）は、タスクを生成せずに plan_summary へ直接回答を書いてください。その際は「一般的な知識として回答します」のようなメタ文のみを書かず、ユーザーへ伝えるべき具体的な回答や説明まで含めてください。
+- エージェントで対応できない内容の場合もタスクを生成せず、plan_summary でその旨やユーザーへ伝えるべき情報を説明してください。
 - ユーザーの意図が不明確または曖昧な場合はタスクを生成せず、plan_summary で確認が必要な旨を伝え、必要な情報を質問してください。
+- エージェントを使えそうな場合は積極的にタスクを作成し、最新情報や検証が必要な内容はブラウザや IoT などの専門エージェントに任せてください。迷った場合はエージェントを実行して得られた結果を plan_summary に反映します。
 """.strip()
 
     def __init__(self) -> None:
@@ -866,7 +881,9 @@ class MultiAgentOrchestrator:
         command = last_execution["command"]
         result = last_execution.get("response") or last_execution.get("error") or "結果なし"
 
+        timestamp_line = _current_datetime_line()
         prompt = self._REVIEWER_PROMPT.format(
+            current_datetime=timestamp_line,
             user_input=user_input,
             agent_name=agent_name,
             command=command,
@@ -924,7 +941,10 @@ class MultiAgentOrchestrator:
         recent_history = history[-10:]
         history_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_history])
 
-        prompt = self._PLANNER_PROMPT.format(max_tasks=ORCHESTRATOR_MAX_TASKS)
+        prompt = self._PLANNER_PROMPT.format(
+            max_tasks=ORCHESTRATOR_MAX_TASKS,
+            current_datetime=_current_datetime_line(),
+        )
         if long_term_memory:
             prompt += "\n\nユーザーの特性:\n" + long_term_memory
         if short_term_memory:
@@ -1022,14 +1042,20 @@ class MultiAgentOrchestrator:
             summary = self._summarise_browser_messages(payload.get("messages"))
         if not summary and fallback_summary:
             summary = fallback_summary.strip()
+        summary = self._condense_browser_summary(summary)
         if not summary:
             summary = "ブラウザエージェントからの応答を取得できませんでした。"
+        finalized = BROWSER_AGENT_FINAL_MARKER in (payload.get("run_summary") or "")
+        labeled_summary = summary
+        if labeled_summary and not labeled_summary.startswith("最終結果:"):
+            labeled_summary = f"最終結果: {labeled_summary}"
         return {
             "agent": "browser",
             "command": command,
             "status": "success",
-            "response": summary,
+            "response": labeled_summary,
             "error": None,
+            "finalized": finalized,
         }
 
     def _browser_error_result(self, command: str, error: Exception) -> ExecutionResult:
@@ -1039,6 +1065,7 @@ class MultiAgentOrchestrator:
             "status": "error",
             "response": None,
             "error": str(error),
+            "finalized": False,
         }
 
     def _execute_task(self, task: TaskSpec) -> ExecutionResult:
@@ -1454,27 +1481,64 @@ class MultiAgentOrchestrator:
                 return content.strip()
         return ""
 
+    def _condense_browser_summary(self, summary: str) -> str:
+        """Return a user-facing browser summary without step counts or notices."""
+
+        cleaned = (summary or "").strip()
+        if not cleaned:
+            return ""
+        cleaned = cleaned.replace(BROWSER_AGENT_FINAL_MARKER, "").strip()
+        if BROWSER_AGENT_FINAL_NOTICE in cleaned:
+            cleaned = cleaned.replace(BROWSER_AGENT_FINAL_NOTICE, "").strip()
+
+        lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+        if not lines:
+            return cleaned
+
+        for line in lines:
+            if line.startswith("最終報告:"):
+                report = line.split(":", 1)[1].strip()
+                if report:
+                    return report
+
+        for line in lines:
+            if "ステップでエージェントが実行されました" in line:
+                continue
+            if line.startswith("※"):
+                continue
+            return line
+
+        return lines[0]
+
+    def _execution_result_text(self, result: ExecutionResult) -> str:
+        agent_name = str(result.get("agent") or "agent")
+        agent_label = self._AGENT_DISPLAY_NAMES.get(agent_name, agent_name)
+        if result.get("status") == "success":
+            body = result.get("response") or "タスクを完了しました。"
+        else:
+            body = result.get("error") or "タスクの実行に失敗しました。"
+        return f"[{agent_label}] {body}"
+
     def _format_assistant_messages(
         self,
         plan_summary: str | None,
         executions: List[ExecutionResult],
     ) -> List[Dict[str, Any]]:
         messages: List[Dict[str, Any]] = []
+        has_executions = bool(executions)
         if plan_summary:
-            messages.append({"type": "plan", "text": f"計画: {plan_summary}"})
+            if has_executions:
+                messages.append({"type": "plan", "text": f"計画: {plan_summary}"})
+            else:
+                messages.append({"type": "status", "text": plan_summary})
 
         for result in executions:
-            agent_label = self._AGENT_DISPLAY_NAMES.get(result["agent"], result["agent"])
-            if result.get("status") == "success":
-                body = result.get("response") or "タスクを完了しました。"
-            else:
-                body = result.get("error") or "タスクの実行に失敗しました。"
             messages.append(
                 {
                     "type": "execution",
                     "agent": result["agent"],
                     "status": result.get("status"),
-                    "text": f"[{agent_label}] {body}",
+                    "text": self._execution_result_text(result),
                 }
             )
 
@@ -1594,11 +1658,18 @@ class MultiAgentOrchestrator:
             isinstance(result, dict) and result.get("agent") == "browser" for result in executions
         )
         if has_browser_execution:
-            for msg in reversed(assistant_messages):
-                text = msg.get("text")
-                if isinstance(text, str) and text.strip():
-                    _append_to_chat_history("assistant", text)
+            logged_browser_output = False
+            for result in reversed(executions):
+                if isinstance(result, dict) and result.get("agent") == "browser":
+                    _append_to_chat_history("assistant", self._execution_result_text(result))
+                    logged_browser_output = True
                     break
+            if not logged_browser_output:
+                for msg in reversed(assistant_messages):
+                    text = msg.get("text")
+                    if isinstance(text, str) and text.strip():
+                        _append_to_chat_history("assistant", text)
+                        break
         else:
             for msg in assistant_messages:
                 _append_to_chat_history("assistant", msg.get("text", ""))

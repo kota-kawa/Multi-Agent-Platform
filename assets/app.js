@@ -76,6 +76,11 @@ const GENERAL_PROXY_VIEW_LABELS = {
   chat: "要約チャット",
   iot: "IoT ダッシュボード",
 };
+const BROWSER_AGENT_FINAL_MARKER = "[browser-agent-final]";
+
+function containsBrowserAgentFinalMarker(text) {
+  return typeof text === "string" && text.includes(BROWSER_AGENT_FINAL_MARKER);
+}
 
 let generalProxyTargetView = null;
 let generalProxyAgentKey = null;
@@ -1503,6 +1508,8 @@ const orchestratorBrowserMirrorState = {
   placeholder: null,
 };
 
+let orchestratorBrowserTaskActive = false;
+
 const ORCHESTRATOR_AGENT_LABELS = {
   faq: "FAQ Gemini",
   browser: "ブラウザエージェント",
@@ -1782,11 +1789,41 @@ function renderSidebarMessages(messages) {
   sidebarChatLog.scrollTop = sidebarChatLog.scrollHeight;
 }
 
+const ASSISTANT_AGENT_LABEL_SYNONYMS = {
+  faq: ["faq gemini", "家庭内エージェント", "qa agent", "qa-agent"],
+  browser: ["browser agent", "ブラウザエージェント"],
+  iot: ["iot agent", "iot エージェント", "iotエージェント"],
+};
+
+function normalizeAssistantAgentLabel(label) {
+  const normalized = typeof label === "string" ? label.trim().toLowerCase() : "";
+  if (!normalized) {
+    return "";
+  }
+  for (const [agentKey, synonyms] of Object.entries(ASSISTANT_AGENT_LABEL_SYNONYMS)) {
+    if (synonyms.includes(normalized)) {
+      return agentKey;
+    }
+  }
+  return normalized;
+}
+
 function normalizeAssistantText(value) {
   if (typeof value !== "string") {
     return "";
   }
-  return value.replace(/\s+/g, " ").trim();
+  const squished = value.replace(/\s+/g, " ").trim();
+  if (!squished) {
+    return "";
+  }
+  const match = squished.match(/^\[([^\]]+)\]\s*(.*)$/);
+  if (!match) {
+    return squished;
+  }
+  const [, label, body = ""] = match;
+  const normalizedBody = body.replace(/\s+/g, " ").trim();
+  const normalizedLabel = normalizeAssistantAgentLabel(label);
+  return `${normalizedLabel || label.trim().toLowerCase()}:::${normalizedBody}`;
 }
 
 function getOrchestratorIntroMessage() {
@@ -1953,6 +1990,16 @@ function addOrchestratorAssistantMessage(text, { pending = false } = {}) {
   orchestratorState.messages.push(message);
   renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
   return message;
+}
+
+function moveOrchestratorMessageToEnd(message) {
+  if (!message) return;
+  const index = orchestratorState.messages.indexOf(message);
+  if (index === -1 || index === orchestratorState.messages.length - 1) {
+    return;
+  }
+  orchestratorState.messages.splice(index, 1);
+  orchestratorState.messages.push(message);
 }
 
 function renderGeneralChat({ forceSidebar = false } = {}) {
@@ -2316,6 +2363,12 @@ function handleBrowserStatusEvent(payload) {
         addBrowserSystemMessage(trimmed, {
           forceSidebar: currentChatMode === "browser",
         });
+      }
+      if (containsBrowserAgentFinalMarker(trimmed)) {
+        stopOrchestratorBrowserMirror();
+        if (generalProxyAgentKey === "browser") {
+          setGeneralProxyAgent(null);
+        }
       }
     }
   }
@@ -2685,11 +2738,15 @@ async function sendOrchestratorMessage(text) {
         const state = eventData.state && typeof eventData.state === "object" ? eventData.state : {};
         const planSummary = typeof state.plan_summary === "string" ? state.plan_summary.trim() : "";
         const tasks = Array.isArray(state.tasks) ? state.tasks : [];
-        const textValue = planSummary
-          ? `計画: ${planSummary}`
-          : tasks.length === 0
-            ? "今回のリクエストでは実行すべきタスクはありませんでした。"
-            : "計画を作成しました。タスクを実行します…";
+        const hasTasks = tasks.length > 0;
+        let textValue = "";
+        if (planSummary) {
+          textValue = hasTasks ? `計画: ${planSummary}` : planSummary;
+        } else if (!hasTasks) {
+          textValue = "今回のリクエストでは実行すべきタスクはありませんでした。";
+        } else {
+          textValue = "計画を作成しました。タスクを実行します…";
+        }
         planMessage.text = textValue;
         planMessage.pending = false;
         planMessage.ts = Date.now();
@@ -2715,6 +2772,9 @@ async function sendOrchestratorMessage(text) {
           }
         }
         if (agentRaw) {
+          if (agentRaw === "browser") {
+            orchestratorBrowserTaskActive = true;
+          }
           setGeneralProxyAgent(agentRaw);
           if (agentRaw === "browser") {
             ensureBrowserAgentInitialized({ showLoading: true });
@@ -2802,6 +2862,7 @@ async function sendOrchestratorMessage(text) {
         const agentRaw = typeof task.agent === "string" ? task.agent.trim().toLowerCase() : "";
         const agentLabel = agentRaw ? (ORCHESTRATOR_AGENT_LABELS[agentRaw] || agentRaw) : "エージェント";
         const status = typeof result.status === "string" ? result.status : "";
+        const isFinalized = Boolean(result.finalized) || status === "error";
         const responseText = typeof result.response === "string" ? result.response.trim() : "";
         const errorText = typeof result.error === "string" ? result.error.trim() : "";
         const finalText = status === "error"
@@ -2813,11 +2874,16 @@ async function sendOrchestratorMessage(text) {
         targetMessage.text = finalText;
         targetMessage.pending = false;
         targetMessage.ts = Date.now();
+        moveOrchestratorMessageToEnd(targetMessage);
         if (entry) {
           entry.placeholder = targetMessage;
         }
         if (agentRaw === "browser") {
+          orchestratorBrowserTaskActive = false;
           stopOrchestratorBrowserMirror();
+          if (isFinalized && generalProxyAgentKey === "browser") {
+            setGeneralProxyAgent(null);
+          }
         }
         renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
         continue;
@@ -2828,6 +2894,7 @@ async function sendOrchestratorMessage(text) {
         planMessage.text = `エラー: ${errorText}`;
         planMessage.pending = false;
         planMessage.ts = Date.now();
+        orchestratorBrowserTaskActive = false;
         setGeneralProxyAgent(null);
         stopOrchestratorBrowserMirror();
         renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
@@ -2873,6 +2940,7 @@ async function sendOrchestratorMessage(text) {
           tasks: state.tasks,
         });
         setGeneralProxyAgent(finalProxyAgent);
+        orchestratorBrowserTaskActive = false;
         stopOrchestratorBrowserMirror();
         renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
         break;
@@ -2882,6 +2950,7 @@ async function sendOrchestratorMessage(text) {
     planMessage.text = `エラー: ${error.message}`;
     planMessage.pending = false;
     planMessage.ts = Date.now();
+    orchestratorBrowserTaskActive = false;
     setGeneralProxyAgent(null);
     stopOrchestratorBrowserMirror();
   } finally {
@@ -2890,6 +2959,7 @@ async function sendOrchestratorMessage(text) {
     }
     userMessage.ts = userMessage.ts || Date.now();
     orchestratorState.sending = false;
+    orchestratorBrowserTaskActive = false;
     stopOrchestratorBrowserMirror();
     renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
     updateSidebarControlsForMode(currentChatMode);
@@ -2938,7 +3008,7 @@ function shouldRouteGeneralInputToBrowserAgent() {
   return (
     currentChatMode === "orchestrator"
     && generalProxyAgentKey === "browser"
-    && browserChatState.agentRunning
+    && orchestratorBrowserTaskActive
   );
 }
 
@@ -2960,7 +3030,7 @@ async function handleGeneralModeSubmission(value) {
     return;
   }
   if (orchestratorState.sending) {
-    if (generalProxyAgentKey === "browser") {
+    if (shouldRouteGeneralInputToBrowserAgent()) {
       await forwardGeneralInputToBrowserAgent(value);
     }
     return;
