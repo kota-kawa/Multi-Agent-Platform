@@ -57,8 +57,8 @@ const generalProxyContainer = $("#generalProxyContainer");
 const generalViewPanel = views.general?.querySelector(".general-view") ?? null;
 
 const ICONS = {
-  general: `<svg viewBox="0 0 24 24" focusable="false"><path d="M4 3h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-4l-4 4-4-4H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" fill="currentColor" /></svg>`,
-  browser: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 4h18a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm0 2v9h18V6H3zm7 13h4v2h-4v-2z"/></svg>`,
+  general: `<svg viewBox="0 0 24 24" fill="currentColor" focusable="false"><path d="M3 10v11h6v-7h6v7h6v-11L12,3z"/></svg>`,
+  browser: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 3c-4 0-4 18 0 18 4 0 4-18 0-18"/><path d="M3 12c0-4 18-4 18 0 0 4-18 4-18 0"/></svg>`,
   iot: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 2h6v2h2v2h2v6h-2v2h-2v2h-6v-2H7v-2H5V6h2V4h2V2zm0 4v2H7v6h2v2h6v-2h2V8h-2V6H9z"/></svg>`,
 };
 
