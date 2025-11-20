@@ -26,6 +26,11 @@ const sidebarResetBtn = $("#sidebarResetBtn");
 const sidebarPauseIcon = sidebarPauseBtn?.querySelector(".sidebar-chat-control-icon");
 const sidebarPauseSr = sidebarPauseBtn?.querySelector(".sr-only");
 const sidebarResetIcon = sidebarResetBtn?.querySelector(".sidebar-chat-control-icon");
+const sidebarChatTitle = $(".sidebar-chat-title");
+
+const ICON_GLOBE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>`;
+const ICON_HOME = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`;
+const ICON_CHAT = `<svg viewBox="0 0 24 24" focusable="false"><path d="M4 3h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-4l-4 4-4-4H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" fill="currentColor" /></svg>`;
 
 const ICON_PAUSE = `<svg viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M8 5h3v14H8zm5 0h3v14h-3z"/></svg>`;
 const ICON_PLAY = `<svg viewBox="0 0 24 24" focusable="false"><path fill="currentColor" d="M8 5.14v13.72a1 1 0 0 0 1.52.85l9.18-6.86a1 1 0 0 0 0-1.7L9.52 4.29A1 1 0 0 0 8 5.14z"/></svg>`;
@@ -805,6 +810,25 @@ function addBrowserSystemMessage(text, { forceSidebar = false } = {}) {
   renderBrowserChat({ forceSidebar });
 }
 
+function updateSidebarHeader(mode) {
+  if (!sidebarChatTitle) return;
+
+  let title = "共通チャット";
+  let icon = ICON_CHAT;
+
+  const isBrowser = mode === "browser" || (mode === "orchestrator" && isGeneralProxyAgentBrowser());
+
+  if (isBrowser) {
+    title = "ブラウザエージェント";
+    icon = ICON_GLOBE;
+  } else if (mode === "iot") {
+    title = "ライフスタイルエージェント";
+    icon = ICON_HOME;
+  }
+
+  sidebarChatTitle.innerHTML = `<span class="sidebar-chat-icon" aria-hidden="true">${icon}</span>${escapeHTML(title)}`;
+}
+
 function updatePauseButtonState(mode = currentChatMode) {
   if (!sidebarPauseBtn) return;
   const showBrowserControls = mode === "browser" || (mode === "orchestrator" && isGeneralProxyAgentBrowser());
@@ -835,6 +859,7 @@ function updateIotPauseButtonState() {
 }
 
 function updateSidebarControlsForMode(mode) {
+  updateSidebarHeader(mode);
   if (sidebarChatUtilities) {
     sidebarChatUtilities.hidden = false;
   }
