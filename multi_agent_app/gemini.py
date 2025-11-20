@@ -1,4 +1,4 @@
-"""FAQ_Gemini (QAエージェント) client helpers."""
+"""FAQ_Gemini (Life-Assistantエージェント) client helpers."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def _call_gemini(path: str, *, method: str = "GET", payload: Dict[str, Any] | No
 
     bases = _iter_gemini_bases()
     if not bases:
-        raise GeminiAPIError("QAエージェント（FAQ_Gemini）API の接続先が設定されていません。", status_code=500)
+        raise GeminiAPIError("Life-Assistantエージェント（FAQ_Gemini）API の接続先が設定されていません。", status_code=500)
 
     connection_errors: list[str] = []
     last_exception: Exception | None = None
@@ -66,7 +66,7 @@ def _call_gemini(path: str, *, method: str = "GET", payload: Dict[str, Any] | No
             break
 
     if response is None:
-        message_lines = ["QAエージェント（FAQ_Gemini）API への接続に失敗しました。"]
+        message_lines = ["Life-Assistantエージェント（FAQ_Gemini）API への接続に失敗しました。"]
         if connection_errors:
             message_lines.append("試行した URL:")
             message_lines.extend(f"- {error}" for error in connection_errors)
@@ -76,7 +76,7 @@ def _call_gemini(path: str, *, method: str = "GET", payload: Dict[str, Any] | No
     try:
         data = response.json()
     except ValueError:  # pragma: no cover - unexpected upstream response
-        data = {"error": response.text or "Unexpected response from QAエージェント（FAQ_Gemini）API."}
+        data = {"error": response.text or "Unexpected response from Life-Assistantエージェント（FAQ_Gemini）API."}
 
     if not response.ok:
         message = data.get("error") if isinstance(data, dict) else None
@@ -85,6 +85,6 @@ def _call_gemini(path: str, *, method: str = "GET", payload: Dict[str, Any] | No
         raise GeminiAPIError(message, status_code=response.status_code)
 
     if not isinstance(data, dict):
-        raise GeminiAPIError("QAエージェント（FAQ_Gemini）API から不正なレスポンス形式が返されました。", status_code=502)
+        raise GeminiAPIError("Life-Assistantエージェント（FAQ_Gemini）API から不正なレスポンス形式が返されました。", status_code=502)
 
     return data

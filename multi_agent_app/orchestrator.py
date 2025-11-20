@@ -34,7 +34,7 @@ from .config import (
 from .errors import BrowserAgentError, GeminiAPIError, IotAgentError, OrchestratorError
 from .gemini import _call_gemini
 from .history import _append_to_chat_history
-from .iot import _call_iot_agent_chat
+from .iot import _call_iot_agent_command
 
 
 class TaskSpec(TypedDict):
@@ -92,7 +92,7 @@ class MultiAgentOrchestrator:
     }
 
     _AGENT_DISPLAY_NAMES = {
-        "faq": "QAエージェント",
+        "faq": "Life-Assistantエージェント",
         "browser": "ブラウザエージェント",
         "iot": "IoT エージェント",
     }
@@ -124,7 +124,7 @@ class MultiAgentOrchestrator:
 あなたはマルチエージェントシステムのオーケストレーターです。与えられたユーザーの依頼を読み、実行すべきタスクを分析して下さい。
 
 - 利用可能なエージェント:
-  - "faq"（QAエージェント）: 家庭内の出来事や料理、家電、人間関係に詳しい専門家エージェントで、IoTなどに対してナレッジベースに質問できます。
+  - "faq"（Life-Assistantエージェント）: 家庭内の出来事や料理、家電、人間関係に詳しい専門家エージェントで、IoTなどに対してナレッジベースに質問できます。
   - "browser": ブラウザ自動化エージェントで Web を閲覧・操作できます。
   - "iot": IoT エージェントを通じてデバイスの状態確認や操作ができます。
 - 出力は JSON オブジェクトのみで、追加の説明やマークダウンを含めてはいけません。
@@ -136,8 +136,8 @@ class MultiAgentOrchestrator:
         - ただし、少しでもエージェントを活用する余地がある場合は、自分で回答するよりもエージェントのタスク実行を優先し、得られた結果を plan_summary で伝えてください。
         - エージェントで対応できない内容の場合もタスクを生成せず、plan_summary でその旨やユーザーへ伝えるべき情報を説明してください。
 - plan_summary やタスク説明では、ユーザーが求める具体的な内容を必ず書き切り、件数を指定された場合はその数ちょうどの候補を詳細（例: 献立名や理由）付きで提示してください。「〜を提案します」「〜を確認します」などの宣言だけで回答を終わらせてはいけません。
-- ユーザーの意図が不明確または曖昧な場合はタスクを生成せず、plan_summary で確認が必要な旨を伝え、必要な情報を質問してください。
-- エージェントを使えそうな場合は積極的にタスクを作成し、最新情報や検証が必要な内容はブラウザや IoT などの専門エージェントに任せてください。迷った場合はエージェントを実行して得られた結果を plan_summary に反映します。
+- **最優先事項:** ユーザーの依頼が少しでも不明確または曖昧な場合は、いかなるタスクも生成してはいけません。代わりに、`plan_summary` を使って、曖昧な点を具体的に指摘し、明確化するための質問をユーザーに投げかけてください。例えば、「最新の情報を知りたいですか？」「いくつ提案すればよろしいですか？」のように、具体的な選択肢や確認事項を提示してください。
+- 上記の確認を経て、ユーザーの意図が完全に明確になった場合にのみ、エージェントのタスクを作成してください。最新情報や検証が必要な内容は、ブラウザやIoTなどの専門エージェントに任せてください。
 """.strip()
 
     def __init__(self) -> None:
@@ -373,7 +373,7 @@ class MultiAgentOrchestrator:
         command = task["command"]
         if agent == "faq":
             try:
-                data = _call_gemini("/rag_answer", method="POST", payload={"question": command})
+                data = _call_gemini("/agent_rag_answer", method="POST", payload={"question": command})
             except GeminiAPIError as exc:
                 return {
                     "agent": agent,
@@ -382,7 +382,7 @@ class MultiAgentOrchestrator:
                     "response": None,
                     "error": str(exc),
                 }
-            answer = str(data.get("answer") or "").strip() or "QAエージェントから回答が得られませんでした。"
+            answer = str(data.get("answer") or "").strip() or "Life-Assistantエージェントから回答が得られませんでした。"
             return {
                 "agent": agent,
                 "command": command,
@@ -400,7 +400,7 @@ class MultiAgentOrchestrator:
 
         if agent == "iot":
             try:
-                data = _call_iot_agent_chat(command)
+                data = _call_iot_agent_command(command)
             except IotAgentError as exc:
                 return {
                     "agent": agent,
@@ -1018,4 +1018,3 @@ def _get_orchestrator() -> MultiAgentOrchestrator:
         except Exception as exc:  # noqa: BLE001
             raise OrchestratorError(f"オーケストレーターの初期化に失敗しました: {exc}") from exc
     return _orchestrator_service
-

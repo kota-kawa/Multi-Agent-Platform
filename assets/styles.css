@@ -358,6 +358,7 @@ body{
   transition:.15s transform ease, .15s box-shadow ease, .15s color ease, .15s border-color ease;
 }
 .nav-btn svg{opacity:.9}
+
 .nav-btn span{font-size:11px; letter-spacing:.04em}
 .nav-btn:hover{transform:translateY(-1px); box-shadow:var(--shadow); color:#fff; border-color:#3a4660}
 .nav-btn.active{color:#fff; border-color:#4a86ff; box-shadow:0 0 0 1px #4a86ff inset}

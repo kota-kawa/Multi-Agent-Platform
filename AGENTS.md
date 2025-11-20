@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Overview
-- `multi_agent_app/` packages the Flask blueprint, LangGraph orchestrator, and Browser/IoT/QA bridges; `app.py`, `app_module.py`, and `wsgi.py` are thin entrypoints that import `create_app()` from this package.
+- `multi_agent_app/` packages the Flask blueprint, LangGraph orchestrator, and Browser/IoT/Life-Assistant bridges; `app.py`, `app_module.py`, and `wsgi.py` are thin entrypoints that import `create_app()` from this package.
 - LangGraph + `ChatOpenAI` drive `MultiAgentOrchestrator`, which plans, executes, and reviews up to `ORCHESTRATOR_MAX_TASKS` tasks via `/orchestrator/chat`.
 - Front-end bundles in `assets/` implement the general/dashboard/browser/chat UI, orchestrator sidebar, and memory editor; HTML templates live in `templates/`.
 - Runtime JSON (`chat_history.json`, `short_term_memory.json`, `long_term_memory.json`) act as lightweight stores for transcripts and memories—treat them as ephemeral and avoid noisy diffs.
@@ -9,7 +9,7 @@
 ## Key Modules & Files
 - `app.py`, `app_module.py`, `wsgi.py`: runtime entrypoints (Flask CLI, local dev, WSGI) that all call `multi_agent_app.create_app()`.
 - `multi_agent_app/__init__.py`: application factory wiring templates/static paths and registering the blueprint from `routes.py`.
-- `multi_agent_app/routes.py`: Flask blueprint + HTTP routes (SPA shell, orchestrator SSE endpoint, QA/Browser/IoT proxies, chat-history + memory APIs).
+- `multi_agent_app/routes.py`: Flask blueprint + HTTP routes (SPA shell, orchestrator SSE endpoint, Life-Assistant/Browser/IoT proxies, chat-history + memory APIs).
 - `multi_agent_app/orchestrator.py`: LangGraph-based planner/executor/reviewer plus supporting TypedDicts that define orchestrator state.
 - `multi_agent_app/browser.py`, `multi_agent_app/iot.py`, `multi_agent_app/gemini.py`, `multi_agent_app/history.py`, `multi_agent_app/config.py`: helper modules for upstream calls, env/config parsing, chat history propagation, and timeout constants.
 - `assets/app.js`: SPA logic (view switching, orchestrator SSE client, Browser Agent stream mirroring, IoT dashboard widgets, shared sidebar chat).
@@ -17,11 +17,11 @@
 - `assets/styles.css`: shared theme, responsive layout, per-view styling (sidebar, browser embed frame, IoT cards, orchestrator panel).
 - `templates/index.html`: serves the SPA shell, injects `browser_embed_url`/`browser_agent_client_base` meta tags, loads bundles.
 - `templates/memory.html`: dedicated memory management UI backed by `assets/memory.js`.
-- `Dockerfile` + `docker-compose.yml`: container build/run (port 5050) and network wiring for the QAエージェント（FAQ_Gemini） + Browser Agent services.
+- `Dockerfile` + `docker-compose.yml`: container build/run (port 5050) and network wiring for the Life-Assistantエージェント（FAQ_Gemini） + Browser Agent services.
 - `prompt.txt`: Codex CLI automation scratchpad; keep instructions accurate if it’s used for tooling.
 
 ## Runtime Data & Memory Management
-- `_append_to_chat_history` maintains `chat_history.json`, appends every user/assistant turn from the一般（オーケストレーター）ビュー, and asynchronously calls `_send_recent_history_to_agents` every five entries to sync the QAエージェント（FAQ_Gemini）, Browser Agent, and IoT Agent. Theチャットビュー (`/rag_answer`) now bypasses this file entirely so only orchestrated conversations persist locally.
+- `_append_to_chat_history` maintains `chat_history.json`, appends every user/assistant turn from the一般（オーケストレーター）ビュー, and asynchronously calls `_send_recent_history_to_agents` every five entries to sync the Life-Assistantエージェント（FAQ_Gemini）, Browser Agent, and IoT Agent. 送信スキーマは `{"history": [{"role": "...", "content": "..."}]}` に統一し、各エージェントから `should_reply`/`reply`/`addressed_agents` が返ってきた場合は `[Agent] ...` 形式で `chat_history.json` に追記する。Theチャットビュー (`/rag_answer`) now bypasses this file entirely so only orchestrated conversations persist locally.
 - `/chat_history` + `/reset_chat_history` expose the local transcript to the UI; `assets/app.js` also duplicates key steps into sidebar/orchestrator panes.
 - `/memory` + `/api/memory` wrap `short_term_memory.json` and `long_term_memory.json`. `POST /api/memory` replaces both files; reads tolerate missing/invalid JSON.
 - Never commit large diffs for these JSON files; they are runtime artifacts used for demos/local state only.
@@ -29,7 +29,7 @@
 ## Configuration & Secrets
 - `.env` is auto-loaded in `multi_agent_app/config.py` before constants are computed. Required keys include `OPENAI_API_KEY` plus optional overrides such as:
   - `ORCHESTRATOR_MODEL`, `ORCHESTRATOR_MAX_TASKS`
-  - `FAQ_GEMINI_API_BASE`, `FAQ_GEMINI_TIMEOUT`（QAエージェント向け）
+  - `FAQ_GEMINI_API_BASE`, `FAQ_GEMINI_TIMEOUT`（Life-Assistantエージェント向け）
   - `BROWSER_AGENT_API_BASE`, `BROWSER_AGENT_CLIENT_BASE`, `BROWSER_EMBED_URL`
   - `BROWSER_AGENT_CONNECT_TIMEOUT`, `BROWSER_AGENT_TIMEOUT`, `BROWSER_AGENT_STREAM_TIMEOUT`, `BROWSER_AGENT_CHAT_TIMEOUT`
   - `IOT_AGENT_API_BASE`, `IOT_AGENT_TIMEOUT`
@@ -40,7 +40,7 @@
 - `python -m venv .venv && source .venv/bin/activate`
 - `pip install -r requirements.txt`
 - `flask --app app run --debug --port 5050` to serve the SPA + orchestrator locally.
-- `docker compose up --build web` binds to port 5050 and injects service URLs for the QAエージェント（FAQ_Gemini）/Browser Agent. Ensure the shared `multi_agent_platform_net` exists or set `MULTI_AGENT_NETWORK`.
+- `docker compose up --build web` binds to port 5050 and injects service URLs for the Life-Assistantエージェント（FAQ_Gemini）/Browser Agent. Ensure the shared `multi_agent_platform_net` exists or set `MULTI_AGENT_NETWORK`.
 - The Browser Agent iframe URL exposed to the UI defaults to the embedded noVNC endpoint; override `BROWSER_EMBED_URL` for remote deployments.
 
 ## Multi-Agent Orchestrator & APIs
@@ -48,7 +48,7 @@
 - `_AGENT_ALIASES` and `_AGENT_DISPLAY_NAMES` map friendly names to `faq`, `browser`, `iot`. Update both when adding agents, and expand the front-end’s `AGENT_TO_VIEW_MAP`.
 - Planner prompt allows direct answers (zero tasks) if orchestrator can reply without agents. Review prompt enforces JSON responses driving retry logic (max two retries).
 - `/orchestrator/chat` streams responses via SSE. Client payload may include `browser_agent_base(s)` to override Browser Agent hosts for that request.
-- QAエージェント（FAQ_Gemini）プロキシ: `/rag_answer`, `/conversation_history`, `/conversation_summary`, `/reset_history`—all call `_call_gemini` with per-request logging/error handling.
+- Life-Assistantエージェント（FAQ_Gemini）プロキシ: `/rag_answer`, `/conversation_history`, `/conversation_summary`, `/reset_history`—all call `_call_gemini` with per-request logging/error handling. オーケストレーター（一般ビュー）は `/agent_rag_answer` を使ってリモート履歴へ書き込まずに回答を取得する。
 - IoT proxies: `/iot_agent/*` forwards method, headers, query, and body to `_proxy_iot_agent_request`. Be careful to keep the allowed header list synced with upstream requirements.
 
 ## Browser & IoT Agent Bridges

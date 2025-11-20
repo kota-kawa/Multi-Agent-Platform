@@ -43,10 +43,24 @@ const views = {
 
 const appTitle = $("#appTitle");
 const navButtons = $$(".nav-btn");
+const sidebarChatTitle = $(".sidebar-chat-title");
+const sidebarChatIcon = $(".sidebar-chat-icon");
+const sidebarChatTitleTextNode = sidebarChatTitle
+  ? Array.from(sidebarChatTitle.childNodes).find(
+      (node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim()
+    )
+  : null;
+
 const generalDefaultContent = $("#generalDefaultContent");
 const generalProxyStatus = $("#generalProxyStatus");
 const generalProxyContainer = $("#generalProxyContainer");
 const generalViewPanel = views.general?.querySelector(".general-view") ?? null;
+
+const ICONS = {
+  general: `<svg viewBox="0 0 24 24" focusable="false"><path d="M4 3h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-4l-4 4-4-4H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" fill="currentColor" /></svg>`,
+  browser: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 4h18a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm0 2v9h18V6H3zm7 13h4v2h-4v-2z"/></svg>`,
+  iot: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 2h6v2h2v2h2v6h-2v2h-2v2h-6v-2H7v-2H5V6h2V4h2V2zm0 4v2H7v6h2v2h6v-2h2V8h-2V6H9z"/></svg>`,
+};
 
 let generalBrowserSurface = null;
 let generalBrowserStage = null;
@@ -55,8 +69,8 @@ let generalBrowserFullscreenBtn = null;
 const viewPlacements = new Map();
 const AGENT_TO_VIEW_MAP = { browser: "browser", iot: "iot", faq: "chat", qa: "chat", chat: "chat" };
 const GENERAL_PROXY_AGENT_LABELS = {
-  faq: "QAエージェント",
-  qa: "QAエージェント",
+  faq: "Life-Assistantエージェント",
+  qa: "Life-Assistantエージェント",
   browser: "ブラウザエージェント",
   iot: "IoT エージェント",
   chat: "要約チャット",
@@ -262,9 +276,11 @@ export function determineGeneralProxyAgentFromResult(result) {
 }
 
 export function activateView(viewKey) {
-  const target = Object.prototype.hasOwnProperty.call(views, viewKey) ? viewKey : "browser";
+  const target = Object.prototype.hasOwnProperty.call(views, viewKey)
+    ? viewKey
+    : "browser";
   currentViewKey = target;
-  navButtons.forEach(button => {
+  navButtons.forEach((button) => {
     button.classList.toggle("active", button.dataset.view === target);
   });
   Object.entries(views).forEach(([key, el]) => {
@@ -275,10 +291,27 @@ export function activateView(viewKey) {
     general: "一般ビュー",
     browser: "リモートブラウザ",
     iot: "IoT ダッシュボード",
-    chat: "要約チャット",
+    chat: "Life",
   };
   if (appTitle) {
     appTitle.textContent = titles[target] ?? "リモートブラウザ";
+  }
+
+  // Update sidebar chat title and icon based on the current view
+  if (sidebarChatTitleTextNode && sidebarChatIcon) {
+    let titleText = " ライフスタイルエージェント"; // Default
+    let iconSvg = ICONS.general;
+
+    if (target === "browser") {
+      titleText = " ブラウザエージェント";
+      iconSvg = ICONS.browser;
+    } else if (target === "iot") {
+      titleText = " IoTエージェント";
+      iconSvg = ICONS.iot;
+    }
+
+    sidebarChatTitleTextNode.textContent = titleText;
+    sidebarChatIcon.innerHTML = iconSvg;
   }
 
   const isBrowserView = target === "browser";

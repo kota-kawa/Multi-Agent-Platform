@@ -85,8 +85,8 @@ function clearOrchestratorBrowserMirrorMessages({ preserve } = {}) {
 let orchestratorBrowserTaskActive = false;
 
 const ORCHESTRATOR_AGENT_LABELS = {
-  faq: "QAエージェント",
-  qa: "QAエージェント",
+  faq: "Life-Assistantエージェント",
+  qa: "Life-Assistantエージェント",
   browser: "ブラウザエージェント",
   iot: "IoT エージェント",
 };
@@ -364,7 +364,23 @@ function renderSidebarMessages(messages) {
 }
 
 const ASSISTANT_AGENT_LABEL_SYNONYMS = {
-  faq: ["qa gemini", "qaエージェント", "qa エージェント", "qa agent", "qa-agent", "qa", "家庭内エージェント", "faq gemini"],
+  faq: [
+    "life-assistantエージェント",
+    "life assistantエージェント",
+    "life-assistant agent",
+    "life assistant agent",
+    "life-assistant-agent",
+    "life assistant",
+    "life-assistant",
+    "qa gemini",
+    "qaエージェント",
+    "qa エージェント",
+    "qa agent",
+    "qa-agent",
+    "qa",
+    "家庭内エージェント",
+    "faq gemini",
+  ],
   browser: ["browser agent", "ブラウザエージェント"],
   iot: ["iot agent", "iot エージェント", "iotエージェント"],
 };

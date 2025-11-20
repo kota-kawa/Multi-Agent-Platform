@@ -259,9 +259,9 @@ def _post_browser_agent(path: str, payload: Dict[str, Any], *, timeout: float | 
 def _call_browser_agent_history_check(history: Iterable[Dict[str, str]]) -> Dict[str, Any]:
     """Call the Browser Agent history check endpoint."""
 
-    payload = {"messages": list(history)}
+    payload = {"history": list(history)}
     return _post_browser_agent(
-        "/api/history/check",
+        "/api/conversations/review",
         payload,
         timeout=_browser_agent_timeout(BROWSER_AGENT_TIMEOUT),
     )

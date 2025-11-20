@@ -33,30 +33,24 @@
           <button class="nav-btn active" data-view="general" title="一般">
           <!-- 一般ビュー用アイコン -->
           <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d="M12 2a10 10 0 1 0 10 10A10.011 10.011 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8.009 8.009 0 0 1-8 8zm0-11a3 3 0 1 0 3 3 3 3 0 0 0-3-3z"/>
+            <path d="M4,8H8V4H4V8ZM10,20H14V16H10V20ZM4,20H8V16H4V20ZM4,14H8V10H4V14ZM10,14H14V10H10V14ZM16,8H20V4H16V8ZM10,8H14V4H10V8ZM16,14H20V10H16V14ZM16,20H20V16H16V20Z"/>
           </svg>
           <span>一般</span>
           </button>
           <button class="nav-btn" data-view="browser" title="ブラウザ">
           <!-- モニタ風アイコン（SVG） -->
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d="M3 4h18a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm0 2v9h18V6H3zm7 13h4v2h-4v-2z"/>
-          </svg>
+          <img src="/assets/icons/Browser-Agent.ico" alt="ブラウザ" width="22" height="22" class="agent-icon">
           <span>ブラウザ</span>
           </button>
           <button class="nav-btn" data-view="iot" title="IoT">
           <!-- IoT 芯片風アイコン -->
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d="M9 2h6v2h2v2h2v6h-2v2h-2v2h-6v-2H7v-2H5V6h2V4h2V2zm0 4v2H7v6h2v2h6v-2h2V8h-2V6H9z"/>
-          </svg>
+          <img src="/assets/icons/IoT-Agent.ico" alt="IoT" width="22" height="22" class="agent-icon">
           <span>IoT</span>
           </button>
           <button class="nav-btn" data-view="chat" title="チャット">
           <!-- 吹き出しアイコン -->
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d="M20 2H4a2 2 0 0 0-2 2v14l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/>
-          </svg>
-          <span>チャット</span>
+          <img src="/assets/icons/Home-Assistant-Agent.ico" alt="Life" width="22" height="22" class="agent-icon">
+          <span>Life</span>
           </button>
         </div>
         <section class="sidebar-chat" aria-label="共通チャット">
@@ -67,9 +61,9 @@
                   <path d="M4 3h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-4l-4 4-4-4H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" fill="currentColor" />
                 </svg>
               </span>
-              共通チャット
+              ライフスタイルエージェント
             </h2>
-            <p class="sidebar-chat-desc">ビューを切り替えてもここから同じチャットを操作できます。</p>
+            <p class="sidebar-chat-desc"></p>
           </div>
           <div id="sidebarChatLog" class="sidebar-chat-log" aria-live="polite"></div>
           <form id="sidebarChatForm" class="sidebar-chat-form" autocomplete="off">

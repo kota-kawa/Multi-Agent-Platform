@@ -87,13 +87,19 @@ def _post_iot_agent(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
-def _call_iot_agent_chat(command: str) -> Dict[str, Any]:
-    """Send a chat request to the IoT Agent and return the JSON payload."""
+def _call_iot_agent_command(command: str) -> Dict[str, Any]:
+    """Send a chat-style command to the IoT Agent and return the JSON payload."""
 
     return _post_iot_agent(
         "/api/chat",
         {"messages": [{"role": "user", "content": command}]},
     )
+
+
+def _call_iot_agent_chat(command: str) -> Dict[str, Any]:
+    """Backward-compatible alias for `_call_iot_agent_command`."""
+
+    return _call_iot_agent_command(command)
 
 
 def _call_iot_agent_conversation_review(
