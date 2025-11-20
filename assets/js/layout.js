@@ -57,7 +57,8 @@ const generalProxyContainer = $("#generalProxyContainer");
 const generalViewPanel = views.general?.querySelector(".general-view") ?? null;
 
 const ICONS = {
-  general: `<svg viewBox="0 0 24 24" fill="currentColor" focusable="false"><path d="M3 10v11h6v-7h6v7h6v-11L12,3z"/></svg>`,
+  generalChat: `<svg viewBox="0 0 24 24" fill="currentColor" focusable="false"><path d="M4 4h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8l-4 4V5a1 1 0 0 1 1-1z"/></svg>`,
+  chat: `<svg viewBox="0 0 24 24" fill="currentColor" focusable="false"><path d="M3 10v11h6v-7h6v7h6v-11L12,3z"/></svg>`,
   browser: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 3c-4 0-4 18 0 18 4 0 4-18 0-18"/><path d="M3 12c0-4 18-4 18 0 0 4-18 4-18 0"/></svg>`,
   iot: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 2h6v2h2v2h2v6h-2v2h-2v2h-6v-2H7v-2H5V6h2V4h2V2zm0 4v2H7v6h2v2h6v-2h2V8h-2V6H9z"/></svg>`,
 };
@@ -299,8 +300,9 @@ export function activateView(viewKey) {
 
   // Update sidebar chat title and icon based on the current view
   if (sidebarChatTitleTextNode && sidebarChatIcon) {
-    let titleText = " ライフスタイルエージェント"; // Default
-    let iconSvg = ICONS.general;
+    const isGeneralViewActive = target === "general";
+    let titleText = isGeneralViewActive ? " 共通チャット" : " ライフスタイルエージェント";
+    let iconSvg = isGeneralViewActive ? ICONS.generalChat : ICONS.chat;
 
     if (target === "browser") {
       titleText = " ブラウザエージェント";
