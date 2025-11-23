@@ -7,12 +7,16 @@ from datetime import datetime
 from pathlib import Path
 
 
-def _load_env_file(path: str = ".env") -> None:
-    """Best-effort .env loader so orchestrator can pick up API keys."""
+def _load_env_file(path: str = "secrets.env") -> None:
+    """Best-effort env loader so orchestrator can pick up API keys."""
 
     env_path = Path(path)
     if not env_path.is_file():
-        return
+        legacy = Path(".env")
+        if path == "secrets.env" and legacy.is_file():
+            env_path = legacy
+        else:
+            return
 
     try:
         content = env_path.read_text(encoding="utf-8")

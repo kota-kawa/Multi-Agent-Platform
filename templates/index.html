@@ -30,11 +30,11 @@
       <aside class="sidebar" role="navigation" aria-label="ビュー切替">
         <div class="sidebar-header">
           <p class="sidebar-title">ビュー</p>
-          <a href="/memory" class="sidebar-settings-btn" title="設定">
+          <button id="settingsBtn" type="button" class="sidebar-settings-btn" title="設定" aria-haspopup="dialog" aria-controls="settingsDialog">
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
               <path d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.07-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61 l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41 h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.74,8.87 C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.07,0.94l-2.03,1.58 c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54 c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96 c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.47-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6 s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/>
             </svg>
-          </a>
+          </button>
         </div>
         <div class="sidebar-nav" role="group" aria-label="ビュー選択">
           <button class="nav-btn active" data-view="general" title="一般">
@@ -229,6 +229,138 @@
     </div>
 
   </div>
+
+  <dialog
+    id="settingsDialog"
+    class="dialog settings-dialog"
+    aria-labelledby="settingsDialogTitle"
+    aria-modal="true"
+  >
+    <form id="settingsForm" class="dialog-panel settings-dialog__panel" autocomplete="off">
+      <header class="dialog-header">
+        <h3 id="settingsDialogTitle">設定とメモリ</h3>
+      </header>
+      <div class="dialog-body settings-dialog__body">
+        <div class="settings-section">
+          <div class="settings-section__head">
+            <div>
+              <p class="settings-section__title">会話履歴</p>
+              <p class="settings-section__desc">共通チャットに保存されているメッセージ数を確認できます。</p>
+            </div>
+            <button id="settingsRefreshBtn" class="btn subtle" type="button">最新を取得</button>
+          </div>
+          <div class="settings-stats">
+            <div class="settings-stat">
+              <p class="settings-stat__label">共通チャットのメッセージ数</p>
+              <p id="chatCountValue" class="settings-stat__value">-</p>
+              <p id="chatCountNote" class="settings-stat__note">読み込み待ち</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section__head">
+            <div>
+              <p class="settings-section__title">エージェント接続</p>
+              <p class="settings-section__desc">オーケストレーターからタスクを送る対象を切り替えます。オフにしたエージェントには割り振られません。</p>
+            </div>
+          </div>
+          <div class="settings-switches" role="group" aria-label="エージェント接続の切り替え">
+            <label class="settings-switch" for="agentToggleBrowser">
+              <div class="settings-switch__text">
+                <span class="settings-switch__name">ブラウザエージェント</span>
+                <span class="settings-switch__desc">Web 操作や検索を担当します。</span>
+              </div>
+              <span class="settings-switch__control">
+                <input id="agentToggleBrowser" type="checkbox" role="switch" aria-label="ブラウザエージェントを有効化" checked />
+              </span>
+            </label>
+            <label class="settings-switch" for="agentToggleFaq">
+              <div class="settings-switch__text">
+                <span class="settings-switch__name">ライフスタイルエージェント</span>
+                <span class="settings-switch__desc">生活相談やレシピ提案を担うエージェントです。</span>
+              </div>
+              <span class="settings-switch__control">
+                <input id="agentToggleFaq" type="checkbox" role="switch" aria-label="ライフスタイルエージェントを有効化" checked />
+              </span>
+            </label>
+            <label class="settings-switch" for="agentToggleIot">
+              <div class="settings-switch__text">
+                <span class="settings-switch__name">IoT エージェント</span>
+                <span class="settings-switch__desc">デバイスの状態取得と操作を担当します。</span>
+              </div>
+              <span class="settings-switch__control">
+                <input id="agentToggleIot" type="checkbox" role="switch" aria-label="IoT エージェントを有効化" checked />
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <p class="settings-section__title">LLM モデル</p>
+          <p class="settings-section__desc">
+            オーケストレーターと各エージェントが使う LLM を選択します。OpenAI ライブラリ経由で呼び出し、API キーは各フォルダーの secrets.env から読み込みます。
+          </p>
+          <div class="settings-models">
+            <div class="form-row">
+              <label class="form-label" for="modelSelectOrchestrator">オーケストレーター</label>
+              <select id="modelSelectOrchestrator" class="form-control">
+                <option value="">読み込み中…</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label class="form-label" for="modelSelectBrowser">ブラウザエージェント</label>
+              <select id="modelSelectBrowser" class="form-control">
+                <option value="">読み込み中…</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label class="form-label" for="modelSelectFaq">ライフスタイルエージェント</label>
+              <select id="modelSelectFaq" class="form-control">
+                <option value="">読み込み中…</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label class="form-label" for="modelSelectIot">IoT エージェント</label>
+              <select id="modelSelectIot" class="form-control">
+                <option value="">読み込み中…</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <p class="settings-section__title">メモリの確認と編集</p>
+          <p class="settings-section__desc">
+            長期・短期記憶を直接編集できます。保存するとすぐに反映されます。
+          </p>
+          <div class="form-row">
+            <label class="form-label" for="settingsLongTermMemory">長期記憶</label>
+            <textarea
+              id="settingsLongTermMemory"
+              name="long_term_memory"
+              class="form-control form-control--multiline"
+              placeholder="ユーザーの特性や背景などを記録します。"
+            ></textarea>
+          </div>
+          <div class="form-row">
+            <label class="form-label" for="settingsShortTermMemory">短期記憶</label>
+            <textarea
+              id="settingsShortTermMemory"
+              name="short_term_memory"
+              class="form-control form-control--multiline"
+              placeholder="最近の出来事や直近の指示を記録します。"
+            ></textarea>
+          </div>
+        </div>
+        <p id="settingsStatusMessage" class="dialog-message settings-status" hidden></p>
+      </div>
+      <footer class="dialog-footer">
+        <button id="settingsCloseBtn" class="btn ghost" type="button">閉じる</button>
+        <button id="settingsSaveBtn" class="btn primary" type="submit">保存</button>
+      </footer>
+    </form>
+  </dialog>
 
   <dialog id="iotRegisterDialog" class="dialog" aria-labelledby="iotRegisterTitle">
     <form id="iotRegisterForm" class="dialog-panel" autocomplete="off">

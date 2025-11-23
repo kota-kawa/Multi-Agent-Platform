@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import queue
 import threading
 from typing import Any, Dict, Iterable, Iterator, List, Literal, TypedDict, cast
@@ -28,13 +27,13 @@ from .config import (
     BROWSER_AGENT_STREAM_TIMEOUT,
     BROWSER_AGENT_TIMEOUT,
     ORCHESTRATOR_MAX_TASKS,
-    ORCHESTRATOR_MODEL,
     _current_datetime_line,
 )
 from .errors import BrowserAgentError, GeminiAPIError, IotAgentError, OrchestratorError
 from .gemini import _call_gemini
 from .history import _append_to_chat_history
 from .iot import _call_iot_agent_command
+from .settings import load_agent_connections, resolve_llm_config
 
 
 class TaskSpec(TypedDict):
@@ -49,7 +48,7 @@ class ExecutionResult(TypedDict, total=False):
 
     agent: Literal["faq", "browser", "iot"]
     command: str
-    status: Literal["success", "error"]
+    status: Literal["success", "error", "needs_info"]
     response: str | None
     error: str | None
     review_status: Literal["ok", "retry"]
@@ -67,6 +66,7 @@ class OrchestratorState(TypedDict, total=False):
     executions: List[ExecutionResult]
     current_index: int
     retry_counts: Dict[int, int]
+    agent_connections: Dict[str, bool]
 
 class MultiAgentOrchestrator:
     """LangGraph-based orchestrator that routes work to specialised agents."""
@@ -140,15 +140,43 @@ class MultiAgentOrchestrator:
 - 上記の確認を経て、ユーザーの意図が完全に明確になった場合にのみ、エージェントのタスクを作成してください。最新情報や検証が必要な内容は、ブラウザやIoTなどの専門エージェントに任せてください。
 """.strip()
 
-    def __init__(self) -> None:
-        if not os.environ.get("OPENAI_API_KEY"):
-            raise OrchestratorError("OPENAI_API_KEY が .env に設定されていません。")
+    _ACTIONABILITY_PROMPT = """
+あなたはマルチエージェント・オーケストレーターの安全管理者です。渡されたエージェント種別とコマンドが、そのまま実行できるだけの具体性を持っているか確認してください。
+
+- 対応できない、または情報不足なら、JSON で {{"status": "needs_info", "message": "<不足している情報や確認すべき点を簡潔に日本語で列挙。ユーザーに尋ねる具体的な質問を含める>"}} を返してください。
+- 十分に実行可能なら、JSON で {{"status": "ok"}} のみを返してください。
+- Markdown や箇条書き記号は使わず、文章だけで短く書いてください。
+- {agent_name} の役割: {agent_capability}
+- 入力コマンド: {command}
+""".strip()
+
+    _AGENT_CAPABILITIES = {
+        "browser": "Web検索・フォーム入力・クリックなどのブラウザ操作。どのサイト/URLで何をするか、完了条件、入力値が必要。",
+        "faq": "生活全般のQ&Aとレシピ/家電の相談。質問内容、制約（人数・予算・アレルギー・時間帯など）が明確であるほど良い。",
+        "iot": "登録済みデバイスの状態確認と操作。対象デバイス名/場所、希望する操作（オン/オフ・調整値）や時刻が必要。",
+    }
+
+    def __init__(self, llm_config: Dict[str, Any] | None = None) -> None:
+        try:
+            resolved_config = llm_config or resolve_llm_config("orchestrator")
+        except Exception as exc:  # noqa: BLE001
+            raise OrchestratorError(f"オーケストレーター用の LLM 設定を読み込めませんでした: {exc}") from exc
+
+        api_key = resolved_config.get("api_key")
+        if not api_key:
+            raise OrchestratorError("オーケストレーター用の API キーが設定されていません。")
 
         try:
-            self._llm = ChatOpenAI(model=ORCHESTRATOR_MODEL, temperature=0.1)
+            self._llm = ChatOpenAI(
+                model=resolved_config["model"],
+                temperature=0.1,
+                api_key=api_key,
+                base_url=resolved_config.get("base_url") or None,
+            )
         except Exception as exc:  # noqa: BLE001
             raise OrchestratorError(f"LangGraph LLM の初期化に失敗しました: {exc}") from exc
 
+        self._llm_config = resolved_config
         self._graph = self._build_graph()
 
     def _build_graph(self) -> Any:
@@ -173,7 +201,7 @@ class MultiAgentOrchestrator:
             return state
 
         last_execution = executions[-1]
-        if last_execution.get("status") == "error":
+        if last_execution.get("status") in {"error", "needs_info"}:
             return state
 
         user_input = state["user_input"]
@@ -220,6 +248,11 @@ class MultiAgentOrchestrator:
         if not user_input:
             raise OrchestratorError("オーケストレーターに渡された入力が空でした。")
 
+        agent_connections = state.get("agent_connections") or load_agent_connections()
+        enabled_agents = [agent for agent, enabled in agent_connections.items() if enabled]
+        disabled_agents = [agent for agent, enabled in agent_connections.items() if not enabled]
+        state["agent_connections"] = agent_connections
+
         try:
             with open("long_term_memory.json", "r", encoding="utf-8") as f:
                 long_term_memory = json.load(f).get("memory", "")
@@ -241,10 +274,7 @@ class MultiAgentOrchestrator:
         recent_history = history[-10:]
         history_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_history])
 
-        prompt = self._PLANNER_PROMPT.format(
-            max_tasks=ORCHESTRATOR_MAX_TASKS,
-            current_datetime=_current_datetime_line(),
-        )
+        prompt = self._planner_prompt(enabled_agents, disabled_agents)
         if long_term_memory:
             prompt += "\n\nユーザーの特性:\n" + long_term_memory
         if short_term_memory:
@@ -261,8 +291,22 @@ class MultiAgentOrchestrator:
         plan_text = self._extract_text(raw_content)
         plan_data = self._parse_plan(plan_text)
 
-        tasks = self._normalise_tasks(plan_data.get("tasks"))
+        raw_tasks = plan_data.get("tasks")
+        tasks = self._normalise_tasks(raw_tasks, allowed_agents=enabled_agents)
         plan_summary = str(plan_data.get("plan_summary") or plan_data.get("plan") or "").strip()
+        skipped_agents: set[str] = set()
+        if isinstance(raw_tasks, Iterable):
+            for item in raw_tasks:
+                if not isinstance(item, dict):
+                    continue
+                agent_raw = str(item.get("agent") or "").strip().lower()
+                canonical = self._AGENT_ALIASES.get(agent_raw)
+                if canonical and canonical in disabled_agents:
+                    skipped_agents.add(canonical)
+        if skipped_agents:
+            skipped_labels = [self._AGENT_DISPLAY_NAMES.get(agent, agent) for agent in sorted(skipped_agents)]
+            notice = "接続がオフのため次のエージェントタスクをスキップしました: " + ", ".join(skipped_labels)
+            plan_summary = f"{plan_summary}\n\n{notice}" if plan_summary else notice
 
         return {
             "user_input": user_input,
@@ -272,6 +316,7 @@ class MultiAgentOrchestrator:
             "executions": [],
             "current_index": 0,
             "retry_counts": {},
+            "agent_connections": agent_connections,
         }
 
     def _execute_node(self, state: OrchestratorState) -> OrchestratorState:
@@ -311,8 +356,25 @@ class MultiAgentOrchestrator:
             raise OrchestratorError("プラン応答の形式が不正です。")
         return parsed
 
-    def _normalise_tasks(self, raw_tasks: Any) -> List[TaskSpec]:
+    def _planner_prompt(self, enabled_agents: List[str], disabled_agents: List[str]) -> str:
+        prompt = self._PLANNER_PROMPT.format(
+            max_tasks=ORCHESTRATOR_MAX_TASKS,
+            current_datetime=_current_datetime_line(),
+        )
+        enabled_labels = [self._AGENT_DISPLAY_NAMES.get(key, key) for key in enabled_agents]
+        if enabled_labels:
+            prompt += "\n\n現在利用可能なエージェント: " + ", ".join(enabled_labels)
+        if disabled_agents:
+            disabled_labels = [self._AGENT_DISPLAY_NAMES.get(key, key) for key in disabled_agents]
+            prompt += "\n\n現在接続がオフのエージェント: " + ", ".join(disabled_labels)
+            prompt += "。これらのエージェントを使うタスクは生成せず、必要なら他の手段で回答してください。"
+        else:
+            prompt += "\n\nすべてのエージェントが利用可能です。"
+        return prompt
+
+    def _normalise_tasks(self, raw_tasks: Any, *, allowed_agents: Iterable[str] | None = None) -> List[TaskSpec]:
         tasks: List[TaskSpec] = []
+        allowed = set(allowed_agents) if allowed_agents is not None else None
         if not isinstance(raw_tasks, Iterable):
             return tasks
 
@@ -325,6 +387,8 @@ class MultiAgentOrchestrator:
                 continue
             agent = self._AGENT_ALIASES.get(agent_raw)
             if not agent:
+                continue
+            if allowed is not None and agent not in allowed:
                 continue
             tasks.append({"agent": agent, "command": command})
             if len(tasks) >= ORCHESTRATOR_MAX_TASKS:
@@ -368,9 +432,64 @@ class MultiAgentOrchestrator:
             "finalized": False,
         }
 
+    def _assess_actionability(self, task: TaskSpec) -> Dict[str, str]:
+        """Ask the LLM whether the given task is actionable for the target agent."""
+
+        agent = task.get("agent")
+        command = str(task.get("command") or "").strip()
+        if not agent or not command:
+            return {"status": "needs_info", "message": "実行コマンドが空です。もう一度入力してください。"}
+
+        agent_name = self._AGENT_DISPLAY_NAMES.get(agent, agent)
+        capability = self._AGENT_CAPABILITIES.get(agent, "")
+        prompt = self._ACTIONABILITY_PROMPT.format(
+            agent_name=agent_name,
+            agent_capability=capability,
+            command=command,
+        )
+        messages = [SystemMessage(content=prompt)]
+
+        try:
+            response = self._llm.invoke(messages)
+            text = self._extract_text(response.content)
+            data = self._parse_plan(text)
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Actionability check failed for %s: %s", agent, exc)
+            return {"status": "ok"}
+
+        status = str(data.get("status") or "").strip().lower()
+        message = str(data.get("message") or "").strip()
+        if status not in {"ok", "needs_info"}:
+            status = "ok"
+        return {"status": status, "message": message}
+
+    def _maybe_request_clarification(self, task: TaskSpec) -> ExecutionResult | None:
+        """Return a clarification result when the task is not actionable."""
+
+        assessment = self._assess_actionability(task)
+        if assessment.get("status") != "needs_info":
+            return None
+
+        message = assessment.get("message") or ""
+        cleaned_message = message.strip() or "指示が曖昧なため実行できません。必要な条件を教えてください。"
+
+        return {
+            "agent": task.get("agent") or "agent",
+            "command": task.get("command") or "",
+            "status": "needs_info",
+            "response": cleaned_message,
+            "error": None,
+            "finalized": True,
+        }
+
     def _execute_task(self, task: TaskSpec) -> ExecutionResult:
         agent = task["agent"]
         command = task["command"]
+
+        clarification = self._maybe_request_clarification(task)
+        if clarification is not None:
+            return clarification
+
         if agent == "faq":
             try:
                 data = _call_gemini("/agent_rag_answer", method="POST", payload={"question": command})
@@ -430,6 +549,14 @@ class MultiAgentOrchestrator:
 
     def _execute_browser_task_with_progress(self, task: TaskSpec) -> Iterator[Dict[str, Any]]:
         command = task["command"]
+
+        clarification = self._maybe_request_clarification(task)
+        if clarification is not None:
+            yield {
+                "type": "result",
+                "result": clarification,
+            }
+            return
 
         try:
             yield from self._iter_browser_agent_progress(command)
@@ -813,8 +940,11 @@ class MultiAgentOrchestrator:
     def _execution_result_text(self, result: ExecutionResult) -> str:
         agent_name = str(result.get("agent") or "agent")
         agent_label = self._AGENT_DISPLAY_NAMES.get(agent_name, agent_name)
-        if result.get("status") == "success":
+        status = result.get("status")
+        if status == "success":
             body = result.get("response") or "タスクを完了しました。"
+        elif status == "needs_info":
+            body = result.get("response") or "実行に必要な追加情報を入力してください。"
         else:
             body = result.get("error") or "タスクの実行に失敗しました。"
         return f"[{agent_label}] {body}"
@@ -886,6 +1016,7 @@ class MultiAgentOrchestrator:
 
     def run_stream(self, user_input: str) -> Iterator[Dict[str, Any]]:
         _append_to_chat_history("user", user_input)
+        agent_connections = load_agent_connections()
         state: OrchestratorState = {
             "user_input": user_input,
             "plan_summary": None,
@@ -893,6 +1024,7 @@ class MultiAgentOrchestrator:
             "tasks": [],
             "executions": [],
             "current_index": 0,
+            "agent_connections": agent_connections,
         }
 
         plan_state = self._plan_node(state)
@@ -1005,14 +1137,34 @@ class MultiAgentOrchestrator:
         }
 
 
+def _llm_signature(config: Dict[str, Any]) -> tuple[str, str, str, str]:
+    """Return a lightweight signature to detect LLM setting changes."""
+
+    return (
+        str(config.get("provider") or ""),
+        str(config.get("model") or ""),
+        str(config.get("base_url") or ""),
+        str(config.get("api_key_fingerprint") or ""),
+    )
+
+
 _orchestrator_service: MultiAgentOrchestrator | None = None
+_orchestrator_signature: tuple[str, str, str, str] | None = None
 
 
 def _get_orchestrator() -> MultiAgentOrchestrator:
-    global _orchestrator_service
-    if _orchestrator_service is None:
+    global _orchestrator_service, _orchestrator_signature
+
+    try:
+        llm_config = resolve_llm_config("orchestrator")
+        signature = _llm_signature(llm_config)
+    except Exception as exc:  # noqa: BLE001
+        raise OrchestratorError(str(exc)) from exc
+
+    if _orchestrator_service is None or _orchestrator_signature != signature:
         try:
-            _orchestrator_service = MultiAgentOrchestrator()
+            _orchestrator_service = MultiAgentOrchestrator(llm_config=llm_config)
+            _orchestrator_signature = signature
         except OrchestratorError:
             raise
         except Exception as exc:  # noqa: BLE001

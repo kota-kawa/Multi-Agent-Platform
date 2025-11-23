@@ -7,12 +7,18 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional
 
+from langchain_core.messages import SystemMessage
+from langchain_openai import ChatOpenAI
+
 from .browser import _call_browser_agent_chat, _call_browser_agent_history_check
 from .errors import BrowserAgentError, GeminiAPIError, IotAgentError
 from .gemini import _call_gemini
 from .iot import _call_iot_agent_command, _call_iot_agent_conversation_review
+from .settings import resolve_llm_config
 
 _browser_history_supported = True
+_memory_llm_instance: ChatOpenAI | None = None
+_memory_llm_lock = threading.Lock()
 
 
 def _append_agent_reply(agent_label: str, reply: str) -> None:
@@ -52,6 +58,143 @@ def _extract_reply(agent_label: str, response: Optional[Dict[str, str]]) -> bool
         return False
 
     return False
+
+
+def _get_memory_llm() -> ChatOpenAI | None:
+    """Initialise or reuse an LLM client for memory updates."""
+
+    global _memory_llm_instance
+    if _memory_llm_instance is not None:
+        return _memory_llm_instance
+
+    with _memory_llm_lock:
+        if _memory_llm_instance is not None:
+            return _memory_llm_instance
+        try:
+            config = resolve_llm_config("orchestrator")
+            _memory_llm_instance = ChatOpenAI(
+                model=config["model"],
+                temperature=0.2,
+                api_key=config["api_key"],
+                base_url=config.get("base_url") or None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Failed to initialise memory LLM: %s", exc)
+            _memory_llm_instance = None
+    return _memory_llm_instance
+
+
+def _load_memory_from_file(path: str) -> str:
+    """Read a memory JSON file and return the stored string."""
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f).get("memory", "") or ""
+    except (FileNotFoundError, json.JSONDecodeError):
+        return ""
+
+
+def _save_memory_to_file(path: str, memory_text: str) -> None:
+    """Persist the memory text to disk."""
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"memory": memory_text}, f, ensure_ascii=False, indent=2)
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Failed to write memory to %s: %s", path, exc)
+
+
+def _extract_text(content: Any) -> str:
+    """Normalise LangChain response content to text."""
+
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+        return "".join(chunks)
+    return str(content)
+
+
+def _format_history_lines(history: List[Dict[str, str]]) -> str:
+    """Render recent history into numbered lines for prompting."""
+
+    lines: list[str] = []
+    for idx, entry in enumerate(history, start=1):
+        role = entry.get("role") if isinstance(entry, dict) else None
+        content = entry.get("content") if isinstance(entry, dict) else None
+        if not isinstance(role, str) or not isinstance(content, str):
+            continue
+        lines.append(f"{idx}. {role}: {content}")
+    return "\n".join(lines)
+
+
+def _build_memory_prompt(kind_label: str, existing_memory: str, recent_history: List[Dict[str, str]]) -> str:
+    """Craft a prompt that reconciles existing memory with the latest chat."""
+
+    history_text = _format_history_lines(recent_history)
+    existing = existing_memory.strip() or "（これまでのメモなし）"
+    return f"""
+あなたはユーザーに関する{kind_label}を更新する担当です。
+
+- 直近の会話から得られた事実と既存のメモを照らし合わせ、必要な部分だけを上書き・追記してください。
+- 違う内容に更新する場合は「古い情報 -> 新しい情報」のように矢印で差分が分かる形で書き換えてください（例: サッカーが好き -> 野球が好き）。
+- 変更不要な情報はそのまま残してください。新しい情報のみの追加も歓迎です。
+- 箇条書きで簡潔に記述し、JSON などのラッピングは不要です。
+- 情報が不明になった場合は「元の情報 -> 不明」など、状態が変わったことが分かる形で残してください。
+
+現在のメモ:
+{existing}
+
+直近の会話履歴（新しい順ではありません）:
+{history_text}
+""".strip()
+
+
+def _refresh_memory(memory_kind: str, recent_history: List[Dict[str, str]]) -> None:
+    """Update short- or long-term memory by reconciling recent history with the current store."""
+
+    llm = _get_memory_llm()
+    if llm is None:
+        return
+
+    normalized_history: List[Dict[str, str]] = []
+    for entry in recent_history:
+        role = entry.get("role") if isinstance(entry, dict) else None
+        content = entry.get("content") if isinstance(entry, dict) else None
+        if not isinstance(role, str) or not isinstance(content, str):
+            continue
+        normalized_history.append({"role": role, "content": content})
+
+    if not normalized_history:
+        return
+
+    if memory_kind == "short":
+        memory_path = "short_term_memory.json"
+        label = "短期記憶"
+    else:
+        memory_path = "long_term_memory.json"
+        label = "長期記憶"
+
+    existing_memory = _load_memory_from_file(memory_path)
+    prompt = _build_memory_prompt(label, existing_memory, normalized_history)
+
+    try:
+        response = llm.invoke([SystemMessage(content=prompt)])
+        updated_memory = _extract_text(response.content).strip()
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Memory update (%s) failed: %s", memory_kind, exc)
+        return
+
+    if not updated_memory:
+        logging.info("Memory update (%s) produced empty output; skipping save.", memory_kind)
+        return
+
+    _save_memory_to_file(memory_path, updated_memory)
 
 
 def _handle_agent_responses(
@@ -223,6 +366,7 @@ def _send_recent_history_to_agents(history: List[Dict[str, str]]) -> None:
 def _append_to_chat_history(role: str, content: str, *, broadcast: bool = True) -> None:
     """Append a message to the chat history file."""
 
+    history: List[Dict[str, str]] = []
     try:
         with open("chat_history.json", "r+", encoding="utf-8") as f:
             try:
@@ -233,8 +377,18 @@ def _append_to_chat_history(role: str, content: str, *, broadcast: bool = True) 
             f.seek(0)
             json.dump(history, f, ensure_ascii=False, indent=2)
             f.truncate()
-            if broadcast and len(history) > 0 and len(history) % 5 == 0:
-                threading.Thread(target=_send_recent_history_to_agents, args=(history,)).start()
     except FileNotFoundError:
+        history = [{"role": role, "content": content}]
         with open("chat_history.json", "w", encoding="utf-8") as f:
-            json.dump([{"role": role, "content": content}], f, ensure_ascii=False, indent=2)
+            json.dump(history, f, ensure_ascii=False, indent=2)
+
+    total_entries = len(history)
+    if total_entries == 0:
+        return
+
+    if broadcast and total_entries % 5 == 0:
+        threading.Thread(target=_send_recent_history_to_agents, args=(history,)).start()
+    if total_entries % 10 == 0:
+        threading.Thread(target=_refresh_memory, args=("short", history[-10:])).start()
+    if total_entries % 30 == 0:
+        threading.Thread(target=_refresh_memory, args=("long", history[-30:])).start()

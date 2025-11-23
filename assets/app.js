@@ -1,6 +1,7 @@
 import { activateView, registerViewActivationHook, initialActiveView, requestMainBrowserViewportSync } from './js/layout.js';
 import { ensureChatInitialized, ensureBrowserAgentInitialized, ensureOrchestratorInitialized, ensureIotChatInitialized, setChatMode } from './js/chat.js';
 import { ensureIotDashboardInitialized } from './js/iot.js';
+import { initSettingsModal } from './js/settings.js';
 
 registerViewActivationHook(({ view, isBrowserView, isChatView, isIotView, isGeneralView }) => {
   const modeMap = {
@@ -32,4 +33,5 @@ registerViewActivationHook(({ view, isBrowserView, isChatView, isIotView, isGene
   }
 });
 
+initSettingsModal();
 activateView(initialActiveView);

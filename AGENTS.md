@@ -22,12 +22,13 @@
 
 ## Runtime Data & Memory Management
 - `_append_to_chat_history` maintains `chat_history.json`, appends every user/assistant turn from the一般（オーケストレーター）ビュー, and asynchronously calls `_send_recent_history_to_agents` every five entries to sync the Life-Assistantエージェント（FAQ_Gemini）, Browser Agent, and IoT Agent. 送信スキーマは `{"history": [{"role": "...", "content": "..."}]}` に統一し、各エージェントから `should_reply`/`reply`/`addressed_agents` が返ってきた場合は `[Agent] ...` 形式で `chat_history.json` に追記する。Theチャットビュー (`/rag_answer`) now bypasses this file entirely so only orchestrated conversations persist locally.
+- 短期記憶は会話履歴が10件ごと、長期記憶は30件ごとにLLMで再生成される。直近10/30件の履歴と既存メモを突き合わせ、差分は「以前 -> 更新後」の矢印付きで `short_term_memory.json` / `long_term_memory.json` に保存される。
 - `/chat_history` + `/reset_chat_history` expose the local transcript to the UI; `assets/app.js` also duplicates key steps into sidebar/orchestrator panes.
 - `/memory` + `/api/memory` wrap `short_term_memory.json` and `long_term_memory.json`. `POST /api/memory` replaces both files; reads tolerate missing/invalid JSON.
 - Never commit large diffs for these JSON files; they are runtime artifacts used for demos/local state only.
 
 ## Configuration & Secrets
-- `.env` is auto-loaded in `multi_agent_app/config.py` before constants are computed. Required keys include `OPENAI_API_KEY` plus optional overrides such as:
+- `secrets.env` is auto-loaded in `multi_agent_app/config.py` before constants are computed (with a legacy `.env` fallback). Required keys include `OPENAI_API_KEY` plus optional overrides such as:
   - `ORCHESTRATOR_MODEL`, `ORCHESTRATOR_MAX_TASKS`
   - `FAQ_GEMINI_API_BASE`, `FAQ_GEMINI_TIMEOUT`（Life-Assistantエージェント向け）
   - `BROWSER_AGENT_API_BASE`, `BROWSER_AGENT_CLIENT_BASE`, `BROWSER_EMBED_URL`

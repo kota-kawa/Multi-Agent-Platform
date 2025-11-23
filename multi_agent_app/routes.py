@@ -19,11 +19,26 @@ from flask import (
     stream_with_context,
 )
 
+import requests
+
 from .browser import _canonicalise_browser_agent_base, _normalise_browser_base_values
-from .config import _resolve_browser_agent_client_base, _resolve_browser_embed_url
+from .config import (
+    DEFAULT_BROWSER_AGENT_BASES,
+    DEFAULT_GEMINI_BASES,
+    DEFAULT_IOT_AGENT_BASES,
+    _resolve_browser_agent_client_base,
+    _resolve_browser_embed_url,
+)
 from .errors import GeminiAPIError, OrchestratorError
 from .gemini import _call_gemini
 from .iot import _proxy_iot_agent_request
+from .settings import (
+    get_llm_options,
+    load_agent_connections,
+    load_model_settings,
+    save_agent_connections,
+    save_model_settings,
+)
 from .orchestrator import _get_orchestrator
 
 bp = Blueprint("multi_agent_app", __name__)
@@ -35,6 +50,35 @@ def _format_sse_event(payload: Dict[str, Any]) -> str:
     event_type = str(payload.get("event") or "message").strip() or "message"
     data = json.dumps(payload, ensure_ascii=False)
     return f"event: {event_type}\ndata: {data}\n\n"
+
+
+def _broadcast_model_settings(selection: Dict[str, Any]) -> None:
+    """Best-effort propagation of model settings to downstream agents without restart."""
+
+    agent_payloads = {
+        "browser": selection.get("browser"),
+        "faq": selection.get("faq"),
+        "iot": selection.get("iot"),
+    }
+    targets = {
+        "browser": [base.rstrip("/") for base in DEFAULT_BROWSER_AGENT_BASES],
+        "faq": [base.rstrip("/") for base in DEFAULT_GEMINI_BASES],
+        "iot": [base.rstrip("/") for base in DEFAULT_IOT_AGENT_BASES],
+    }
+
+    for agent, payload in agent_payloads.items():
+        if not payload or not isinstance(payload, dict):
+            continue
+        for base in targets.get(agent, []):
+            if not base:
+                continue
+            url = f"{base}/model_settings"
+            try:
+                resp = requests.post(url, json=payload, timeout=5)
+                if not resp.ok:
+                    logging.warning("Model settings push to %s failed: %s %s", url, resp.status_code, resp.text)
+            except Exception:  # noqa: BLE001
+                logging.warning("Model settings push to %s failed", url, exc_info=True)
 
 
 @bp.route("/orchestrator/chat", methods=["POST"])
@@ -211,6 +255,46 @@ def api_memory() -> Any:
         "long_term_memory": long_term_memory,
         "short_term_memory": short_term_memory,
     })
+
+
+@bp.route("/api/agent_connections", methods=["GET", "POST"])
+def api_agent_connections() -> Any:
+    """Load or persist the agent connection toggles."""
+    if request.method == "GET":
+        return jsonify(load_agent_connections())
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid JSON"}), 400
+
+    try:
+        saved = save_agent_connections(data)
+    except Exception as exc:  # noqa: BLE001
+        logging.exception("Failed to save agent connection settings: %s", exc)
+        return jsonify({"error": "設定の保存に失敗しました。"}), 500
+
+    return jsonify(saved)
+
+
+@bp.route("/api/model_settings", methods=["GET", "POST"])
+def api_model_settings() -> Any:
+    """Expose and persist LLM model preferences per agent."""
+
+    if request.method == "GET":
+        return jsonify({"selection": load_model_settings(), "options": get_llm_options()})
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid JSON"}), 400
+
+    try:
+        saved = save_model_settings(data)
+        _broadcast_model_settings(saved)
+    except Exception as exc:  # noqa: BLE001
+        logging.exception("Failed to save model settings: %s", exc)
+        return jsonify({"error": "モデル設定の保存に失敗しました。"}), 500
+
+    return jsonify({"selection": saved, "options": get_llm_options()})
 
 
 @bp.route("/")

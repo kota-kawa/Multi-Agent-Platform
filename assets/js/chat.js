@@ -1458,12 +1458,15 @@ async function sendOrchestratorMessage(text) {
         const agentRaw = typeof task.agent === "string" ? task.agent.trim().toLowerCase() : "";
         const agentLabel = agentRaw ? (ORCHESTRATOR_AGENT_LABELS[agentRaw] || agentRaw) : "エージェント";
         const status = typeof result.status === "string" ? result.status : "";
-        const isFinalized = Boolean(result.finalized) || status === "error";
+        const isClarification = status === "needs_info";
+        const isFinalized = Boolean(result.finalized) || status === "error" || isClarification;
         const responseText = typeof result.response === "string" ? result.response.trim() : "";
         const errorText = typeof result.error === "string" ? result.error.trim() : "";
         const finalText = status === "error"
           ? `[${agentLabel}] ${errorText || "タスクの実行に失敗しました。"}`
-          : `[${agentLabel}] ${responseText || "タスクを完了しました。"}`;
+          : isClarification
+            ? `[${agentLabel}] ${responseText || "このタスクを実行するには追加の指示が必要です。"}`
+            : `[${agentLabel}] ${responseText || "タスクを完了しました。"}`;
         const entry = taskIndex !== null ? ensureTaskEntry(taskIndex) : null;
         const existing = entry && entry.placeholder ? entry.placeholder : null;
         const targetMessage = existing || addOrchestratorAssistantMessage(finalText);
