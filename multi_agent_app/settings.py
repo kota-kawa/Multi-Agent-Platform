@@ -18,9 +18,13 @@ DEFAULT_AGENT_CONNECTIONS: Dict[str, bool] = {
 
 DEFAULT_MODEL_SELECTIONS: Dict[str, Dict[str, str]] = {
     "orchestrator": {"provider": "openai", "model": ORCHESTRATOR_MODEL},
-    "browser": {"provider": "openai", "model": "gpt-4.1-2025-04-14"},
-    "faq": {"provider": "openai", "model": "gpt-4.1-2025-04-14"},
-    "iot": {"provider": "openai", "model": "gpt-4.1-2025-04-14"},
+    "browser": {"provider": "openai", "model": "gpt-4.1"},
+    "faq": {"provider": "openai", "model": "gpt-4.1"},
+    "iot": {"provider": "openai", "model": "gpt-4.1"},
+}
+
+DEFAULT_MEMORY_SETTINGS: Dict[str, bool] = {
+    "enabled": True,
 }
 
 LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
@@ -30,31 +34,31 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "base_url_env": "OPENAI_BASE_URL",
         "default_base_url": None,
         "models": [
-            "gpt-4.1-2025-04-14",
-            "gpt-4.1-mini",
-            "gpt-4o",
-            "gpt-4o-mini",
-        ],
-    },
-    "claude": {
-        "label": "Claude (OpenAI 互換エンドポイント)",
-        "api_key_env": "CLAUDE_API_KEY",
-        "base_url_env": "CLAUDE_API_BASE",
-        "default_base_url": "https://openrouter.ai/api/v1",
-        "models": [
-            "anthropic/claude-3.5-sonnet",
-            "anthropic/claude-3.5-haiku",
+            {"id": "gpt-4.1", "label": "GPT-4.1"},
+            {"id": "gpt-5.1", "label": "GPT-5.1"},
+            {"id": "gpt-5-mini", "label": "GPT-5 mini"},
         ],
     },
     "gemini": {
-        "label": "Gemini (OpenAI 互換エンドポイント)",
+        "label": "Gemini (Google)",
         "api_key_env": "GEMINI_API_KEY",
         "base_url_env": "GEMINI_API_BASE",
         "default_base_url": "https://generativelanguage.googleapis.com/openai/v1",
         "models": [
-            "gemini-1.5-pro",
-            "gemini-1.5-flash",
-            "gemini-1.5-flash-8b",
+            {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash"},
+            {"id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro"},
+            {"id": "gemini-3-pro-preview", "label": "Gemini 3 Pro Preview"},
+        ],
+    },
+    "claude": {
+        "label": "Claude (Anthropic)",
+        "api_key_env": "CLAUDE_API_KEY",
+        "base_url_env": "CLAUDE_API_BASE",
+        "default_base_url": "https://openrouter.ai/api/v1",
+        "models": [
+            {"id": "claude-sonnet-4-5", "label": "Claude Sonnet 4.5"},
+            {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"},
+            {"id": "claude-opus-4-5", "label": "Claude Opus 4.5"},
         ],
     },
     "groq": {
@@ -63,17 +67,19 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "base_url_env": "GROQ_API_BASE",
         "default_base_url": "https://api.groq.com/openai/v1",
         "models": [
-            "llama-3.3-70b-versatile",
-            "meta-llama/llama-4-maverick-17b-128e-instruct",
-            "moonshotai/kimi-k2-instruct-0905",
-            "openai/gpt-oss-120b",
-            "qwen/qwen3-32b",
+            {"id": "llama-3.3-70b-versatile", "label": "Llama 3.3 70B (Groq)"},
+            {"id": "llama-3.1-8b-instant", "label": "Llama 3.1 8B (Groq)"},
+            {"id": "openai/gpt-oss-20b", "label": "GPT-OSS 20B (Groq)"},
+            {"id": "meta-llama/llama-4-maverick-17b-128e-instruct", "label": "Llama 4 Maverick 17B (Groq)"},
+            {"id": "moonshotai/kimi-k2-instruct-0905", "label": "Kimi K2 Instruct 0905 (Groq)"},
+            {"id": "qwen/qwen3-32b", "label": "Qwen3 32B (Groq)"},
         ],
     },
 }
 
 _AGENT_CONNECTIONS_FILE = "agent_connections.json"
 _MODEL_SETTINGS_FILE = "model_settings.json"
+_MEMORY_SETTINGS_FILE = "memory_settings.json"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _AGENT_ENV_PATHS: Dict[str, Path] = {
     "orchestrator": _REPO_ROOT / "Multi-Agent-Platform" / "secrets.env",
@@ -182,9 +188,16 @@ def _merge_model_selection(raw: Any) -> Dict[str, Dict[str, str]]:
         provider = (value.get("provider") or default_selection["provider"]).strip()
         model = (value.get("model") or default_selection["model"]).strip()
         provider_meta = LLM_PROVIDERS.get(provider)
-        if not provider_meta or model not in provider_meta.get("models", []):
+
+        if not provider_meta:
             merged[agent] = dict(default_selection)
             continue
+
+        valid_models = {m["id"] for m in provider_meta.get("models", [])}
+        if model not in valid_models:
+            merged[agent] = dict(default_selection)
+            continue
+
         merged[agent] = {"provider": provider, "model": model}
     return merged
 
@@ -210,6 +223,28 @@ def save_model_settings(payload: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
     return selection
 
 
+def load_memory_settings() -> Dict[str, bool]:
+    """Load the memory usage settings."""
+    try:
+        with open(_MEMORY_SETTINGS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return dict(DEFAULT_MEMORY_SETTINGS)
+    
+    return {
+        "enabled": _coerce_bool(data.get("enabled"), DEFAULT_MEMORY_SETTINGS["enabled"])
+    }
+
+
+def save_memory_settings(payload: Dict[str, Any]) -> Dict[str, bool]:
+    """Persist the memory usage settings."""
+    enabled = _coerce_bool(payload.get("enabled"), DEFAULT_MEMORY_SETTINGS["enabled"])
+    settings = {"enabled": enabled}
+    with open(_MEMORY_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+    return settings
+
+
 def get_llm_options() -> Dict[str, List[Dict[str, Any]]]:
     """Expose provider/model options for the UI."""
 
@@ -219,7 +254,7 @@ def get_llm_options() -> Dict[str, List[Dict[str, Any]]]:
             {
                 "id": provider_id,
                 "label": meta.get("label") or provider_id,
-                "models": [{"id": model, "label": model} for model in meta.get("models", [])],
+                "models": meta.get("models", []),
             },
         )
     return {"providers": providers}
@@ -238,7 +273,8 @@ def resolve_llm_config(agent: str) -> Dict[str, Any]:
         raise ValueError(f"Unsupported provider '{provider_id}'.")
 
     model_name = selection.get("model")
-    if not model_name or model_name not in provider_meta.get("models", []):
+    valid_models = {m["id"] for m in provider_meta.get("models", [])}
+    if not model_name or model_name not in valid_models:
         raise ValueError(f"モデル '{model_name}' はプロバイダー '{provider_id}' では利用できません。")
 
     env = _load_agent_env(agent)

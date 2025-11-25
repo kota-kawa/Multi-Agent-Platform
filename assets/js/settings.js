@@ -8,6 +8,7 @@ const refreshBtn = $("#settingsRefreshBtn");
 const saveBtn = $("#settingsSaveBtn");
 const longTermInput = $("#settingsLongTermMemory");
 const shortTermInput = $("#settingsShortTermMemory");
+const memoryToggle = $("#settingsMemoryToggle");
 const chatCountValue = $("#chatCountValue");
 const chatCountNote = $("#chatCountNote");
 const statusMessage = $("#settingsStatusMessage");
@@ -143,6 +144,7 @@ async function fetchMemory() {
   return {
     longTerm: data?.long_term_memory ?? "",
     shortTerm: data?.short_term_memory ?? "",
+    enabled: data?.enabled ?? true,
   };
 }
 
@@ -210,6 +212,10 @@ async function loadSettingsData() {
       if (shortTermInput) {
         shortTermInput.value = memoryResult.value.shortTerm;
       }
+      if (memoryToggle) {
+        memoryToggle.checked = memoryResult.value.enabled;
+        updateSwitchAria(memoryToggle);
+      }
     } else {
       errors.push(memoryResult.reason?.message || "メモリの取得に失敗しました。");
     }
@@ -257,6 +263,7 @@ async function saveMemory() {
   const payload = {
     long_term_memory: longTermInput?.value ?? "",
     short_term_memory: shortTermInput?.value ?? "",
+    enabled: memoryToggle?.checked ?? true,
   };
   const response = await fetch("/api/memory", {
     method: "POST",
@@ -336,6 +343,11 @@ function closeDialog() {
 
 export function initSettingsModal() {
   if (!settingsBtn || !dialog || !form) return;
+
+  if (memoryToggle) {
+    updateSwitchAria(memoryToggle);
+    memoryToggle.addEventListener("change", () => updateSwitchAria(memoryToggle));
+  }
 
   Object.values(agentToggleInputs).forEach(input => {
     if (!input) return;

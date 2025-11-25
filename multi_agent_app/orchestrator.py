@@ -33,7 +33,7 @@ from .errors import BrowserAgentError, GeminiAPIError, IotAgentError, Orchestrat
 from .gemini import _call_gemini
 from .history import _append_to_chat_history
 from .iot import _call_iot_agent_command
-from .settings import load_agent_connections, resolve_llm_config
+from .settings import load_agent_connections, resolve_llm_config, load_memory_settings
 
 
 class TaskSpec(TypedDict):
@@ -253,17 +253,23 @@ class MultiAgentOrchestrator:
         disabled_agents = [agent for agent, enabled in agent_connections.items() if not enabled]
         state["agent_connections"] = agent_connections
 
-        try:
-            with open("long_term_memory.json", "r", encoding="utf-8") as f:
-                long_term_memory = json.load(f).get("memory", "")
-        except (FileNotFoundError, json.JSONDecodeError):
-            long_term_memory = ""
+        memory_settings = load_memory_settings()
+        memory_enabled = memory_settings.get("enabled", True)
+        long_term_memory = ""
+        short_term_memory = ""
 
-        try:
-            with open("short_term_memory.json", "r", encoding="utf-8") as f:
-                short_term_memory = json.load(f).get("memory", "")
-        except (FileNotFoundError, json.JSONDecodeError):
-            short_term_memory = ""
+        if memory_enabled:
+            try:
+                with open("long_term_memory.json", "r", encoding="utf-8") as f:
+                    long_term_memory = json.load(f).get("memory", "")
+            except (FileNotFoundError, json.JSONDecodeError):
+                long_term_memory = ""
+
+            try:
+                with open("short_term_memory.json", "r", encoding="utf-8") as f:
+                    short_term_memory = json.load(f).get("memory", "")
+            except (FileNotFoundError, json.JSONDecodeError):
+                short_term_memory = ""
 
         try:
             with open("chat_history.json", "r", encoding="utf-8") as f:

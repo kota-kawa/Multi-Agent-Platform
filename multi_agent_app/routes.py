@@ -36,8 +36,10 @@ from .settings import (
     get_llm_options,
     load_agent_connections,
     load_model_settings,
+    load_memory_settings,
     save_agent_connections,
     save_model_settings,
+    save_memory_settings,
 )
 from .orchestrator import _get_orchestrator
 
@@ -228,15 +230,21 @@ def serve_memory_page() -> Any:
 
 @bp.route("/api/memory", methods=["GET", "POST"])
 def api_memory() -> Any:
-    """Handle memory file operations."""
+    """Handle memory file operations and settings."""
     if request.method == "POST":
         data = request.get_json()
         if data is None:
             return jsonify({"error": "Invalid JSON"}), 400
+        
+        # Save content
         with open("long_term_memory.json", "w", encoding="utf-8") as f:
             json.dump({"memory": data.get("long_term_memory", "")}, f, ensure_ascii=False, indent=2)
         with open("short_term_memory.json", "w", encoding="utf-8") as f:
             json.dump({"memory": data.get("short_term_memory", "")}, f, ensure_ascii=False, indent=2)
+            
+        # Save settings
+        save_memory_settings({"enabled": data.get("enabled")})
+        
         return jsonify({"message": "Memory saved successfully."})
 
     try:
@@ -251,9 +259,12 @@ def api_memory() -> Any:
     except (FileNotFoundError, json.JSONDecodeError):
         short_term_memory = ""
 
+    settings = load_memory_settings()
+
     return jsonify({
         "long_term_memory": long_term_memory,
         "short_term_memory": short_term_memory,
+        "enabled": settings.get("enabled", True),
     })
 
 

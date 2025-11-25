@@ -330,10 +330,24 @@
         </div>
 
         <div class="settings-section">
-          <p class="settings-section__title">メモリの確認と編集</p>
-          <p class="settings-section__desc">
-            長期・短期記憶を直接編集できます。保存するとすぐに反映されます。
-          </p>
+          <div class="settings-section__head">
+            <div>
+              <p class="settings-section__title">メモリの確認と編集</p>
+              <p class="settings-section__desc">
+                長期・短期記憶を直接編集できます。保存するとすぐに反映されます。
+              </p>
+            </div>
+            <div class="settings-switches">
+              <label class="settings-switch" for="settingsMemoryToggle">
+                <div class="settings-switch__text">
+                  <span class="settings-switch__name">メモリ参照</span>
+                </div>
+                <span class="settings-switch__control">
+                  <input id="settingsMemoryToggle" type="checkbox" role="switch" aria-label="メモリ参照を有効化" checked />
+                </span>
+              </label>
+            </div>
+          </div>
           <div class="form-row">
             <label class="form-label" for="settingsLongTermMemory">長期記憶</label>
             <textarea
