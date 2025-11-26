@@ -21,17 +21,19 @@ from flask import (
 
 import requests
 
-from .browser import _canonicalise_browser_agent_base, _normalise_browser_base_values
+from .browser import (
+    _build_browser_agent_url,
+    _canonicalise_browser_agent_base,
+    _iter_browser_agent_bases,
+    _normalise_browser_base_values,
+)
 from .config import (
-    DEFAULT_BROWSER_AGENT_BASES,
-    DEFAULT_LIFESTYLE_BASES,
-    DEFAULT_IOT_AGENT_BASES,
     _resolve_browser_agent_client_base,
     _resolve_browser_embed_url,
 )
 from .errors import LifestyleAPIError, OrchestratorError
-from .lifestyle import _call_lifestyle
-from .iot import _proxy_iot_agent_request
+from .iot import _build_iot_agent_url, _iter_iot_agent_bases, _proxy_iot_agent_request
+from .lifestyle import _build_lifestyle_url, _call_lifestyle, _iter_lifestyle_bases
 from .settings import (
     get_llm_options,
     load_agent_connections,
@@ -62,25 +64,31 @@ def _broadcast_model_settings(selection: Dict[str, Any]) -> None:
         "lifestyle": selection.get("lifestyle"),
         "iot": selection.get("iot"),
     }
-    targets = {
-        "browser": [base.rstrip("/") for base in DEFAULT_BROWSER_AGENT_BASES],
-        "lifestyle": [base.rstrip("/") for base in DEFAULT_LIFESTYLE_BASES],
-        "iot": [base.rstrip("/") for base in DEFAULT_IOT_AGENT_BASES],
+
+    target_builders = {
+        "browser": (_iter_browser_agent_bases, _build_browser_agent_url),
+        "lifestyle": (_iter_lifestyle_bases, _build_lifestyle_url),
+        "iot": (_iter_iot_agent_bases, _build_iot_agent_url),
     }
 
     for agent, payload in agent_payloads.items():
         if not payload or not isinstance(payload, dict):
             continue
-        for base in targets.get(agent, []):
-            if not base:
+        iter_bases, build_url = target_builders.get(agent, (None, None))
+        if not iter_bases or not build_url:
+            continue
+        for base in iter_bases():
+            if not base or base.startswith("/"):
                 continue
-            url = f"{base}/model_settings"
+            url = build_url(base, "model_settings")
             try:
-                resp = requests.post(url, json=payload, timeout=5)
+                resp = requests.post(url, json=payload, timeout=2.0)
                 if not resp.ok:
                     logging.warning("Model settings push to %s failed: %s %s", url, resp.status_code, resp.text)
-            except Exception:  # noqa: BLE001
-                logging.warning("Model settings push to %s failed", url, exc_info=True)
+            except requests.exceptions.RequestException as exc:
+                logging.warning("Model settings push to %s skipped (%s)", url, exc)
+            except Exception as exc:  # noqa: BLE001
+                logging.warning("Model settings push to %s failed: %s", url, exc)
 
 
 @bp.route("/orchestrator/chat", methods=["POST"])

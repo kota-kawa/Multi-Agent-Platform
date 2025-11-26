@@ -64,8 +64,8 @@ _load_env_file()
 
 
 DEFAULT_LIFESTYLE_BASES = (
-    "http://localhost:5000",
     "http://lifestyle_agent:5000",
+    "http://localhost:5000",
 )
 LIFESTYLE_TIMEOUT = float(os.environ.get("LIFESTYLE_AGENT_TIMEOUT", "30"))
 
