@@ -29,8 +29,8 @@ from .config import (
     ORCHESTRATOR_MAX_TASKS,
     _current_datetime_line,
 )
-from .errors import BrowserAgentError, GeminiAPIError, IotAgentError, OrchestratorError
-from .gemini import _call_gemini
+from .errors import BrowserAgentError, LifestyleAPIError, IotAgentError, OrchestratorError
+from .lifestyle import _call_lifestyle
 from .history import _append_to_chat_history
 from .iot import _call_iot_agent_command
 from .settings import load_agent_connections, resolve_llm_config, load_memory_settings
@@ -39,14 +39,14 @@ from .settings import load_agent_connections, resolve_llm_config, load_memory_se
 class TaskSpec(TypedDict):
     """Specification describing the agent and command to run."""
 
-    agent: Literal["faq", "browser", "iot"]
+    agent: Literal["lifestyle", "browser", "iot"]
     command: str
 
 
 class ExecutionResult(TypedDict, total=False):
     """Result payload returned by agent executions."""
 
-    agent: Literal["faq", "browser", "iot"]
+    agent: Literal["lifestyle", "browser", "iot"]
     command: str
     status: Literal["success", "error", "needs_info"]
     response: str | None
@@ -72,15 +72,18 @@ class MultiAgentOrchestrator:
     """LangGraph-based orchestrator that routes work to specialised agents."""
 
     _AGENT_ALIASES = {
-        "faq": "faq",
-        "qa": "faq",
-        "qa_agent": "faq",
-        "qa-agent": "faq",
-        "faq_gemini": "faq",
-        "gemini": "faq",
-        "knowledge": "faq",
-        "knowledge_base": "faq",
-        "docs": "faq",
+        "faq": "lifestyle",
+        "qa": "lifestyle",
+        "qa_agent": "lifestyle",
+        "qa-agent": "lifestyle",
+        "faq_gemini": "lifestyle",
+        "gemini": "lifestyle",
+        "lifestyle": "lifestyle",
+        "life-assistant": "lifestyle",
+        "life_assistant": "lifestyle",
+        "knowledge": "lifestyle",
+        "knowledge_base": "lifestyle",
+        "docs": "lifestyle",
         "browser": "browser",
         "browser_agent": "browser",
         "web": "browser",
@@ -92,7 +95,7 @@ class MultiAgentOrchestrator:
     }
 
     _AGENT_DISPLAY_NAMES = {
-        "faq": "Life-Assistantエージェント",
+        "lifestyle": "Life-Assistantエージェント",
         "browser": "ブラウザエージェント",
         "iot": "IoT エージェント",
     }
@@ -116,7 +119,7 @@ class MultiAgentOrchestrator:
 - エージェント名: {agent_name}
 - 実行コマンド: {command}
 - 実行結果: {result}
-""".strip()
+"""
 
     _PLANNER_PROMPT = """
 現在の日時ー{current_datetime}
@@ -124,7 +127,7 @@ class MultiAgentOrchestrator:
 あなたはマルチエージェントシステムのオーケストレーターです。与えられたユーザーの依頼を読み、実行すべきタスクを分析して下さい。
 
 - 利用可能なエージェント:
-  - "faq"（Life-Assistantエージェント）: 家庭内の出来事や料理、家電、人間関係に詳しい専門家エージェントで、IoTなどに対してナレッジベースに質問できます。
+  - "lifestyle"（Life-Assistantエージェント）: 家庭内の出来事や料理、家電、人間関係に詳しい専門家エージェントで、IoTなどに対してナレッジベースに質問できます。
   - "browser": ブラウザ自動化エージェントで Web を閲覧・操作できます。
   - "iot": IoT エージェントを通じてデバイスの状態確認や操作ができます。
 - 出力は JSON オブジェクトのみで、追加の説明やマークダウンを含めてはいけません。
@@ -138,21 +141,21 @@ class MultiAgentOrchestrator:
 - plan_summary やタスク説明では、ユーザーが求める具体的な内容を必ず書き切り、件数を指定された場合はその数ちょうどの候補を詳細（例: 献立名や理由）付きで提示してください。「〜を提案します」「〜を確認します」などの宣言だけで回答を終わらせてはいけません。
 - **最優先事項:** ユーザーの依頼が少しでも不明確または曖昧な場合は、いかなるタスクも生成してはいけません。代わりに、`plan_summary` を使って、曖昧な点を具体的に指摘し、明確化するための質問をユーザーに投げかけてください。例えば、「最新の情報を知りたいですか？」「いくつ提案すればよろしいですか？」のように、具体的な選択肢や確認事項を提示してください。
 - 上記の確認を経て、ユーザーの意図が完全に明確になった場合にのみ、エージェントのタスクを作成してください。最新情報や検証が必要な内容は、ブラウザやIoTなどの専門エージェントに任せてください。
-""".strip()
+"""
 
     _ACTIONABILITY_PROMPT = """
 あなたはマルチエージェント・オーケストレーターの安全管理者です。渡されたエージェント種別とコマンドが、そのまま実行できるだけの具体性を持っているか確認してください。
 
-- 対応できない、または情報不足なら、JSON で {{"status": "needs_info", "message": "<不足している情報や確認すべき点を簡潔に日本語で列挙。ユーザーに尋ねる具体的な質問を含める>"}} を返してください。
-- 十分に実行可能なら、JSON で {{"status": "ok"}} のみを返してください。
+- 対応できない、または情報不足なら、JSON で {{'status': 'needs_info', 'message': '<不足している情報や確認すべき点を簡潔に日本語で列挙。ユーザーに尋ねる具体的な質問を含める>'}} を返してください。
+- 十分に実行可能なら、JSON で {{'status': 'ok'}} のみを返してください。
 - Markdown や箇条書き記号は使わず、文章だけで短く書いてください。
 - {agent_name} の役割: {agent_capability}
 - 入力コマンド: {command}
-""".strip()
+"""
 
     _AGENT_CAPABILITIES = {
         "browser": "Web検索・フォーム入力・クリックなどのブラウザ操作。どのサイト/URLで何をするか、完了条件、入力値が必要。",
-        "faq": "生活全般のQ&Aとレシピ/家電の相談。質問内容、制約（人数・予算・アレルギー・時間帯など）が明確であるほど良い。",
+        "lifestyle": "生活全般のQ&Aとレシピ/家電の相談。質問内容、制約（人数・予算・アレルギー・時間帯など）が明確であるほど良い。",
         "iot": "登録済みデバイスの状態確認と操作。対象デバイス名/場所、希望する操作（オン/オフ・調整値）や時刻が必要。",
     }
 
@@ -223,7 +226,7 @@ class MultiAgentOrchestrator:
             response = self._llm.invoke(messages)
             review_text = self._extract_text(response.content)
             review_data = self._parse_plan(review_text)
-        except (OrchestratorError, Exception) as exc:
+        except (OrchestratorError, Exception) as exc:  # noqa: BLE001
             logging.warning("Review LLM call failed, defaulting to 'ok': %s", exc)
             review_data = {"review_status": "ok", "review_reason": "レビューに失敗したため自動承認されました。"}
 
@@ -496,10 +499,10 @@ class MultiAgentOrchestrator:
         if clarification is not None:
             return clarification
 
-        if agent == "faq":
+        if agent == "lifestyle":
             try:
-                data = _call_gemini("/agent_rag_answer", method="POST", payload={"question": command})
-            except GeminiAPIError as exc:
+                data = _call_lifestyle("/agent_rag_answer", method="POST", payload={"question": command})
+            except LifestyleAPIError as exc:
                 return {
                     "agent": agent,
                     "command": command,

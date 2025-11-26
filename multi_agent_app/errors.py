@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 
-class GeminiAPIError(RuntimeError):
-    """Raised when the upstream FAQ_Gemini API responds with an error."""
+class LifestyleAPIError(RuntimeError):
+    """Raised when the upstream Life-Assistant API responds with an error."""
 
     def __init__(self, message: str, status_code: int = 502) -> None:
         super().__init__(message)

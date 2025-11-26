@@ -13,29 +13,29 @@ const chatCountValue = $("#chatCountValue");
 const chatCountNote = $("#chatCountNote");
 const statusMessage = $("#settingsStatusMessage");
 const agentToggleBrowser = $("#agentToggleBrowser");
-const agentToggleFaq = $("#agentToggleFaq");
+const agentToggleLifestyle = $("#agentToggleLifestyle");
 const agentToggleIot = $("#agentToggleIot");
 const modelSelectOrchestrator = $("#modelSelectOrchestrator");
 const modelSelectBrowser = $("#modelSelectBrowser");
-const modelSelectFaq = $("#modelSelectFaq");
+const modelSelectLifestyle = $("#modelSelectLifestyle");
 const modelSelectIot = $("#modelSelectIot");
 
 const agentToggleInputs = {
   browser: agentToggleBrowser,
-  faq: agentToggleFaq,
+  lifestyle: agentToggleLifestyle,
   iot: agentToggleIot,
 };
 
 const modelSelectInputs = {
   orchestrator: modelSelectOrchestrator,
   browser: modelSelectBrowser,
-  faq: modelSelectFaq,
+  lifestyle: modelSelectLifestyle,
   iot: modelSelectIot,
 };
 
 const DEFAULT_AGENT_CONNECTIONS = {
   browser: true,
-  faq: true,
+  lifestyle: true,
   iot: true,
 };
 
@@ -172,7 +172,7 @@ async function fetchAgentConnections() {
   const source = data?.agents && typeof data.agents === "object" ? data.agents : data;
   return {
     browser: source?.browser ?? DEFAULT_AGENT_CONNECTIONS.browser,
-    faq: source?.faq ?? DEFAULT_AGENT_CONNECTIONS.faq,
+    lifestyle: source?.lifestyle ?? DEFAULT_AGENT_CONNECTIONS.lifestyle,
     iot: source?.iot ?? DEFAULT_AGENT_CONNECTIONS.iot,
   };
 }

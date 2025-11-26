@@ -63,11 +63,11 @@ def _parse_timeout_env(name: str, default: float | None, *, allow_none: bool = F
 _load_env_file()
 
 
-DEFAULT_GEMINI_BASES = (
+DEFAULT_LIFESTYLE_BASES = (
     "http://localhost:5000",
-    "http://faq_gemini:5000",
+    "http://lifestyle_agent:5000",
 )
-GEMINI_TIMEOUT = float(os.environ.get("FAQ_GEMINI_TIMEOUT", "30"))
+LIFESTYLE_TIMEOUT = float(os.environ.get("LIFESTYLE_AGENT_TIMEOUT", "30"))
 
 # Known upstream IoT Agent deployment that should be reachable from public environments.
 PUBLIC_IOT_AGENT_BASE = "https://iot-agent.project-kk.com"

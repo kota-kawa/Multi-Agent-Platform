@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 from .config import ORCHESTRATOR_MODEL
 
 DEFAULT_AGENT_CONNECTIONS: Dict[str, bool] = {
-    "faq": True,
+    "lifestyle": True,
     "browser": True,
     "iot": True,
 }
@@ -19,7 +19,7 @@ DEFAULT_AGENT_CONNECTIONS: Dict[str, bool] = {
 DEFAULT_MODEL_SELECTIONS: Dict[str, Dict[str, str]] = {
     "orchestrator": {"provider": "openai", "model": ORCHESTRATOR_MODEL},
     "browser": {"provider": "openai", "model": "gpt-4.1"},
-    "faq": {"provider": "openai", "model": "gpt-4.1"},
+    "lifestyle": {"provider": "openai", "model": "gpt-4.1"},
     "iot": {"provider": "openai", "model": "gpt-4.1"},
 }
 
@@ -84,7 +84,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _AGENT_ENV_PATHS: Dict[str, Path] = {
     "orchestrator": _REPO_ROOT / "Multi-Agent-Platform" / "secrets.env",
     "browser": _REPO_ROOT / "Browser-Agent" / "secrets.env",
-    "faq": _REPO_ROOT / "Life-Assistant-Agent" / "secrets.env",
+    "lifestyle": _REPO_ROOT / "Life-Assistant-Agent" / "secrets.env",
     "iot": _REPO_ROOT / "IoT-Agent" / "secrets.env",
 }
 

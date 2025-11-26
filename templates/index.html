@@ -275,13 +275,13 @@
                 <input id="agentToggleBrowser" type="checkbox" role="switch" aria-label="ブラウザエージェントを有効化" checked />
               </span>
             </label>
-            <label class="settings-switch" for="agentToggleFaq">
+            <label class="settings-switch" for="agentToggleLifestyle">
               <div class="settings-switch__text">
-                <span class="settings-switch__name">ライフスタイルエージェント</span>
-                <span class="settings-switch__desc">生活相談やレシピ提案を担うエージェントです。</span>
+                <span class="settings-switch__name">Life-Assistant エージェント</span>
+                <span class="settings-switch__desc">日常の会話や相談を担当します。</span>
               </div>
               <span class="settings-switch__control">
-                <input id="agentToggleFaq" type="checkbox" role="switch" aria-label="ライフスタイルエージェントを有効化" checked />
+                <input id="agentToggleLifestyle" type="checkbox" role="switch" aria-label="ライフスタイルエージェントを有効化" checked />
               </span>
             </label>
             <label class="settings-switch" for="agentToggleIot">
@@ -314,12 +314,12 @@
                 <option value="">読み込み中…</option>
               </select>
             </div>
-            <div class="form-row">
-              <label class="form-label" for="modelSelectFaq">ライフスタイルエージェント</label>
-              <select id="modelSelectFaq" class="form-control">
-                <option value="">読み込み中…</option>
-              </select>
-            </div>
+        <div class="col">
+          <label class="form-label" for="modelSelectLifestyle">ライフスタイルエージェント</label>
+          <select id="modelSelectLifestyle" class="form-control">
+            <option value="" disabled selected>読み込み中…</option>
+          </select>
+        </div>
             <div class="form-row">
               <label class="form-label" for="modelSelectIot">IoT エージェント</label>
               <select id="modelSelectIot" class="form-control">

@@ -68,10 +68,9 @@ let generalBrowserStage = null;
 let generalBrowserFullscreenBtn = null;
 
 const viewPlacements = new Map();
-const AGENT_TO_VIEW_MAP = { browser: "browser", iot: "iot", faq: "chat", qa: "chat", chat: "chat" };
+const AGENT_TO_VIEW_MAP = { browser: "browser", iot: "iot", lifestyle: "chat", chat: "chat" };
 const GENERAL_PROXY_AGENT_LABELS = {
-  faq: "Life-Assistantエージェント",
-  qa: "Life-Assistantエージェント",
+  lifestyle: "Life-Assistantエージェント",
   browser: "ブラウザエージェント",
   iot: "IoT エージェント",
   chat: "要約チャット",

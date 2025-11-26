@@ -4,7 +4,7 @@ services:
     ports:
       - "5050:5050"
     environment:
-      FAQ_GEMINI_API_BASE: "http://faq_gemini:5000"
+      LIFESTYLE_API_BASE: "http://lifestyle_agent:5000"
       BROWSER_AGENT_API_BASE: "http://browser-agent:5005"
       FLASK_DEBUG: "1"
     volumes:

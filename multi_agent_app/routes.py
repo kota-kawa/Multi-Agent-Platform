@@ -24,13 +24,13 @@ import requests
 from .browser import _canonicalise_browser_agent_base, _normalise_browser_base_values
 from .config import (
     DEFAULT_BROWSER_AGENT_BASES,
-    DEFAULT_GEMINI_BASES,
+    DEFAULT_LIFESTYLE_BASES,
     DEFAULT_IOT_AGENT_BASES,
     _resolve_browser_agent_client_base,
     _resolve_browser_embed_url,
 )
-from .errors import GeminiAPIError, OrchestratorError
-from .gemini import _call_gemini
+from .errors import LifestyleAPIError, OrchestratorError
+from .lifestyle import _call_lifestyle
 from .iot import _proxy_iot_agent_request
 from .settings import (
     get_llm_options,
@@ -59,12 +59,12 @@ def _broadcast_model_settings(selection: Dict[str, Any]) -> None:
 
     agent_payloads = {
         "browser": selection.get("browser"),
-        "faq": selection.get("faq"),
+        "lifestyle": selection.get("lifestyle"),
         "iot": selection.get("iot"),
     }
     targets = {
         "browser": [base.rstrip("/") for base in DEFAULT_BROWSER_AGENT_BASES],
-        "faq": [base.rstrip("/") for base in DEFAULT_GEMINI_BASES],
+        "lifestyle": [base.rstrip("/") for base in DEFAULT_LIFESTYLE_BASES],
         "iot": [base.rstrip("/") for base in DEFAULT_IOT_AGENT_BASES],
     }
 
@@ -137,7 +137,7 @@ def orchestrator_chat() -> Any:
 
 @bp.route("/rag_answer", methods=["POST"])
 def rag_answer() -> Any:
-    """Proxy the rag_answer endpoint to the FAQ_Gemini backend."""
+    """Proxy the rag_answer endpoint to the Life-Assistant backend."""
 
     payload = request.get_json(silent=True) or {}
     question = (payload.get("question") or "").strip()
@@ -145,9 +145,9 @@ def rag_answer() -> Any:
         return jsonify({"error": "質問を入力してください。"}), 400
 
     try:
-        data = _call_gemini("/rag_answer", method="POST", payload={"question": question})
-    except GeminiAPIError as exc:
-        logging.exception("FAQ_Gemini rag_answer failed: %s", exc)
+        data = _call_lifestyle("/rag_answer", method="POST", payload={"question": question})
+    except LifestyleAPIError as exc:
+        logging.exception("Life-Assistant rag_answer failed: %s", exc)
         return jsonify({"error": str(exc)}), exc.status_code
 
     return jsonify(data)
@@ -155,12 +155,12 @@ def rag_answer() -> Any:
 
 @bp.route("/conversation_history", methods=["GET"])
 def conversation_history() -> Any:
-    """Fetch the conversation history from the FAQ_Gemini backend."""
+    """Fetch the conversation history from the Life-Assistant backend."""
 
     try:
-        data = _call_gemini("/conversation_history")
-    except GeminiAPIError as exc:
-        logging.exception("FAQ_Gemini conversation_history failed: %s", exc)
+        data = _call_lifestyle("/conversation_history")
+    except LifestyleAPIError as exc:
+        logging.exception("Life-Assistant conversation_history failed: %s", exc)
         return jsonify({"error": str(exc)}), exc.status_code
 
     return jsonify(data)
@@ -168,12 +168,12 @@ def conversation_history() -> Any:
 
 @bp.route("/conversation_summary", methods=["GET"])
 def conversation_summary() -> Any:
-    """Fetch the conversation summary from the FAQ_Gemini backend."""
+    """Fetch the conversation summary from the Life-Assistant backend."""
 
     try:
-        data = _call_gemini("/conversation_summary")
-    except GeminiAPIError as exc:
-        logging.exception("FAQ_Gemini conversation_summary failed: %s", exc)
+        data = _call_lifestyle("/conversation_summary")
+    except LifestyleAPIError as exc:
+        logging.exception("Life-Assistant conversation_summary failed: %s", exc)
         return jsonify({"error": str(exc)}), exc.status_code
 
     return jsonify(data)
@@ -181,12 +181,12 @@ def conversation_summary() -> Any:
 
 @bp.route("/reset_history", methods=["POST"])
 def reset_history() -> Any:
-    """Request the FAQ_Gemini backend to clear the conversation history."""
+    """Request the Life-Assistant backend to clear the conversation history."""
 
     try:
-        data = _call_gemini("/reset_history", method="POST")
-    except GeminiAPIError as exc:
-        logging.exception("FAQ_Gemini reset_history failed: %s", exc)
+        data = _call_lifestyle("/reset_history", method="POST")
+    except LifestyleAPIError as exc:
+        logging.exception("Life-Assistant reset_history failed: %s", exc)
         return jsonify({"error": str(exc)}), exc.status_code
 
     return jsonify(data)

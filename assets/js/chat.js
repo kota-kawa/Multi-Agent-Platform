@@ -9,7 +9,7 @@ import {
 } from "./layout.js";
 import { ensureIotDashboardInitialized, iotAgentRequest, summarizeIotDevices } from "./iot.js";
 
-/* ---------- Chat + Summarizer (FAQ_Gemini integration) ---------- */
+/* ---------- Chat + Summarizer (Life-Assistant integration) ---------- */
 
 const chatLog = $("#chatLog");
 const sidebarChatLog = $("#sidebarChatLog");
@@ -85,8 +85,7 @@ function clearOrchestratorBrowserMirrorMessages({ preserve } = {}) {
 let orchestratorBrowserTaskActive = false;
 
 const ORCHESTRATOR_AGENT_LABELS = {
-  faq: "Life-Assistantエージェント",
-  qa: "Life-Assistantエージェント",
+  lifestyle: "Life-Assistantエージェント",
   browser: "ブラウザエージェント",
   iot: "IoT エージェント",
 };
@@ -126,18 +125,18 @@ function getIntroMessage() {
 
 chatState.messages = [getIntroMessage()];
 
-function resolveGeminiBase() {
+function resolveLifestyleBase() {
   const sanitize = value => (typeof value === "string" ? value.trim().replace(/\/+$/, "") : "");
   let queryBase = "";
   try {
-    queryBase = new URLSearchParams(window.location.search).get("faq_gemini_base") || "";
+    queryBase = new URLSearchParams(window.location.search).get("lifestyle_base") || "";
   } catch (_) {
     queryBase = "";
   }
   const sources = [
     sanitize(queryBase),
-    sanitize(window.FAQ_GEMINI_API_BASE),
-    sanitize(document.querySelector("meta[name='faq-gemini-api-base']")?.content),
+    sanitize(window.LIFESTYLE_API_BASE),
+    sanitize(document.querySelector("meta[name='lifestyle-api-base']")?.content),
   ];
   for (const src of sources) {
     if (src) return src;
@@ -148,20 +147,20 @@ function resolveGeminiBase() {
   return "http://localhost:5000";
 }
 
-const GEMINI_API_BASE = resolveGeminiBase();
+const LIFESTYLE_API_BASE = resolveLifestyleBase();
 
-function buildGeminiUrl(path) {
+function buildLifestyleUrl(path) {
   const normalizedPath = path.startsWith("http") ? path : path.startsWith("/") ? path : `/${path}`;
-  if (!GEMINI_API_BASE) return normalizedPath;
-  const base = GEMINI_API_BASE.replace(/\/+$/, "");
+  if (!LIFESTYLE_API_BASE) return normalizedPath;
+  const base = LIFESTYLE_API_BASE.replace(/\/+$/, "");
   if (!base || base === window.location.origin.replace(/\/+$/, "")) {
     return normalizedPath;
   }
   return `${base}${normalizedPath}`;
 }
 
-async function geminiRequest(path, { method = "GET", headers = {}, body, signal } = {}) {
-  const url = buildGeminiUrl(path);
+async function lifestyleRequest(path, { method = "GET", headers = {}, body, signal } = {}) {
+  const url = buildLifestyleUrl(path);
   const finalHeaders = { ...headers };
   const hasBody = body !== undefined && body !== null;
   const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
@@ -364,7 +363,7 @@ function renderSidebarMessages(messages) {
 }
 
 const ASSISTANT_AGENT_LABEL_SYNONYMS = {
-  faq: [
+  lifestyle: [
     "life-assistantエージェント",
     "life assistantエージェント",
     "life-assistant agent",
@@ -380,6 +379,7 @@ const ASSISTANT_AGENT_LABEL_SYNONYMS = {
     "qa",
     "家庭内エージェント",
     "faq gemini",
+    "faq",
   ],
   browser: ["browser agent", "ブラウザエージェント"],
   iot: ["iot agent", "iot エージェント", "iotエージェント"],
@@ -1229,7 +1229,7 @@ async function syncConversationHistory({ showLoading = false, force = false } = 
     renderGeneralChat();
   }
   try {
-    const data = await geminiRequest("/conversation_history");
+    const data = await lifestyleRequest("/conversation_history");
     if (chatState.sending && !force) {
       return;
     }
@@ -1256,7 +1256,7 @@ async function refreshSummaryBox({ showLoading = false } = {}) {
     summaryBox.textContent = SUMMARY_LOADING_TEXT;
   }
   try {
-    const data = await geminiRequest("/conversation_summary");
+    const data = await lifestyleRequest("/conversation_summary");
     const summary = (data.summary || "").trim();
     summaryBox.textContent = summary ? summary : SUMMARY_PLACEHOLDER;
   } catch (error) {
@@ -1579,7 +1579,7 @@ async function sendChatMessage(text) {
 
   try {
     const payload = JSON.stringify({ question: text });
-    const data = await geminiRequest("/rag_answer", { method: "POST", body: payload });
+    const data = await lifestyleRequest("/rag_answer", { method: "POST", body: payload });
     const answer = (data.answer || "").trim();
     if (pendingAssistantMessage) {
       pendingAssistantMessage.text = answer || "回答が空でした。";
@@ -1706,13 +1706,12 @@ if (sidebarChatForm) {
   });
 }
 
-if (clearChatBtn) {
+  if (clearChatBtn) {
   clearChatBtn.addEventListener("click", async () => {
     if (!confirm("チャット履歴をクリアしますか？")) return;
     try {
-      await geminiRequest("/reset_history", { method: "POST" });
-      chatState.messages = [getIntroMessage()];
-      renderGeneralChat({ forceSidebar: true });
+      await lifestyleRequest("/reset_history", { method: "POST" });
+      chatState.messages = [getIntroMessage()];      renderGeneralChat({ forceSidebar: true });
       await refreshSummaryBox({ showLoading: true });
     } catch (error) {
       alert(`チャット履歴のクリアに失敗しました: ${error.message}`);

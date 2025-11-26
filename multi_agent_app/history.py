@@ -1,4 +1,4 @@
-"""Chat history helpers shared between routes and the orchestrator."""
+"Chat history helpers shared between routes and the orchestrator."
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from langchain_core.messages import SystemMessage
 from langchain_openai import ChatOpenAI
 
 from .browser import _call_browser_agent_chat, _call_browser_agent_history_check
-from .errors import BrowserAgentError, GeminiAPIError, IotAgentError
-from .gemini import _call_gemini
+from .errors import BrowserAgentError, LifestyleAPIError, IotAgentError
+from .lifestyle import _call_lifestyle
 from .iot import _call_iot_agent_command, _call_iot_agent_conversation_review
 from .settings import resolve_llm_config
 
@@ -250,7 +250,7 @@ def _handle_agent_responses(
             action_requests.append(
                 {
                     "agent": "Life-Assistant",
-                    "kind": "faq_query",
+                    "kind": "lifestyle_query",
                     "description": question.strip(),
                 }
             )
@@ -281,8 +281,8 @@ def _handle_agent_responses(
                 message = result.get("reply") if isinstance(result, dict) else None
                 if not message:
                     message = f"IoT Agentに実行を依頼しました: {description}"
-            elif kind == "faq_query":
-                result = _call_gemini(
+            elif kind == "lifestyle_query":
+                result = _call_lifestyle(
                     "/agent_rag_answer",
                     method="POST",
                     payload={"question": description},
@@ -294,7 +294,7 @@ def _handle_agent_responses(
                 continue
 
             _append_agent_reply("Orchestrator", message)
-        except (BrowserAgentError, IotAgentError, GeminiAPIError) as exc:
+        except (BrowserAgentError, IotAgentError, LifestyleAPIError) as exc:
             logging.warning("Failed to handle agent action (%s): %s", kind, exc)
             _append_agent_reply("Orchestrator", f"{agent} への依頼に失敗しました: {exc}")
         except Exception as exc:  # noqa: BLE001
@@ -324,16 +324,16 @@ def _send_recent_history_to_agents(history: List[Dict[str, str]]) -> None:
     had_reply = False
 
     try:
-        gemini_response = _call_gemini(
+        lifestyle_response = _call_lifestyle(
             "/analyze_conversation",
             method="POST",
             payload=payload,
         )
-        responses["Life-Assistant"] = gemini_response if isinstance(gemini_response, dict) else {}
-        had_reply = _extract_reply("Life-Assistant", gemini_response) or had_reply
+        responses["Life-Assistant"] = lifestyle_response if isinstance(lifestyle_response, dict) else {}
+        had_reply = _extract_reply("Life-Assistant", lifestyle_response) or had_reply
         response_order.append("Life-Assistant")
-    except GeminiAPIError as e:
-        logging.warning("Error sending history to gemini: %s", e)
+    except LifestyleAPIError as e:
+        logging.warning("Error sending history to Life-Assistant: %s", e)
 
     global _browser_history_supported
     if _browser_history_supported:
