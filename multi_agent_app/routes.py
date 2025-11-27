@@ -32,7 +32,12 @@ from .config import (
     _resolve_browser_embed_url,
 )
 from .errors import LifestyleAPIError, OrchestratorError
-from .iot import _build_iot_agent_url, _iter_iot_agent_bases, _proxy_iot_agent_request
+from .iot import (
+    _build_iot_agent_url,
+    _fetch_iot_model_selection,
+    _iter_iot_agent_bases,
+    _proxy_iot_agent_request,
+)
 from .lifestyle import _build_lifestyle_url, _call_lifestyle, _iter_lifestyle_bases
 from .settings import (
     get_llm_options,
@@ -302,7 +307,20 @@ def api_model_settings() -> Any:
     """Expose and persist LLM model preferences per agent."""
 
     if request.method == "GET":
-        return jsonify({"selection": load_model_settings(), "options": get_llm_options()})
+        selection = load_model_settings()
+        try:
+            iot_selection = _fetch_iot_model_selection()
+        except Exception as exc:  # noqa: BLE001
+            logging.info("Skipping IoT model pull during settings fetch: %s", exc)
+            iot_selection = None
+
+        if iot_selection and selection.get("iot") != iot_selection:
+            try:
+                selection = save_model_settings({"selection": {**selection, "iot": iot_selection}})
+            except Exception as exc:  # noqa: BLE001
+                logging.warning("Failed to persist IoT model sync from agent: %s", exc)
+
+        return jsonify({"selection": selection, "options": get_llm_options()})
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from typing import Any, Dict, List
 
 import requests
@@ -85,6 +86,50 @@ def _post_iot_agent(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         raise IotAgentError("IoT Agent API から不正なレスポンス形式が返されました。", status_code=502)
 
     return data
+
+
+def _fetch_iot_model_selection() -> Dict[str, str] | None:
+    """Fetch the IoT Agent's current model selection for cross-app sync."""
+
+    bases = _iter_iot_agent_bases()
+    if not bases:
+        return None
+
+    for base in bases:
+        url = _build_iot_agent_url(base, "/api/models")
+        try:
+            response = requests.get(url, timeout=IOT_AGENT_TIMEOUT)
+        except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
+            logging.info("IoT model sync attempt to %s skipped (%s)", url, exc)
+            continue
+
+        if not response.ok:
+            logging.info(
+                "IoT model sync attempt to %s failed: %s %s", url, response.status_code, response.text
+            )
+            continue
+
+        try:
+            payload = response.json()
+        except ValueError:
+            logging.info("IoT model sync attempt to %s returned invalid JSON", url)
+            continue
+
+        current = payload.get("current") if isinstance(payload, dict) else None
+        if not isinstance(current, dict):
+            logging.info("IoT model sync attempt to %s missing current selection", url)
+            continue
+
+        provider = str(current.get("provider") or "").strip()
+        model = str(current.get("model") or "").strip()
+        base_url = str(current.get("base_url") or "").strip()
+        if not provider or not model:
+            logging.info("IoT model sync attempt to %s missing provider/model", url)
+            continue
+
+        return {"provider": provider, "model": model, "base_url": base_url}
+
+    return None
 
 
 def _call_iot_agent_command(command: str) -> Dict[str, Any]:
