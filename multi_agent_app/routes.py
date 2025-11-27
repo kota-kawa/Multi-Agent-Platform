@@ -71,6 +71,8 @@ def _broadcast_model_settings(selection: Dict[str, Any]) -> None:
         "iot": (_iter_iot_agent_bases, _build_iot_agent_url),
     }
 
+    headers = {"X-Platform-Propagation": "1"}
+
     for agent, payload in agent_payloads.items():
         if not payload or not isinstance(payload, dict):
             continue
@@ -82,7 +84,7 @@ def _broadcast_model_settings(selection: Dict[str, Any]) -> None:
                 continue
             url = build_url(base, "model_settings")
             try:
-                resp = requests.post(url, json=payload, timeout=2.0)
+                resp = requests.post(url, json=payload, timeout=2.0, headers=headers)
                 if not resp.ok:
                     logging.warning("Model settings push to %s failed: %s %s", url, resp.status_code, resp.text)
             except requests.exceptions.RequestException as exc:

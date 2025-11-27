@@ -17,10 +17,10 @@ DEFAULT_AGENT_CONNECTIONS: Dict[str, bool] = {
 }
 
 DEFAULT_MODEL_SELECTIONS: Dict[str, Dict[str, str]] = {
-    "orchestrator": {"provider": "openai", "model": ORCHESTRATOR_MODEL},
-    "browser": {"provider": "openai", "model": "gpt-4.1"},
-    "lifestyle": {"provider": "openai", "model": "gpt-4.1"},
-    "iot": {"provider": "openai", "model": "gpt-4.1"},
+    "orchestrator": {"provider": "openai", "model": ORCHESTRATOR_MODEL, "base_url": ""},
+    "browser": {"provider": "openai", "model": "gpt-4.1", "base_url": ""},
+    "lifestyle": {"provider": "openai", "model": "gpt-4.1", "base_url": ""},
+    "iot": {"provider": "openai", "model": "gpt-4.1", "base_url": ""},
 }
 
 DEFAULT_MEMORY_SETTINGS: Dict[str, bool] = {
@@ -187,6 +187,7 @@ def _merge_model_selection(raw: Any) -> Dict[str, Dict[str, str]]:
         value = source.get(agent) if isinstance(source.get(agent), dict) else {}
         provider = (value.get("provider") or default_selection["provider"]).strip()
         model = (value.get("model") or default_selection["model"]).strip()
+        base_url = (value.get("base_url") or default_selection.get("base_url", "")).strip()
         provider_meta = LLM_PROVIDERS.get(provider)
 
         if not provider_meta:
@@ -198,7 +199,7 @@ def _merge_model_selection(raw: Any) -> Dict[str, Dict[str, str]]:
             merged[agent] = dict(default_selection)
             continue
 
-        merged[agent] = {"provider": provider, "model": model}
+        merged[agent] = {"provider": provider, "model": model, "base_url": base_url}
     return merged
 
 
@@ -217,7 +218,17 @@ def load_model_settings() -> Dict[str, Dict[str, str]]:
 def save_model_settings(payload: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
     """Persist the model selections to disk."""
 
-    selection = _merge_model_selection(payload)
+    existing = load_model_settings()
+    incoming = payload.get("selection") if isinstance(payload, dict) and "selection" in payload else payload
+
+    merged_input: Dict[str, Dict[str, str]] = dict(existing)
+    if isinstance(incoming, dict):
+        for agent, value in incoming.items():
+            if agent not in DEFAULT_MODEL_SELECTIONS or not isinstance(value, dict):
+                continue
+            merged_input[agent] = {**existing.get(agent, {}), **value}
+
+    selection = _merge_model_selection(merged_input)
     with open(_MODEL_SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(selection, f, ensure_ascii=False, indent=2)
     return selection
