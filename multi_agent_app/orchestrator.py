@@ -12,6 +12,8 @@ from typing import Any, Dict, Iterable, Iterator, List, Literal, TypedDict, cast
 import requests
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_anthropic import ChatAnthropic
 from langgraph.graph import END, StateGraph
 
 from .browser import (
@@ -172,16 +174,33 @@ class MultiAgentOrchestrator:
 
         try:
             model_name = resolved_config["model"]
+            provider = resolved_config.get("provider", "openai")
+            base_url = resolved_config.get("base_url") or None
+
             # o1 models and gpt-5 (in some environments) only support temperature=1
             is_fixed_temp_model = model_name.startswith("o1-") or model_name.startswith("gpt-5")
             temperature = 1 if is_fixed_temp_model else 0.1
 
-            self._llm = ChatOpenAI(
-                model=model_name,
-                temperature=temperature,
-                api_key=api_key,
-                base_url=resolved_config.get("base_url") or None,
-            )
+            if provider == "gemini":
+                self._llm = ChatGoogleGenerativeAI(
+                    model=model_name,
+                    temperature=temperature,
+                    google_api_key=api_key,
+                )
+            elif provider == "claude":
+                self._llm = ChatAnthropic(
+                    model=model_name,
+                    temperature=temperature,
+                    api_key=api_key,
+                    base_url=base_url,
+                )
+            else:
+                self._llm = ChatOpenAI(
+                    model=model_name,
+                    temperature=temperature,
+                    api_key=api_key,
+                    base_url=base_url,
+                )
         except Exception as exc:  # noqa: BLE001
             raise OrchestratorError(f"LangGraph LLM の初期化に失敗しました: {exc}") from exc
 
