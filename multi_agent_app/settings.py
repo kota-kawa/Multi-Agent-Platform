@@ -187,8 +187,11 @@ def _merge_model_selection(raw: Any) -> Dict[str, Dict[str, str]]:
         value = source.get(agent) if isinstance(source.get(agent), dict) else {}
         provider = (value.get("provider") or default_selection["provider"]).strip()
         model = (value.get("model") or default_selection["model"]).strip()
-        base_url = (value.get("base_url") or default_selection.get("base_url", "")).strip()
+        base_url = (value.get("base_url") or default_selection.get("base_url", "") or "").strip()
         provider_meta = LLM_PROVIDERS.get(provider)
+        provider_default_base = str(provider_meta.get("default_base_url") or "").strip() if provider_meta else ""
+        if not base_url and provider_default_base:
+            base_url = provider_default_base
 
         if not provider_meta:
             merged[agent] = dict(default_selection)
