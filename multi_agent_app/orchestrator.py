@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import re
 import threading
 from typing import Any, Dict, Iterable, Iterator, List, Literal, TypedDict, cast
 
@@ -356,14 +357,52 @@ class MultiAgentOrchestrator:
         return str(content)
 
     def _parse_plan(self, raw: str) -> Dict[str, Any]:
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as exc:  # noqa: PERF203
-            raise OrchestratorError("プラン応答の JSON 解析に失敗しました。") from exc
+        def try_parse(text: str) -> Dict[str, Any] | None:
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                pass
+            # Try removing trailing commas
+            try:
+                sanitized = re.sub(r",\s*([\]}])", r"\1", text)
+                return json.loads(sanitized)
+            except json.JSONDecodeError:
+                pass
+            return None
 
-        if not isinstance(parsed, dict):
-            raise OrchestratorError("プラン応答の形式が不正です。")
-        return parsed
+        # Attempt 1: Direct parsing
+        parsed = try_parse(raw)
+        if isinstance(parsed, dict):
+            return parsed
+
+        # Attempt 2: Extract from Markdown code blocks
+        code_block_pattern = r"```(?:json)?\s*(.*?)\s*```"
+        match = re.search(code_block_pattern, raw, re.DOTALL)
+        if match:
+            block_content = match.group(1)
+            parsed = try_parse(block_content)
+            if isinstance(parsed, dict):
+                return parsed
+            
+            # Try finding braces inside the block
+            brace_pattern = r"(\{.*\})"
+            brace_match = re.search(brace_pattern, block_content, re.DOTALL)
+            if brace_match:
+                parsed = try_parse(brace_match.group(1))
+                if isinstance(parsed, dict):
+                    return parsed
+
+        # Attempt 3: Extract from first '{' to last '}' in the whole text
+        brace_pattern = r"(\{.*\})"
+        match = re.search(brace_pattern, raw, re.DOTALL)
+        if match:
+            parsed = try_parse(match.group(1))
+            if isinstance(parsed, dict):
+                return parsed
+
+        # If all attempts fail
+        logging.error(f"JSON Parse Failed. Raw output:\n{raw}")
+        raise OrchestratorError("プラン応答の JSON 解析に失敗しました。")
 
     def _planner_prompt(self, enabled_agents: List[str], disabled_agents: List[str]) -> str:
         prompt = self._PLANNER_PROMPT.format(

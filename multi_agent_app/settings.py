@@ -52,13 +52,25 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
     },
     "claude": {
         "label": "Claude (Anthropic)",
-        "api_key_env": "CLAUDE_API_KEY",
+        "api_key_env": "OPENROUTER_API_KEY",
         "base_url_env": "CLAUDE_API_BASE",
         "default_base_url": "https://openrouter.ai/api/v1",
         "models": [
-            {"id": "claude-sonnet-4-5", "label": "Claude Sonnet 4.5"},
-            {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"},
-            {"id": "claude-opus-4-5", "label": "Claude Opus 4.5"},
+            {"id": "anthropic/claude-3.5-sonnet", "label": "Claude 3.5 Sonnet"},
+            {"id": "anthropic/claude-3-haiku", "label": "Claude 3 Haiku"},
+            {"id": "anthropic/claude-3-opus", "label": "Claude 3 Opus"},
+        ],
+    },
+    "openrouter": {
+        "label": "OpenRouter",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "base_url_env": "OPENROUTER_API_BASE",
+        "default_base_url": "https://openrouter.ai/api/v1",
+        "models": [
+            {"id": "openai/gpt-4o", "label": "GPT-4o (OpenRouter)"},
+            {"id": "anthropic/claude-3.5-sonnet", "label": "Claude 3.5 Sonnet (OpenRouter)"},
+            {"id": "google/gemini-flash-1.5", "label": "Gemini Flash 1.5 (OpenRouter)"},
+            {"id": "meta-llama/llama-3.1-70b-instruct", "label": "Llama 3.1 70B (OpenRouter)"},
         ],
     },
     "groq": {
