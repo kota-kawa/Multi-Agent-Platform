@@ -61,18 +61,6 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
             {"id": "anthropic/claude-3-opus", "label": "Claude 3 Opus"},
         ],
     },
-    "openrouter": {
-        "label": "OpenRouter",
-        "api_key_env": "OPENROUTER_API_KEY",
-        "base_url_env": "OPENROUTER_API_BASE",
-        "default_base_url": "https://openrouter.ai/api/v1",
-        "models": [
-            {"id": "openai/gpt-4o", "label": "GPT-4o (OpenRouter)"},
-            {"id": "anthropic/claude-3.5-sonnet", "label": "Claude 3.5 Sonnet (OpenRouter)"},
-            {"id": "google/gemini-flash-1.5", "label": "Gemini Flash 1.5 (OpenRouter)"},
-            {"id": "meta-llama/llama-3.1-70b-instruct", "label": "Llama 3.1 70B (OpenRouter)"},
-        ],
-    },
     "groq": {
         "label": "Groq",
         "api_key_env": "GROQ_API_KEY",

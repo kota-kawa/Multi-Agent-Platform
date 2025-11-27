@@ -171,9 +171,14 @@ class MultiAgentOrchestrator:
             raise OrchestratorError("オーケストレーター用の API キーが設定されていません。")
 
         try:
+            model_name = resolved_config["model"]
+            # o1 models and gpt-5 (in some environments) only support temperature=1
+            is_fixed_temp_model = model_name.startswith("o1-") or model_name.startswith("gpt-5")
+            temperature = 1 if is_fixed_temp_model else 0.1
+
             self._llm = ChatOpenAI(
-                model=resolved_config["model"],
-                temperature=0.1,
+                model=model_name,
+                temperature=temperature,
                 api_key=api_key,
                 base_url=resolved_config.get("base_url") or None,
             )
