@@ -1086,8 +1086,9 @@ class MultiAgentOrchestrator:
         payload.update(extras)
         return payload
 
-    def run_stream(self, user_input: str) -> Iterator[Dict[str, Any]]:
-        _append_to_chat_history("user", user_input)
+    def run_stream(self, user_input: str, *, log_history: bool = False) -> Iterator[Dict[str, Any]]:
+        if log_history:
+            _append_to_chat_history("user", user_input)
         agent_connections = load_agent_connections()
         state: OrchestratorState = {
             "user_input": user_input,
@@ -1158,25 +1159,26 @@ class MultiAgentOrchestrator:
         executions = state.get("executions") or []
         assistant_messages = self._format_assistant_messages(plan_summary, executions)
 
-        has_browser_execution = any(
-            isinstance(result, dict) and result.get("agent") == "browser" for result in executions
-        )
-        if has_browser_execution:
-            logged_browser_output = False
-            for result in reversed(executions):
-                if isinstance(result, dict) and result.get("agent") == "browser":
-                    _append_to_chat_history("assistant", self._execution_result_text(result))
-                    logged_browser_output = True
-                    break
-            if not logged_browser_output:
-                for msg in reversed(assistant_messages):
-                    text = msg.get("text")
-                    if isinstance(text, str) and text.strip():
-                        _append_to_chat_history("assistant", text)
+        if log_history:
+            has_browser_execution = any(
+                isinstance(result, dict) and result.get("agent") == "browser" for result in executions
+            )
+            if has_browser_execution:
+                logged_browser_output = False
+                for result in reversed(executions):
+                    if isinstance(result, dict) and result.get("agent") == "browser":
+                        _append_to_chat_history("assistant", self._execution_result_text(result))
+                        logged_browser_output = True
                         break
-        else:
-            for msg in assistant_messages:
-                _append_to_chat_history("assistant", msg.get("text", ""))
+                if not logged_browser_output:
+                    for msg in reversed(assistant_messages):
+                        text = msg.get("text")
+                        if isinstance(text, str) and text.strip():
+                            _append_to_chat_history("assistant", text)
+                            break
+            else:
+                for msg in assistant_messages:
+                    _append_to_chat_history("assistant", msg.get("text", ""))
 
         yield self._event_payload(
             "complete",
@@ -1184,9 +1186,9 @@ class MultiAgentOrchestrator:
             assistant_messages=assistant_messages,
         )
 
-    def run(self, user_input: str) -> Dict[str, Any]:
+    def run(self, user_input: str, *, log_history: bool = False) -> Dict[str, Any]:
         final_event: Dict[str, Any] | None = None
-        for event in self.run_stream(user_input):
+        for event in self.run_stream(user_input, log_history=log_history):
             final_event = event
 
         if not final_event or final_event.get("event") != "complete":

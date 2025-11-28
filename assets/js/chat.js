@@ -228,8 +228,14 @@ function parseSseEventBlock(block) {
   return { event: eventType || "message", data };
 }
 
-async function* orchestratorRequest(message, { signal } = {}) {
+async function* orchestratorRequest(message, { signal, view, logHistory } = {}) {
   const payload = { message };
+  if (view) {
+    payload.view = view;
+  }
+  if (logHistory === true) {
+    payload.log_history = true;
+  }
   if (BROWSER_AGENT_API_BASE) {
     payload.browser_agent_base = BROWSER_AGENT_API_BASE;
   }
@@ -1343,7 +1349,10 @@ async function sendOrchestratorMessage(text) {
   };
 
   try {
-    for await (const { event: eventType, data: payload } of orchestratorRequest(text)) {
+    for await (const { event: eventType, data: payload } of orchestratorRequest(text, {
+      view: "general",
+      logHistory: true,
+    })) {
       const eventData = payload && typeof payload === "object" ? payload : {};
 
       if (eventType === "plan") {

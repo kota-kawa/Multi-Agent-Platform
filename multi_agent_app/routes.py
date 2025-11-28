@@ -106,6 +106,9 @@ def orchestrator_chat() -> Any:
     message = (payload.get("message") or "").strip()
     if not message:
         return jsonify({"error": "メッセージを入力してください。"}), 400
+    view_name = str(payload.get("view") or payload.get("source_view") or "").strip().lower()
+    log_history_requested = payload.get("log_history") is True
+    log_history = log_history_requested or view_name == "general"
 
     overrides: list[str] = []
     overrides.extend(_normalise_browser_base_values(payload.get("browser_agent_base")))
@@ -134,7 +137,7 @@ def orchestrator_chat() -> Any:
 
     def _stream() -> Iterator[str]:
         try:
-            for event in orchestrator.run_stream(message):
+            for event in orchestrator.run_stream(message, log_history=log_history):
                 yield _format_sse_event(event)
         except OrchestratorError as exc:  # pragma: no cover - defensive
             logging.exception("Orchestrator execution failed: %s", exc)
