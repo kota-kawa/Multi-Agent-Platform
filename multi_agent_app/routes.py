@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 from typing import Any, Dict, Iterator
@@ -10,13 +11,16 @@ from flask import (
     Blueprint,
     Response,
     current_app,
+    flash,
     g,
     has_request_context,
     jsonify,
+    redirect,
     render_template,
     request,
     send_from_directory,
     stream_with_context,
+    url_for,
 )
 
 import requests
@@ -39,6 +43,16 @@ from .iot import (
     _proxy_iot_agent_request,
 )
 from .lifestyle import _build_lifestyle_url, _call_lifestyle, _iter_lifestyle_bases
+from .scheduler import (
+    _proxy_scheduler_agent_request,
+    _fetch_calendar_data,
+    _fetch_day_view_data,
+    _fetch_routines_data,
+    _fetch_scheduler_model_selection,
+    _iter_scheduler_agent_bases,
+    _build_scheduler_agent_url,
+    _submit_day_form,
+)
 from .settings import (
     get_llm_options,
     load_agent_connections,
@@ -49,6 +63,7 @@ from .settings import (
     save_memory_settings,
 )
 from .orchestrator import _get_orchestrator
+from .memory_manager import MemoryManager
 
 bp = Blueprint("multi_agent_app", __name__)
 
@@ -68,12 +83,14 @@ def _broadcast_model_settings(selection: Dict[str, Any]) -> None:
         "browser": selection.get("browser"),
         "lifestyle": selection.get("lifestyle"),
         "iot": selection.get("iot"),
+        "scheduler": selection.get("scheduler"),
     }
 
     target_builders = {
         "browser": (_iter_browser_agent_bases, _build_browser_agent_url),
         "lifestyle": (_iter_lifestyle_bases, _build_lifestyle_url),
         "iot": (_iter_iot_agent_bases, _build_iot_agent_url),
+        "scheduler": (_iter_scheduler_agent_bases, _build_scheduler_agent_url),
     }
 
     headers = {"X-Platform-Propagation": "1"}
@@ -218,6 +235,14 @@ def proxy_iot_agent(path: str) -> Response:
     return _proxy_iot_agent_request(path)
 
 
+@bp.route("/scheduler_agent", defaults={"path": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+@bp.route("/scheduler_agent/<path:path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+def proxy_scheduler_agent(path: str) -> Response:
+    """Forward Scheduler Agent traffic to the upstream service."""
+
+    return _proxy_scheduler_agent_request(path)
+
+
 @bp.route("/chat_history", methods=["GET"])
 def chat_history() -> Any:
     """Fetch the entire chat history."""
@@ -254,27 +279,37 @@ def api_memory() -> Any:
         if data is None:
             return jsonify({"error": "Invalid JSON"}), 400
         
-        # Save content
-        with open("long_term_memory.json", "w", encoding="utf-8") as f:
-            json.dump({"memory": data.get("long_term_memory", "")}, f, ensure_ascii=False, indent=2)
-        with open("short_term_memory.json", "w", encoding="utf-8") as f:
-            json.dump({"memory": data.get("short_term_memory", "")}, f, ensure_ascii=False, indent=2)
+        try:
+            # Save long-term memory summary
+            lt_mgr = MemoryManager("long_term_memory.json")
+            lt_mem = lt_mgr.load_memory()
+            lt_mem["summary_text"] = data.get("long_term_memory", "")
+            lt_mgr.save_memory(lt_mem)
+
+            # Save short-term memory summary
+            st_mgr = MemoryManager("short_term_memory.json")
+            st_mem = st_mgr.load_memory()
+            st_mem["summary_text"] = data.get("short_term_memory", "")
+            st_mgr.save_memory(st_mem)
             
-        # Save settings
-        save_memory_settings({"enabled": data.get("enabled")})
-        
-        return jsonify({"message": "Memory saved successfully."})
+            # Save settings
+            save_memory_settings({"enabled": data.get("enabled")})
+            
+            return jsonify({"message": "Memory saved successfully."})
+        except Exception as exc:
+            logging.exception("Failed to save memory: %s", exc)
+            return jsonify({"error": "Failed to save memory."}), 500
 
     try:
-        with open("long_term_memory.json", "r", encoding="utf-8") as f:
-            long_term_memory = json.load(f).get("memory", "")
-    except (FileNotFoundError, json.JSONDecodeError):
+        lt_mgr = MemoryManager("long_term_memory.json")
+        long_term_memory = lt_mgr.load_memory().get("summary_text", "")
+    except Exception:
         long_term_memory = ""
 
     try:
-        with open("short_term_memory.json", "r", encoding="utf-8") as f:
-            short_term_memory = json.load(f).get("memory", "")
-    except (FileNotFoundError, json.JSONDecodeError):
+        st_mgr = MemoryManager("short_term_memory.json")
+        short_term_memory = st_mgr.load_memory().get("summary_text", "")
+    except Exception:
         short_term_memory = ""
 
     settings = load_memory_settings()
@@ -311,17 +346,27 @@ def api_model_settings() -> Any:
 
     if request.method == "GET":
         selection = load_model_settings()
+        updates: Dict[str, Dict[str, str]] = {}
         try:
             iot_selection = _fetch_iot_model_selection()
         except Exception as exc:  # noqa: BLE001
             logging.info("Skipping IoT model pull during settings fetch: %s", exc)
             iot_selection = None
+        try:
+            scheduler_selection = _fetch_scheduler_model_selection()
+        except Exception as exc:  # noqa: BLE001
+            logging.info("Skipping Scheduler model pull during settings fetch: %s", exc)
+            scheduler_selection = None
 
         if iot_selection and selection.get("iot") != iot_selection:
+            updates["iot"] = iot_selection
+        if scheduler_selection and selection.get("scheduler") != scheduler_selection:
+            updates["scheduler"] = scheduler_selection
+        if updates:
             try:
-                selection = save_model_settings({"selection": {**selection, "iot": iot_selection}})
+                selection = save_model_settings({"selection": {**selection, **updates}})
             except Exception as exc:  # noqa: BLE001
-                logging.warning("Failed to persist IoT model sync from agent: %s", exc)
+                logging.warning("Failed to persist agent model sync: %s", exc)
 
         return jsonify({"selection": selection, "options": get_llm_options()})
 
@@ -339,16 +384,176 @@ def api_model_settings() -> Any:
     return jsonify({"selection": saved, "options": get_llm_options()})
 
 
+
+# Scheduler Agent UI Routes
+@bp.route("/scheduler-ui")
+def scheduler_index():
+    today = datetime.date.today()
+    year = request.args.get('year', today.year, type=int)
+    month = request.args.get('month', today.month, type=int)
+
+    try:
+        data = _fetch_calendar_data(year, month)
+    except ConnectionError as exc:
+        logging.error("Failed to fetch calendar data: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+    
+    # Convert ISO format date strings back to datetime.date objects for Jinja
+    for week in data['calendar_data']:
+        for day_data in week:
+            day_data['date'] = datetime.date.fromisoformat(day_data['date'])
+    data['today'] = datetime.date.fromisoformat(data['today'])
+    
+    return render_template(
+        "scheduler_index.html",
+        calendar_data=data['calendar_data'],
+        year=data['year'],
+        month=data['month'],
+        today=data['today']
+    )
+
+@bp.route("/scheduler-ui/calendar_partial")
+def scheduler_calendar_partial():
+    today = datetime.date.today()
+    year = request.args.get('year', today.year, type=int)
+    month = request.args.get('month', today.month, type=int)
+
+    try:
+        data = _fetch_calendar_data(year, month)
+    except ConnectionError as exc:
+        logging.error("Failed to fetch calendar partial data: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+    
+    for week in data['calendar_data']:
+        for day_data in week:
+            day_data['date'] = datetime.date.fromisoformat(day_data['date'])
+    data['today'] = datetime.date.fromisoformat(data['today'])
+    
+    return render_template(
+        "scheduler_calendar_partial.html",
+        calendar_data=data['calendar_data'],
+        today=data['today']
+    )
+
+@bp.route("/scheduler-ui/day/<date_str>", methods=["GET", "POST"])
+def scheduler_day_view(date_str):
+    if request.method == "POST":
+        try:
+            _submit_day_form(date_str, request.form)
+            flash("変更を保存しました。")
+        except ConnectionError as exc:
+            logging.error("Failed to submit day form for %s: %s", date_str, exc)
+            flash("変更の保存に失敗しました。Scheduler Agent を確認してください。")
+        return redirect(url_for("multi_agent_app.scheduler_day_view", date_str=date_str))
+
+    try:
+        data = _fetch_day_view_data(date_str)
+    except ConnectionError as exc:
+        logging.error("Failed to fetch day view data for %s: %s", date_str, exc)
+        return jsonify({"error": str(exc)}), 500
+    
+    # Convert ISO format date string back to datetime.date object for Jinja
+    data['date'] = datetime.date.fromisoformat(data['date'])
+    
+    # Convert timeline item dates if necessary (though they are usually just strings)
+    for item in data['timeline_items']:
+        # Assuming 'log_memo' and 'is_done' might be None or boolean
+        if item.get('log_memo') is None:
+            item['log_memo'] = ""
+        if item.get('is_done') is None:
+            item['is_done'] = False
+
+    return render_template(
+        "scheduler_day.html",
+        date=data['date'],
+        timeline_items=data['timeline_items'],
+        day_log={'content': data['day_log_content']} if data['day_log_content'] else None,
+        completion_rate=data['completion_rate']
+    )
+
+@bp.route("/scheduler-ui/day/<date_str>/timeline")
+def scheduler_day_view_timeline(date_str):
+    try:
+        data = _fetch_day_view_data(date_str)
+    except ConnectionError as exc:
+        logging.error("Failed to fetch day view timeline data for %s: %s", date_str, exc)
+        return jsonify({"error": str(exc)}), 500
+    
+    data['date'] = datetime.date.fromisoformat(data['date'])
+    
+    for item in data['timeline_items']:
+        if item.get('log_memo') is None:
+            item['log_memo'] = ""
+        if item.get('is_done') is None:
+            item['is_done'] = False
+
+    return render_template(
+        "scheduler_timeline_partial.html",
+        date=data['date'],
+        timeline_items=data['timeline_items'],
+        completion_rate=data['completion_rate']
+    )
+
+@bp.route("/scheduler-ui/day/<date_str>/log_partial")
+def scheduler_day_view_log_partial(date_str):
+    try:
+        data = _fetch_day_view_data(date_str)
+    except ConnectionError as exc:
+        logging.error("Failed to fetch day view log partial data for %s: %s", date_str, exc)
+        return jsonify({"error": str(exc)}), 500
+    
+    return render_template(
+        "scheduler_log_partial.html",
+        day_log={'content': data['day_log_content']} if data['day_log_content'] else None
+    )
+
+@bp.route("/scheduler-ui/routines")
+def scheduler_routines_list():
+    try:
+        data = _fetch_routines_data()
+    except ConnectionError as exc:
+        logging.error("Failed to fetch routines data: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+    return render_template("scheduler_routines.html", routines=data['routines'])
+
 @bp.route("/")
 def serve_index() -> Any:
     """Serve the main single-page application."""
 
     browser_embed_url = _resolve_browser_embed_url()
     browser_agent_client_base = _resolve_browser_agent_client_base()
+
+    # Preload scheduler calendar data so the Scheduler view can render without the embedded iframe.
+    today = datetime.date.today()
+    scheduler_year = request.args.get("year", today.year, type=int)
+    scheduler_month = request.args.get("month", today.month, type=int)
+    scheduler_calendar_data = None
+    scheduler_today = today
+    scheduler_error = None
+
+    try:
+        scheduler_data = _fetch_calendar_data(scheduler_year, scheduler_month)
+        for week in scheduler_data.get("calendar_data", []):
+            for day_data in week:
+                day_data["date"] = datetime.date.fromisoformat(day_data["date"])
+        scheduler_today = datetime.date.fromisoformat(scheduler_data.get("today", today.isoformat()))
+        scheduler_year = scheduler_data.get("year", scheduler_year)
+        scheduler_month = scheduler_data.get("month", scheduler_month)
+        scheduler_calendar_data = scheduler_data.get("calendar_data")
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Scheduler calendar preload skipped: %s", exc)
+        scheduler_error = str(exc)
+
     return render_template(
         "index.html",
         browser_embed_url=browser_embed_url,
         browser_agent_client_base=browser_agent_client_base,
+        scheduler_calendar_data=scheduler_calendar_data,
+        scheduler_year=scheduler_year,
+        scheduler_month=scheduler_month,
+        scheduler_today=scheduler_today,
+        scheduler_error=scheduler_error,
     )
 
 

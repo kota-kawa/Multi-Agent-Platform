@@ -268,10 +268,10 @@ def _call_browser_agent_history_check(history: Iterable[Dict[str, str]]) -> Dict
 
 
 def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
-    """Call the Browser Agent chat endpoint."""
+	"""Call the Browser Agent chat endpoint."""
 
-    return _post_browser_agent(
-        "/api/chat",
-        {"prompt": prompt, "new_task": True},
-        timeout=_browser_agent_timeout(BROWSER_AGENT_CHAT_TIMEOUT),
-    )
+	return _post_browser_agent(
+		"/api/chat",
+		{"prompt": prompt, "new_task": True, "skip_conversation_review": True},
+		timeout=_browser_agent_timeout(BROWSER_AGENT_CHAT_TIMEOUT),
+	)

@@ -14,6 +14,7 @@ DEFAULT_AGENT_CONNECTIONS: Dict[str, bool] = {
     "lifestyle": True,
     "browser": True,
     "iot": True,
+    "scheduler": True,
 }
 
 DEFAULT_MODEL_SELECTIONS: Dict[str, Dict[str, str]] = {
@@ -21,6 +22,7 @@ DEFAULT_MODEL_SELECTIONS: Dict[str, Dict[str, str]] = {
     "browser": {"provider": "openai", "model": "gpt-4.1", "base_url": ""},
     "lifestyle": {"provider": "openai", "model": "gpt-4.1", "base_url": ""},
     "iot": {"provider": "openai", "model": "gpt-4.1", "base_url": ""},
+    "scheduler": {"provider": "openai", "model": "gpt-4.1", "base_url": ""},
 }
 
 DEFAULT_MEMORY_SETTINGS: Dict[str, bool] = {
@@ -43,11 +45,11 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "label": "Gemini (Google)",
         "api_key_env": "GEMINI_API_KEY",
         "base_url_env": "GEMINI_API_BASE",
-        "default_base_url": None,
+        "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "models": [
-            {"id": "gemini-1.5-flash", "label": "Gemini 1.5 Flash"},
-            {"id": "gemini-1.5-pro", "label": "Gemini 1.5 Pro"},
-            {"id": "gemini-2.0-flash", "label": "Gemini 2.0 Flash"},
+            {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash"},
+            {"id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro"},
+            {"id": "gemini-3-pro-preview", "label": "Gemini 3 Pro Preview"},
         ],
     },
     "claude": {
@@ -56,9 +58,9 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "base_url_env": "ANTHROPIC_API_BASE",
         "default_base_url": None,
         "models": [
-            {"id": "claude-3-5-sonnet-20240620", "label": "Claude 3.5 Sonnet"},
-            {"id": "claude-3-haiku-20240307", "label": "Claude 3 Haiku"},
-            {"id": "claude-3-opus-20240229", "label": "Claude 3 Opus"},
+            {"id": "claude-sonnet-4-5", "label": "Claude Sonnet 4.5"},
+            {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"},
+            {"id": "claude-opus-4-5", "label": "Claude Opus 4.5"},
         ],
     },
     "groq": {
@@ -86,6 +88,7 @@ _AGENT_ENV_PATHS: Dict[str, Path] = {
     "browser": _REPO_ROOT / "Browser-Agent" / "secrets.env",
     "lifestyle": _REPO_ROOT / "Life-Assistant-Agent" / "secrets.env",
     "iot": _REPO_ROOT / "IoT-Agent" / "secrets.env",
+    "scheduler": _REPO_ROOT / "Scheduler-Agent" / "secrets.env",
 }
 
 

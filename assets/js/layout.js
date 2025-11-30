@@ -39,6 +39,7 @@ const views = {
   browser: $("#view-browser"),
   iot: $("#view-iot"),
   chat: $("#view-chat"),
+  schedule: $("#view-schedule"),
 };
 
 const appTitle = $("#appTitle");
@@ -61,6 +62,7 @@ const ICONS = {
   chat: `<svg viewBox="0 0 24 24" fill="currentColor" focusable="false"><path d="M3 10v11h6v-7h6v7h6v-11L12,3z"/></svg>`,
   browser: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 3c-4 0-4 18 0 18 4 0 4-18 0-18"/><path d="M3 12c0-4 18-4 18 0 0 4-18 4-18 0"/></svg>`,
   iot: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 2h6v2h2v2h2v6h-2v2h-2v2h-6v-2H7v-2H5V6h2V4h2V2zm0 4v2H7v6h2v2h6v-2h2V8h-2V6H9z"/></svg>`,
+  scheduler: `<svg viewBox="0 0 24 24" fill="currentColor" focusable="false"><path d="M19 4h-1V2h-2v2H8V2H6v2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Zm0 14H5V10h14Zm0-12v2H5V6Z"/></svg>`,
 };
 
 let generalBrowserSurface = null;
@@ -68,17 +70,19 @@ let generalBrowserStage = null;
 let generalBrowserFullscreenBtn = null;
 
 const viewPlacements = new Map();
-const AGENT_TO_VIEW_MAP = { browser: "browser", iot: "iot", lifestyle: "chat", chat: "chat" };
+const AGENT_TO_VIEW_MAP = { browser: "browser", iot: "iot", lifestyle: "chat", chat: "chat", scheduler: "schedule" };
 const GENERAL_PROXY_AGENT_LABELS = {
   lifestyle: "Life-Assistantエージェント",
   browser: "ブラウザエージェント",
   iot: "IoT エージェント",
+  scheduler: "Scheduler エージェント",
   chat: "要約チャット",
 };
 const GENERAL_PROXY_VIEW_LABELS = {
   browser: "リモートブラウザ",
   chat: "要約チャット",
   iot: "IoT ダッシュボード",
+  scheduler: "Scheduler",
 };
 const BROWSER_AGENT_FINAL_MARKER = "[browser-agent-final]";
 
@@ -292,6 +296,7 @@ export function activateView(viewKey) {
     browser: "リモートブラウザ",
     iot: "IoT ダッシュボード",
     chat: "Life",
+    schedule: "Schedule",
   };
   if (appTitle) {
     appTitle.textContent = titles[target] ?? "リモートブラウザ";
@@ -309,6 +314,9 @@ export function activateView(viewKey) {
     } else if (target === "iot") {
       titleText = " IoTエージェント";
       iconSvg = ICONS.iot;
+    } else if (target === "schedule") {
+      titleText = " Scheduler-Agent";
+      iconSvg = ICONS.scheduler;
     }
 
     sidebarChatTitleTextNode.textContent = titleText;
@@ -319,15 +327,17 @@ export function activateView(viewKey) {
   const isChatView = target === "chat";
   const isIotView = target === "iot";
   const isGeneralView = target === "general";
+  const isSchedulerView = target === "schedule";
 
   if (typeof viewActivationHook === "function") {
     viewActivationHook({
-      view: target,
-      isBrowserView,
-      isChatView,
-      isIotView,
-      isGeneralView,
-    });
+    view: target,
+    isBrowserView,
+    isChatView,
+    isIotView,
+    isGeneralView,
+    isSchedulerView,
+  });
   }
   updateGeneralViewProxy();
   scheduleSidebarTogglePosition();

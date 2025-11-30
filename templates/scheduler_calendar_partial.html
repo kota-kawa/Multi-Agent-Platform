@@ -1,0 +1,53 @@
+<div class="calendar-grid" id="calendar-grid">
+    {% for week in calendar_data %}
+        {% for day in week %}
+        {% set date_str = day.date.isoformat() if day.date and day.date.isoformat is not none else day.date|string %}
+        <div class="calendar-day {% if not day.is_current_month %}not-current-month{% endif %} {% if day.date == today %}today-highlight{% endif %}"
+             style="{% if day.total_routines == 0 and day.has_day_log %}background-color: #f0f9ff; border: 1px solid #bae6fd;{% endif %}"
+             onclick="location.href='{{ url_for('multi_agent_app.scheduler_day_view', date_str=date_str) }}'">
+            
+            <div class="d-flex justify-content-between align-items-start">
+                <span class="day-number {% if not day.is_current_month %}text-muted{% endif %}">{{ day.day_num }}</span>
+                
+                <div class="d-flex gap-1">
+                    {% if day.has_day_log %}
+                        <i class="bi bi-journal-text text-primary" title="日報あり"></i>
+                    {% endif %}
+                    
+                    {% if day.total_steps > 0 %}
+                        {% set ratio = day.completed_steps / day.total_steps %}
+                        {% set percent = ratio * 100 %}
+                        {% if ratio == 1.0 %}
+                            <i class="bi bi-check-circle-fill text-success"></i>
+                        {% elif ratio > 0 %}
+                             <div class="spinner-border spinner-border-sm text-primary" role="status" style="width: 1rem; height: 1rem; border-width: 2px;">
+                                <span class="visually-hidden">In Progress</span>
+                             </div>
+                        {% else %}
+                            <i class="bi bi-circle text-muted" style="font-size: 0.8rem;"></i>
+                        {% endif %}
+                    {% endif %}
+                </div>
+            </div>
+            
+            {% if day.total_routines > 0 %}
+                <div class="mt-3">
+                     <div class="progress" style="height: 6px; border-radius: 3px;">
+                        {% set ratio = day.completed_steps / day.total_steps if day.total_steps > 0 else 0 %}
+                        <div class="progress-bar {% if ratio == 1 %}bg-success{% else %}bg-primary{% endif %}" 
+                             role="progressbar" 
+                             style="width: {{ ratio * 100 }}%"></div>
+                    </div>
+                    <div class="d-flex justify-content-between mt-1">
+                        <small class="text-muted" style="font-size: 0.7rem;">{{ day.completed_steps }}/{{ day.total_steps }} ステップ</small>
+                    </div>
+                </div>
+            {% elif day.has_day_log %}
+                <div class="mt-3">
+                    <small class="text-primary" style="font-size: 0.75rem;"><i class="bi bi-pencil-square me-1"></i>Log recorded</small>
+                </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    {% endfor %}
+</div>

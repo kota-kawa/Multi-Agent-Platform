@@ -32,24 +32,32 @@ from .config import (
     ORCHESTRATOR_MAX_TASKS,
     _current_datetime_line,
 )
-from .errors import BrowserAgentError, LifestyleAPIError, IotAgentError, OrchestratorError
+from .errors import (
+    BrowserAgentError,
+    LifestyleAPIError,
+    IotAgentError,
+    OrchestratorError,
+    SchedulerAgentError,
+)
 from .lifestyle import _call_lifestyle
 from .history import _append_to_chat_history
 from .iot import _call_iot_agent_command
+from .scheduler import _call_scheduler_agent_chat
 from .settings import load_agent_connections, resolve_llm_config, load_memory_settings
+from .memory_manager import MemoryManager
 
 
 class TaskSpec(TypedDict):
     """Specification describing the agent and command to run."""
 
-    agent: Literal["lifestyle", "browser", "iot"]
+    agent: Literal["lifestyle", "browser", "iot", "scheduler"]
     command: str
 
 
 class ExecutionResult(TypedDict, total=False):
     """Result payload returned by agent executions."""
 
-    agent: Literal["lifestyle", "browser", "iot"]
+    agent: Literal["lifestyle", "browser", "iot", "scheduler"]
     command: str
     status: Literal["success", "error", "needs_info"]
     response: str | None
@@ -95,12 +103,18 @@ class MultiAgentOrchestrator:
         "iot": "iot",
         "iot_agent": "iot",
         "device": "iot",
+        "scheduler": "scheduler",
+        "scheduler_agent": "scheduler",
+        "schedule": "scheduler",
+        "calendar": "scheduler",
+        "task": "scheduler",
     }
 
     _AGENT_DISPLAY_NAMES = {
         "lifestyle": "Life-Assistantエージェント",
         "browser": "ブラウザエージェント",
         "iot": "IoT エージェント",
+        "scheduler": "Scheduler エージェント",
     }
 
     MAX_RETRIES = 2
@@ -133,6 +147,7 @@ class MultiAgentOrchestrator:
   - "lifestyle"（Life-Assistantエージェント）: 家庭内の出来事や料理、家電、人間関係に詳しい専門家エージェントで、IoTなどに対してナレッジベースに質問できます。
   - "browser": ブラウザ自動化エージェントで Web を閲覧・操作できます。
   - "iot": IoT エージェントを通じてデバイスの状態確認や操作ができます。
+  - "scheduler": Scheduler エージェントを通じて予定の確認やタスクの登録・更新ができます。
 - 出力は JSON オブジェクトのみで、追加の説明やマークダウンを含めてはいけません。
 - JSON には必ず次のキーを含めてください:
   - "plan_summary": 実行方針を 1 文でまとめた文字列。
@@ -160,6 +175,7 @@ class MultiAgentOrchestrator:
         "browser": "Web検索・フォーム入力・クリックなどのブラウザ操作。どのサイト/URLで何をするか、完了条件、入力値が必要。",
         "lifestyle": "生活全般のQ&Aとレシピ/家電の相談。質問内容、制約（人数・予算・アレルギー・時間帯など）が明確であるほど良い。",
         "iot": "登録済みデバイスの状態確認と操作。対象デバイス名/場所、希望する操作（オン/オフ・調整値）や時刻が必要。",
+        "scheduler": "予定やタスク、日報の確認・更新。いつ・何を・どの時間帯に追加/完了させるか、日付や内容を具体的に指示してください。",
     }
 
     def __init__(self, llm_config: Dict[str, Any] | None = None) -> None:
@@ -288,15 +304,17 @@ class MultiAgentOrchestrator:
 
         if memory_enabled:
             try:
-                with open("long_term_memory.json", "r", encoding="utf-8") as f:
-                    long_term_memory = json.load(f).get("memory", "")
-            except (FileNotFoundError, json.JSONDecodeError):
+                lt_mgr = MemoryManager("long_term_memory.json")
+                long_term_memory = lt_mgr.load_memory().get("summary_text", "")
+            except Exception as exc:
+                logging.warning("Failed to load long-term memory: %s", exc)
                 long_term_memory = ""
 
             try:
-                with open("short_term_memory.json", "r", encoding="utf-8") as f:
-                    short_term_memory = json.load(f).get("memory", "")
-            except (FileNotFoundError, json.JSONDecodeError):
+                st_mgr = MemoryManager("short_term_memory.json")
+                short_term_memory = st_mgr.load_memory().get("summary_text", "")
+            except Exception as exc:
+                logging.warning("Failed to load short-term memory: %s", exc)
                 short_term_memory = ""
 
         try:
@@ -603,6 +621,28 @@ class MultiAgentOrchestrator:
             reply = str(data.get("reply") or "").strip()
             if not reply:
                 reply = "IoT エージェントからの応答が空でした。"
+            return {
+                "agent": agent,
+                "command": command,
+                "status": "success",
+                "response": reply,
+                "error": None,
+            }
+
+        if agent == "scheduler":
+            try:
+                data = _call_scheduler_agent_chat(command)
+            except SchedulerAgentError as exc:
+                return {
+                    "agent": agent,
+                    "command": command,
+                    "status": "error",
+                    "response": None,
+                    "error": str(exc),
+                }
+            reply = str(data.get("reply") or data.get("message") or "").strip()
+            if not reply:
+                reply = "Scheduler エージェントからの応答が空でした。"
             return {
                 "agent": agent,
                 "command": command,

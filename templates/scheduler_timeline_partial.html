@@ -1,0 +1,96 @@
+<div id="schedule-container" class="card shadow-md border-0 mb-4">
+    <div class="card-header bg-white border-0 pt-4 pb-2 px-4">
+        <div class="d-flex justify-content-between align-items-end">
+            <div>
+                <h6 class="text-uppercase text-muted mb-1">{{ date.strftime('%A') }}</h6>
+                <h2 class="mb-0 display-6 fw-bold">{{ date.strftime('%Y.%m.%d') }}</h2>
+            </div>
+            <div class="text-end">
+                 {% if timeline_items|length > 0 %}
+                    <div class="display-6 fw-bold text-primary">{{ completion_rate }}%</div>
+                    <small class="text-muted">完了率</small>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <div class="card-body px-4 pt-2">
+        <hr class="mb-5 mt-2 opacity-10">
+        
+        {% if timeline_items|length == 0 %}
+            <div class="text-center py-5">
+                <div class="mb-3 text-muted display-1"><i class="bi bi-calendar-check"></i></div>
+                <h4 class="text-muted">タスクがありません。</h4>
+                <p class="text-muted">上のフォームからタスクを追加してください。</p>
+            </div>
+        {% else %}
+            <form method="POST" action="{{ url_for('multi_agent_app.scheduler_day_view', date_str=date.strftime('%Y-%m-%d')) }}">
+                <div class="timeline">
+                    {% for item in timeline_items %}
+                    
+                    {% set done_name = "done_" ~ item.id if item.type == 'routine' else "custom_done_" ~ item.id %}
+                    {% set memo_name = "memo_" ~ item.id if item.type == 'routine' else "custom_memo_" ~ item.id %}
+                    {% set is_done = item.log.done if item.log else false %}
+                    {% set memo_val = item.log.memo if item.log and item.log.memo else '' %}
+                    
+                    {# Add specific ID for flashing #}
+                    {% set item_dom_id = "item_" ~ item.type ~ "_" ~ item.id %}
+                    
+                    <div class="timeline-item" id="{{ item_dom_id }}">
+                        <div class="timeline-dot" style="{% if item.type == 'custom' %}border-color: var(--secondary-color);{% endif %}"></div>
+                        <div class="timeline-time">{{ item.time }}</div>
+                        
+                        <div class="card {% if is_done %}bg-light border-success{% endif %}">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between align-items-start mb-2">
+                                    <div>
+                                        {% if item.type == 'routine' %}
+                                            <span class="badge badge-{{ item.step.category|lower }} mb-2">{{ item.step.category }}</span>
+                                            <h5 class="card-title mb-1">{{ item.step.name }}</h5>
+                                            <small class="text-muted"><i class="bi bi-collection me-1"></i>{{ item.routine.name }}</small>
+                                        {% else %}
+                                            <div class="d-flex align-items-center mb-2">
+                                                <span class="badge bg-secondary me-2">個人</span>
+                                                <button type="submit" name="delete_custom_task" value="{{ item.id }}" 
+                                                        class="btn btn-link p-0 text-danger opacity-50 hover-opacity-100" 
+                                                        style="font-size: 1rem;" 
+                                                        title="タスクを削除"
+                                                        onclick="return confirm('このタスクを削除しますか？');">
+                                                    <i class="bi bi-trash"></i>
+                                                </button>
+                                            </div>
+                                            <h5 class="card-title mb-1">{{ item.step.name }}</h5>
+                                            <small class="text-muted"><i class="bi bi-person me-1"></i>一時的</small>
+                                        {% endif %}
+                                    </div>
+                                    
+                                    <div class="form-check form-switch">
+                                        <input class="form-check-input fs-4" type="checkbox" 
+                                               name="{{ done_name }}" 
+                                               id="{{ done_name }}"
+                                               role="switch"
+                                               {% if is_done %}checked{% endif %}>
+                                    </div>
+                                </div>
+                                
+                                <div class="mt-3">
+                                    <input type="text" class="form-control form-control-sm bg-white" 
+                                           name="{{ memo_name }}" 
+                                           placeholder="メモを追加..."
+                                           value="{{ memo_val }}">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                
+                <div class="sticky-bottom bg-white py-3 border-top mt-4" style="bottom: 0; z-index: 10;">
+                     <button type="submit" class="btn btn-primary w-100 btn-lg shadow-sm">
+                        <i class="bi bi-save me-2"></i>進捗を保存
+                    </button>
+                </div>
+            </form>
+        {% endif %}
+    </div>
+</div>

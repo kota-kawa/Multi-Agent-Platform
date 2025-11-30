@@ -8,6 +8,7 @@ import {
   registerGeneralProxyRenderHook,
 } from "./layout.js";
 import { ensureIotDashboardInitialized, iotAgentRequest, summarizeIotDevices } from "./iot.js";
+import { schedulerAgentRequest } from "./scheduler.js";
 
 /* ---------- Chat + Summarizer (Life-Assistant integration) ---------- */
 
@@ -88,9 +89,11 @@ const ORCHESTRATOR_AGENT_LABELS = {
   lifestyle: "Life-Assistantエージェント",
   browser: "ブラウザエージェント",
   iot: "IoT エージェント",
+  scheduler: "Scheduler エージェント",
 };
 
 const IOT_CHAT_GREETING = "こんにちは！登録済みデバイスの状況を確認したり、チャットから指示を送れます。";
+const SCHEDULER_CHAT_GREETING = "こんにちは！スケジュールの確認や登録をお手伝いします。予定を教えてください。";
 
 const iotChatState = {
   messages: [],
@@ -98,6 +101,13 @@ const iotChatState = {
   initialized: false,
   sending: false,
   paused: false,
+};
+
+const schedulerChatState = {
+  messages: [],
+  history: [],
+  initialized: false,
+  sending: false,
 };
 
 let currentChatMode = "general";
@@ -625,6 +635,29 @@ function renderIotChat({ forceSidebar = false } = {}) {
   }
 }
 
+function renderSchedulerChat({ forceSidebar = false } = {}) {
+  if (forceSidebar || currentChatMode === "scheduler") {
+    renderSidebarMessages(schedulerChatState.messages);
+  }
+}
+
+function pushSchedulerMessage(role, text, { pending = false, addToHistory = true } = {}) {
+  const normalizedRole = role === "user" ? "user" : "assistant";
+  const message = {
+    role: normalizedRole,
+    text: text ?? "",
+    ts: Date.now(),
+  };
+  if (pending) {
+    message.pending = true;
+  }
+  schedulerChatState.messages.push(message);
+  if (addToHistory) {
+    schedulerChatState.history.push({ role: normalizedRole, content: message.text });
+  }
+  return message;
+}
+
 function pushIotMessage(role, text, { pending = false, addToHistory = true } = {}) {
   const normalizedRole = role === "user" ? "user" : "assistant";
   const message = {
@@ -652,6 +685,57 @@ export function ensureIotChatInitialized({ forceSidebar = false } = {}) {
   }
   if (forceSidebar || currentChatMode === "iot") {
     renderIotChat({ forceSidebar });
+  }
+}
+
+function normalizeSchedulerHistoryEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const roleRaw = typeof entry.role === "string" ? entry.role.trim().toLowerCase() : "";
+  if (!roleRaw || (roleRaw !== "user" && roleRaw !== "assistant")) return null;
+  const content = typeof entry.content === "string" ? entry.content : "";
+  const ts = entry.timestamp ? Date.parse(entry.timestamp) : Date.now();
+  return {
+    role: roleRaw,
+    text: content,
+    ts: Number.isFinite(ts) ? ts : Date.now(),
+  };
+}
+
+async function loadSchedulerChatHistory({ showLoading = false, forceSidebar = false } = {}) {
+  if (showLoading) {
+    schedulerChatState.messages = [
+      { role: "assistant", text: THINKING_MESSAGE_TEXT, pending: true, ts: Date.now() },
+    ];
+    renderSchedulerChat({ forceSidebar });
+  }
+
+  try {
+    const { data } = await schedulerAgentRequest("/api/chat/history");
+    const entries = Array.isArray(data.history) ? data.history.map(normalizeSchedulerHistoryEntry).filter(Boolean) : [];
+    if (entries.length) {
+      schedulerChatState.messages = entries;
+      schedulerChatState.history = entries.map(entry => ({ role: entry.role, content: entry.text }));
+    } else {
+      schedulerChatState.messages = [];
+      schedulerChatState.history = [];
+      pushSchedulerMessage("assistant", SCHEDULER_CHAT_GREETING, { addToHistory: false });
+    }
+  } catch (error) {
+    schedulerChatState.messages = [
+      { role: "assistant", text: `${SCHEDULER_CHAT_GREETING}\n（履歴の取得に失敗しました: ${error.message}）`, ts: Date.now() },
+    ];
+    schedulerChatState.history = [];
+  }
+
+  renderSchedulerChat({ forceSidebar });
+}
+
+export function ensureSchedulerChatInitialized({ forceSidebar = false } = {}) {
+  if (!schedulerChatState.initialized) {
+    schedulerChatState.initialized = true;
+    loadSchedulerChatHistory({ showLoading: true, forceSidebar });
+  } else if (forceSidebar || currentChatMode === "scheduler") {
+    renderSchedulerChat({ forceSidebar });
   }
 }
 
@@ -879,6 +963,27 @@ function updateSidebarControlsForMode(mode) {
       sidebarChatSend.disabled = iotChatState.paused || iotChatState.sending;
     }
     updateIotPauseButtonState();
+    return;
+  }
+
+  if (mode === "scheduler") {
+    if (sidebarResetBtn) {
+      sidebarResetBtn.disabled = false;
+    }
+    if (sidebarChatSend) {
+      sidebarChatSend.disabled = schedulerChatState.sending;
+    }
+    if (sidebarPauseBtn) {
+      sidebarPauseBtn.setAttribute("aria-pressed", "false");
+      sidebarPauseBtn.setAttribute("aria-label", "一時停止");
+      if (sidebarPauseSr) {
+        sidebarPauseSr.textContent = "一時停止";
+      }
+      if (sidebarPauseIcon) {
+        sidebarPauseIcon.innerHTML = ICON_PAUSE;
+      }
+      sidebarPauseBtn.disabled = true;
+    }
     return;
   }
 
@@ -1188,8 +1293,43 @@ async function sendIotChatMessage(text) {
   }
 }
 
+async function sendSchedulerChatMessage(text) {
+  if (!text || schedulerChatState.sending) return;
+  ensureSchedulerChatInitialized({ forceSidebar: currentChatMode === "scheduler" });
+  schedulerChatState.sending = true;
+  updateSidebarControlsForMode(currentChatMode);
+
+  const userMessage = pushSchedulerMessage("user", text);
+  const pending = pushSchedulerMessage("assistant", THINKING_MESSAGE_TEXT, { pending: true, addToHistory: false });
+  renderSchedulerChat({ forceSidebar: currentChatMode === "scheduler" });
+
+  try {
+    const payload = {
+      messages: schedulerChatState.history.map(entry => ({ role: entry.role, content: entry.content })),
+    };
+    const { data } = await schedulerAgentRequest("/api/chat", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    const reply = typeof data.reply === "string" ? data.reply.trim() : "";
+    pending.text = reply || "了解しました。";
+    pending.pending = false;
+    pending.ts = Date.now();
+    schedulerChatState.history.push({ role: "assistant", content: pending.text });
+  } catch (error) {
+    pending.text = `エラーが発生しました: ${error.message}`;
+    pending.pending = false;
+    pending.ts = Date.now();
+  } finally {
+    userMessage.ts = userMessage.ts || Date.now();
+    schedulerChatState.sending = false;
+    renderSchedulerChat({ forceSidebar: currentChatMode === "scheduler" });
+    updateSidebarControlsForMode(currentChatMode);
+  }
+}
+
 export function setChatMode(mode) {
-  if (!{"browser": true, "general": true, "iot": true, "orchestrator": true}[mode]) {
+  if (!{"browser": true, "general": true, "iot": true, "orchestrator": true, "scheduler": true}[mode]) {
     mode = "general";
   }
   if (currentChatMode !== mode) {
@@ -1201,6 +1341,9 @@ export function setChatMode(mode) {
   } else if (mode === "iot") {
     ensureIotChatInitialized({ forceSidebar: true });
     renderIotChat({ forceSidebar: true });
+  } else if (mode === "scheduler") {
+    ensureSchedulerChatInitialized({ forceSidebar: true });
+    renderSchedulerChat({ forceSidebar: true });
   } else if (mode === "orchestrator") {
     ensureOrchestratorInitialized({ forceSidebar: true });
     renderOrchestratorChat({ forceSidebar: true });
@@ -1669,6 +1812,11 @@ function handleGeneralProxyRender({ view }) {
     ensureIotChatInitialized({ forceSidebar: currentChatMode === "iot" });
     return;
   }
+  if (view === "schedule") {
+    ensureSchedulerAgentInitialized();
+    ensureSchedulerChatInitialized({ forceSidebar: currentChatMode === "scheduler" });
+    return;
+  }
   if (view === "chat") {
     ensureChatInitialized({ showLoadingSummary: true });
   }
@@ -1688,6 +1836,8 @@ if (chatForm) {
       await sendBrowserAgentPrompt(value, resolveBrowserPromptSendOptions());
     } else if (currentChatMode === "iot") {
       await sendIotChatMessage(value);
+    } else if (currentChatMode === "scheduler") {
+      await sendSchedulerChatMessage(value);
     } else if (currentChatMode === "orchestrator") {
       await handleGeneralModeSubmission(value);
     } else {
@@ -1707,6 +1857,8 @@ if (sidebarChatForm) {
       await sendBrowserAgentPrompt(value, resolveBrowserPromptSendOptions());
     } else if (currentChatMode === "iot") {
       await sendIotChatMessage(value);
+    } else if (currentChatMode === "scheduler") {
+      await sendSchedulerChatMessage(value);
     } else if (currentChatMode === "orchestrator") {
       await handleGeneralModeSubmission(value);
     } else {
@@ -1790,6 +1942,21 @@ if (sidebarResetBtn) {
       iotChatState.sending = false;
       iotChatState.paused = false;
       ensureIotChatInitialized({ forceSidebar: true });
+      updateSidebarControlsForMode(currentChatMode);
+      return;
+    }
+
+    if (currentChatMode === "scheduler") {
+      if (!confirm("Scheduler-Agent のチャット履歴をリセットしますか？")) return;
+      try {
+        await schedulerAgentRequest("/api/chat/history", { method: "DELETE" });
+      } catch (error) {
+        alert(`チャット履歴のリセットに失敗しました: ${error.message}`);
+      }
+      schedulerChatState.messages = [];
+      schedulerChatState.history = [];
+      schedulerChatState.sending = false;
+      ensureSchedulerChatInitialized({ forceSidebar: true });
       updateSidebarControlsForMode(currentChatMode);
       return;
     }

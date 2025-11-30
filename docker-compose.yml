@@ -7,6 +7,8 @@ services:
       LIFESTYLE_API_BASE: "http://lifestyle_agent:5000"
       BROWSER_AGENT_API_BASE: "http://browser-agent:5005"
       FLASK_DEBUG: "1"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - .:/app
     restart: unless-stopped

@@ -15,15 +15,18 @@ const statusMessage = $("#settingsStatusMessage");
 const agentToggleBrowser = $("#agentToggleBrowser");
 const agentToggleLifestyle = $("#agentToggleLifestyle");
 const agentToggleIot = $("#agentToggleIot");
+const agentToggleScheduler = $("#agentToggleScheduler");
 const modelSelectOrchestrator = $("#modelSelectOrchestrator");
 const modelSelectBrowser = $("#modelSelectBrowser");
 const modelSelectLifestyle = $("#modelSelectLifestyle");
 const modelSelectIot = $("#modelSelectIot");
+const modelSelectScheduler = $("#modelSelectScheduler");
 
 const agentToggleInputs = {
   browser: agentToggleBrowser,
   lifestyle: agentToggleLifestyle,
   iot: agentToggleIot,
+  scheduler: agentToggleScheduler,
 };
 
 const modelSelectInputs = {
@@ -31,12 +34,14 @@ const modelSelectInputs = {
   browser: modelSelectBrowser,
   lifestyle: modelSelectLifestyle,
   iot: modelSelectIot,
+  scheduler: modelSelectScheduler,
 };
 
 const DEFAULT_AGENT_CONNECTIONS = {
   browser: true,
   lifestyle: true,
   iot: true,
+  scheduler: true,
 };
 
 const state = {
@@ -174,6 +179,7 @@ async function fetchAgentConnections() {
     browser: source?.browser ?? DEFAULT_AGENT_CONNECTIONS.browser,
     lifestyle: source?.lifestyle ?? DEFAULT_AGENT_CONNECTIONS.lifestyle,
     iot: source?.iot ?? DEFAULT_AGENT_CONNECTIONS.iot,
+    scheduler: source?.scheduler ?? DEFAULT_AGENT_CONNECTIONS.scheduler,
   };
 }
 

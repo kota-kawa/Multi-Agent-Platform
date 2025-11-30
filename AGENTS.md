@@ -88,3 +88,6 @@
 - Extend the SPA mappings (`AGENT_TO_VIEW_MAP`, `GENERAL_PROXY_AGENT_LABELS`, etc.) plus any status text to surface the new agent’s activity.
 - Validate connectivity with `requests` helpers before exposing routes, log warnings instead of crashing, and avoid blocking Flask threads—use background threads like `_send_recent_history_to_agents` when broadcasting updates.
 - Whenever you change SSE payloads or Browser/IoT bridge contracts, update both backend helpers and `assets/app.js` handlers in the same commit to keep the UI responsive.
+
+## Critical Instruction / 重要指示
+どれだけ時間とコストをかけてもよいので、確実に目標が達成されるようにしてほしい。

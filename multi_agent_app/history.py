@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -11,10 +12,12 @@ from langchain_core.messages import SystemMessage
 from langchain_openai import ChatOpenAI
 
 from .browser import _call_browser_agent_chat, _call_browser_agent_history_check
-from .errors import BrowserAgentError, LifestyleAPIError, IotAgentError
+from .errors import BrowserAgentError, LifestyleAPIError, IotAgentError, SchedulerAgentError
 from .lifestyle import _call_lifestyle
 from .iot import _call_iot_agent_command, _call_iot_agent_conversation_review
+from .scheduler import _call_scheduler_agent_conversation_review
 from .settings import resolve_llm_config
+from .memory_manager import MemoryManager
 
 _browser_history_supported = True
 _memory_llm_instance: ChatOpenAI | None = None
@@ -84,26 +87,6 @@ def _get_memory_llm() -> ChatOpenAI | None:
     return _memory_llm_instance
 
 
-def _load_memory_from_file(path: str) -> str:
-    """Read a memory JSON file and return the stored string."""
-
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f).get("memory", "") or ""
-    except (FileNotFoundError, json.JSONDecodeError):
-        return ""
-
-
-def _save_memory_to_file(path: str, memory_text: str) -> None:
-    """Persist the memory text to disk."""
-
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"memory": memory_text}, f, ensure_ascii=False, indent=2)
-    except Exception as exc:  # noqa: BLE001
-        logging.warning("Failed to write memory to %s: %s", path, exc)
-
-
 def _extract_text(content: Any) -> str:
     """Normalise LangChain response content to text."""
 
@@ -120,6 +103,44 @@ def _extract_text(content: Any) -> str:
     return str(content)
 
 
+def _extract_json_payload(response_text: str) -> str:
+    """Pull JSON string out of a response, tolerating code fences."""
+
+    json_match = re.search(r"```(?:json)?\s*(.*?)\s*```", response_text, re.DOTALL)
+    if json_match:
+        return json_match.group(1)
+    return response_text
+
+
+def _coerce_memory_diff(response_text: str, memory_kind: str) -> dict[str, Any]:
+    """Ensure memory diffs are JSON objects, even if the LLM replied with text."""
+
+    json_str = _extract_json_payload(response_text)
+    try:
+        parsed = json.loads(json_str)
+    except json.JSONDecodeError:
+        logging.warning("Memory update (%s) returned non-JSON; wrapping raw text.", memory_kind)
+        return {"summary_text": response_text, "operations": []}
+
+    if not isinstance(parsed, dict):
+        logging.warning("Memory update (%s) returned JSON that is not an object; coercing.", memory_kind)
+        summary_text = (
+            parsed if isinstance(parsed, (str, int, float, bool)) else json.dumps(parsed, ensure_ascii=False)
+        )
+        return {"summary_text": str(summary_text), "operations": []}
+
+    summary_text = parsed.get("summary_text")
+    if not isinstance(summary_text, str):
+        summary_text = response_text
+    operations = parsed.get("operations")
+    if not isinstance(operations, list):
+        operations = []
+
+    parsed["summary_text"] = summary_text
+    parsed["operations"] = operations
+    return parsed
+
+
 def _format_history_lines(history: List[Dict[str, str]]) -> str:
     """Render recent history into numbered lines for prompting."""
 
@@ -133,25 +154,54 @@ def _format_history_lines(history: List[Dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def _build_memory_prompt(kind_label: str, existing_memory: str, recent_history: List[Dict[str, str]]) -> str:
-    """Craft a prompt that reconciles existing memory with the latest chat."""
+def _build_memory_prompt(kind_label: str, current_memory: Dict[str, Any], recent_history: List[Dict[str, str]]) -> str:
+    """Craft a prompt that reconciles existing memory with the latest chat, requesting JSON diffs."""
 
     history_text = _format_history_lines(recent_history)
-    existing = existing_memory.strip() or "（これまでのメモなし）"
+    # Serialize existing memory to JSON for the prompt, ensuring it's readable
+    memory_json = json.dumps(current_memory, ensure_ascii=False, indent=2)
+
     return f"""
 あなたはユーザーに関する{kind_label}を更新する担当です。
+現在保持している記憶データと、直近の会話履歴をもとに、記憶の更新差分（JSON）を作成してください。
 
-- 直近の会話から得られた事実と既存のメモを照らし合わせ、必要な部分だけを上書き・追記してください。
-- 違う内容に更新する場合は「古い情報 -> 新しい情報」のように矢印で差分が分かる形で書き換えてください（例: サッカーが好き -> 野球が好き）。
-- 変更不要な情報はそのまま残してください。新しい情報のみの追加も歓迎です。
-- 箇条書きで簡潔に記述し、JSON などのラッピングは不要です。
-- 情報が不明になった場合は「元の情報 -> 不明」など、状態が変わったことが分かる形で残してください。
+### 現在の記憶データ
+```json
+{memory_json}
+```
 
-現在のメモ:
-{existing}
-
-直近の会話履歴（新しい順ではありません）:
+### 直近の会話履歴
 {history_text}
+
+### 指示
+1. **summary_textの更新**: 
+   - 会話の全体的な要約を更新してください。古い情報を保持しつつ、新しい文脈を反映してください。
+2. **スロット（slots）の更新**:
+   - ユーザーの属性、好み、現在の状態、計画などの重要な事実を抽出してスロットに入れてください。
+   - 既存のスロットの値が変わった場合は更新してください。
+   - **重要な変更**（好みの変化、決定事項の変更など）の場合、`log_change: true` とし、`reason`（理由）を記述してください。些細な更新では `false` にしてください。
+   - 新しい事実が見つかった場合、新しい `slot_id` でスロットを追加してください。その際、`label`（日本語のラベル）と `category`（カテゴリ）も推測して指定してください。
+3. **出力形式**:
+   - **JSON形式のみ**を出力してください。Markdownのコードブロック（```json ... ```）で囲んでください。
+   - 以下のスキーマに従ってください:
+
+```json
+{{
+  "summary_text": "更新後の要約テキスト",
+  "operations": [
+    {{
+      "op": "set_slot",
+      "slot_id": "unique_id_string",
+      "value": "値（文字列、数値など）",
+      "log_change": true,
+      "reason": "変更の理由（log_changeがtrueの場合必須）",
+      "label": "表示用ラベル（新規作成時必須）",
+      "category": "travel/food/work/etc（新規作成時必須）",
+      "confidence": 0.9
+    }}
+  ]
+}}
+```
 """.strip()
 
 
@@ -180,21 +230,20 @@ def _refresh_memory(memory_kind: str, recent_history: List[Dict[str, str]]) -> N
         memory_path = "long_term_memory.json"
         label = "長期記憶"
 
-    existing_memory = _load_memory_from_file(memory_path)
-    prompt = _build_memory_prompt(label, existing_memory, normalized_history)
+    manager = MemoryManager(memory_path)
+    current_memory = manager.load_memory()
+    
+    prompt = _build_memory_prompt(label, current_memory, normalized_history)
 
     try:
         response = llm.invoke([SystemMessage(content=prompt)])
-        updated_memory = _extract_text(response.content).strip()
+        response_text = _extract_text(response.content).strip()
+
+        diff = _coerce_memory_diff(response_text, memory_kind)
+        manager.apply_diff(diff)
     except Exception as exc:  # noqa: BLE001
         logging.warning("Memory update (%s) failed: %s", memory_kind, exc)
         return
-
-    if not updated_memory:
-        logging.info("Memory update (%s) produced empty output; skipping save.", memory_kind)
-        return
-
-    _save_memory_to_file(memory_path, updated_memory)
 
 
 def _handle_agent_responses(
@@ -254,6 +303,18 @@ def _handle_agent_responses(
                     "description": question.strip(),
                 }
             )
+
+    scheduler_response = responses.get("Scheduler")
+    if isinstance(scheduler_response, dict):
+        action_taken = scheduler_response.get("action_taken")
+        results = scheduler_response.get("results") if isinstance(scheduler_response.get("results"), list) else []
+        if action_taken and results:
+            summary = "; ".join(str(item) for item in results if item)
+            if summary:
+                _append_agent_reply("Scheduler", f"スケジュールを更新しました: {summary}")
+                had_reply = True
+        had_reply = _extract_reply("Scheduler", scheduler_response) or had_reply
+        response_order.append("Scheduler")
 
     if response_order:
         # Keep action handling order aligned with agent response order.
@@ -359,6 +420,14 @@ def _send_recent_history_to_agents(history: List[Dict[str, str]]) -> None:
         response_order.append("IoT")
     except IotAgentError as e:
         logging.warning("Error sending history to iot agent: %s", e)
+
+    try:
+        scheduler_response = _call_scheduler_agent_conversation_review(normalized_history)
+        responses["Scheduler"] = scheduler_response if isinstance(scheduler_response, dict) else {}
+        had_reply = _extract_reply("Scheduler", scheduler_response) or had_reply
+        response_order.append("Scheduler")
+    except SchedulerAgentError as e:
+        logging.warning("Error sending history to scheduler agent: %s", e)
 
     _handle_agent_responses(responses, normalized_history, had_reply, response_order)
 

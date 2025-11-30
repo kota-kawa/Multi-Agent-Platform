@@ -1,0 +1,43 @@
+{% extends "scheduler_layout.html" %}
+
+{% block content %}
+<div class="mb-4">
+    <a href="{{ url_for('multi_agent_app.scheduler_index') }}" class="text-decoration-none text-muted hover-primary">
+        <i class="bi bi-arrow-left me-1"></i> カレンダーに戻る
+    </a>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        
+        <!-- Add Custom Task Section -->
+        <div class="card shadow-sm border-0 mb-4">
+            <div class="card-body">
+                <h6 class="text-muted mb-3">個別タスクを追加</h6>
+                <form method="POST" action="{{ url_for('multi_agent_app.scheduler_day_view', date_str=date.strftime('%Y-%m-%d')) }}" class="row g-2 align-items-end">
+                    <div class="col-7">
+                        <input type="text" class="form-control" name="custom_name" placeholder="タスク名" required>
+                    </div>
+                    <div class="col-3">
+                        <input type="time" class="form-control" name="custom_time" value="09:00">
+                    </div>
+                    <div class="col-2">
+                        <button type="submit" name="add_custom_task" class="btn btn-outline-primary w-100">
+                            <i class="bi bi-plus-lg"></i>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Main Schedule Card -->
+        {% include 'scheduler_timeline_partial.html' %}
+
+        <!-- Daily Log Card -->
+        <div id="daily-log-wrapper">
+            {% include 'scheduler_log_partial.html' with context %}
+        </div>
+
+    </div>
+</div>
+{% endblock %}

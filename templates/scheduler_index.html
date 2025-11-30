@@ -1,0 +1,40 @@
+{% extends "scheduler_layout.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="mb-0">{{ year }}年 {{ month }}月</h2>
+        <p class="text-muted">ルーチンの概要</p>
+    </div>
+    <div class="btn-group shadow-sm" role="group">
+        {% set prev_month = month - 1 %}
+        {% set prev_year = year %}
+        {% if prev_month < 1 %}
+            {% set prev_month = 12 %}
+            {% set prev_year = year - 1 %}
+        {% endif %}
+        
+        {% set next_month = month + 1 %}
+        {% set next_year = year %}
+        {% if next_month > 12 %}
+            {% set next_month = 1 %}
+            {% set next_year = year + 1 %}
+        {% endif %}
+        
+        <a href="{{ url_for('multi_agent_app.scheduler_index', year=prev_year, month=prev_month) }}" class="btn btn-light border"><i class="bi bi-chevron-left"></i></a>
+        <a href="{{ url_for('multi_agent_app.scheduler_index', year=next_year, month=next_month) }}" class="btn btn-light border"><i class="bi bi-chevron-right"></i></a>
+    </div>
+</div>
+
+<div class="calendar-header">
+    <div>月</div>
+    <div>火</div>
+    <div>水</div>
+    <div>木</div>
+    <div>金</div>
+    <div>土</div>
+    <div class="text-danger">日</div>
+</div>
+
+{% include 'scheduler_calendar_partial.html' %}
+{% endblock %}
