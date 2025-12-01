@@ -48,6 +48,7 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "models": [
             {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash"},
+            {"id": "gemini-2.5-flash-lite", "label": "Gemini 2.5 Flash-Lite"},
             {"id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro"},
             {"id": "gemini-3-pro-preview", "label": "Gemini 3 Pro Preview"},
         ],
