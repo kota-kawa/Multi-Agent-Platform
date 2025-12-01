@@ -1,39 +1,84 @@
-# バイナリファイルを無視
+# --- Python Standard ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- Virtual Environments ---
+# Using generic patterns to catch common venv names
+.venv
+.env
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# --- Flask ---
+instance/
+.webassets-cache
+
+# --- Distribution / Packaging ---
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# --- Environment Variables & Secrets ---
+.env
+.env.*
 *.env
-*.ini
-*.service
-*.sock
-*.exe
-*.dll
-*.json
-*.Identifier
-# ログファイルを無視
+secrets.env
+
+# --- Project Specific (Memory & Runtime State) ---
+chat_history.json
+short_term_memory.json
+long_term_memory.json
+*_memory.json
+
+# --- Logs ---
+*.log
 flask_output.log
+logs/
 
-*.cgi
-*.htaccess
-
-*.zip
-*.pptx
-*.txt
-!ads.txt
-!robots.txt
-!requirements.txt
-
-
-
-# OSやIDEの一時ファイルを無視
+# --- Operating System ---
 .DS_Store
 Thumbs.db
+Desktop.ini
+
+# --- IDE / Editor ---
+.idea/
 .vscode/
+*.swp
+*.swo
+*~
+*.sublime-workspace
+*.sublime-project
 
-logs/*
+# --- Docker ---
+docker-compose.override.yml
 
-
-
-
-# ビルドディレクトリを無視
-/build/
-__pycache__/.env
-__pycache__/
-*.pyc
+# --- Misc ---
+*.sock
+*.pot
+*.mo
