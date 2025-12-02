@@ -81,5 +81,8 @@ docker-compose.override.yml
 # --- Misc ---
 *.sock
 *.pot
+
+
 *.mo
 *.Identifier
+
