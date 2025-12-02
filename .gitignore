@@ -82,3 +82,4 @@ docker-compose.override.yml
 *.sock
 *.pot
 *.mo
+*.Identifier
