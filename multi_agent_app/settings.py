@@ -19,10 +19,10 @@ DEFAULT_AGENT_CONNECTIONS: Dict[str, bool] = {
 
 DEFAULT_MODEL_SELECTIONS: Dict[str, Dict[str, str]] = {
     "orchestrator": {"provider": "openai", "model": ORCHESTRATOR_MODEL, "base_url": ""},
-    "browser": {"provider": "openai", "model": "gpt-4.1", "base_url": ""},
-    "lifestyle": {"provider": "openai", "model": "gpt-4.1", "base_url": ""},
-    "iot": {"provider": "openai", "model": "gpt-4.1", "base_url": ""},
-    "scheduler": {"provider": "openai", "model": "gpt-4.1", "base_url": ""},
+    "browser": {"provider": "openai", "model": "gpt-5.1", "base_url": ""},
+    "lifestyle": {"provider": "openai", "model": "gpt-5.1", "base_url": ""},
+    "iot": {"provider": "openai", "model": "gpt-5.1", "base_url": ""},
+    "scheduler": {"provider": "openai", "model": "gpt-5.1", "base_url": ""},
 }
 
 DEFAULT_MEMORY_SETTINGS: Dict[str, bool] = {
@@ -36,9 +36,7 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "base_url_env": "OPENAI_BASE_URL",
         "default_base_url": None,
         "models": [
-            {"id": "gpt-4.1", "label": "GPT-4.1"},
             {"id": "gpt-5.1", "label": "GPT-5.1"},
-            {"id": "gpt-5-mini", "label": "GPT-5 mini"},
         ],
     },
     "gemini": {
@@ -47,9 +45,7 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "base_url_env": "GEMINI_API_BASE",
         "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "models": [
-            {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash"},
             {"id": "gemini-2.5-flash-lite", "label": "Gemini 2.5 Flash-Lite"},
-            {"id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro"},
             {"id": "gemini-3-pro-preview", "label": "Gemini 3 Pro Preview"},
         ],
     },
@@ -59,7 +55,6 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "base_url_env": "ANTHROPIC_API_BASE",
         "default_base_url": None,
         "models": [
-            {"id": "claude-sonnet-4-5", "label": "Claude Sonnet 4.5"},
             {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"},
             {"id": "claude-opus-4-5", "label": "Claude Opus 4.5"},
         ],
@@ -73,8 +68,6 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
             {"id": "llama-3.3-70b-versatile", "label": "Llama 3.3 70B (Groq)"},
             {"id": "llama-3.1-8b-instant", "label": "Llama 3.1 8B (Groq)"},
             {"id": "openai/gpt-oss-20b", "label": "GPT-OSS 20B (Groq)"},
-            {"id": "meta-llama/llama-4-maverick-17b-128e-instruct", "label": "Llama 4 Maverick 17B (Groq)"},
-            {"id": "moonshotai/kimi-k2-instruct-0905", "label": "Kimi K2 Instruct 0905 (Groq)"},
             {"id": "qwen/qwen3-32b", "label": "Qwen3 32B (Groq)"},
         ],
     },
