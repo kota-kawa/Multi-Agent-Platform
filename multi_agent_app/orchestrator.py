@@ -41,7 +41,7 @@ from .errors import (
 )
 from .lifestyle import _call_lifestyle
 from .history import _append_to_chat_history
-from .iot import _call_iot_agent_command
+from .iot import _call_iot_agent_command, _fetch_iot_device_context
 from .scheduler import _call_scheduler_agent_chat
 from .settings import load_agent_connections, resolve_llm_config, load_memory_settings
 from .memory_manager import MemoryManager
@@ -297,6 +297,13 @@ class MultiAgentOrchestrator:
         disabled_agents = [agent for agent, enabled in agent_connections.items() if not enabled]
         state["agent_connections"] = agent_connections
 
+        device_context: str | None = None
+        if agent_connections.get("iot"):
+            try:
+                device_context = _fetch_iot_device_context()
+            except Exception as exc:  # noqa: BLE001 - best-effort enrichment
+                logging.info("Failed to fetch IoT device context for planner prompt: %s", exc)
+
         memory_settings = load_memory_settings()
         memory_enabled = memory_settings.get("enabled", True)
         long_term_memory = ""
@@ -326,7 +333,7 @@ class MultiAgentOrchestrator:
         recent_history = history[-10:]
         history_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_history])
 
-        prompt = self._planner_prompt(enabled_agents, disabled_agents)
+        prompt = self._planner_prompt(enabled_agents, disabled_agents, device_context)
         if long_term_memory:
             prompt += "\n\nユーザーの特性:\n" + long_term_memory
         if short_term_memory:
@@ -446,7 +453,7 @@ class MultiAgentOrchestrator:
         logging.error(f"JSON Parse Failed. Raw output:\n{raw}")
         raise OrchestratorError("プラン応答の JSON 解析に失敗しました。")
 
-    def _planner_prompt(self, enabled_agents: List[str], disabled_agents: List[str]) -> str:
+    def _planner_prompt(self, enabled_agents: List[str], disabled_agents: List[str], device_context: str | None) -> str:
         prompt = self._PLANNER_PROMPT.format(
             max_tasks=ORCHESTRATOR_MAX_TASKS,
             current_datetime=_current_datetime_line(),
@@ -460,6 +467,8 @@ class MultiAgentOrchestrator:
             prompt += "。これらのエージェントを使うタスクは生成せず、必要なら他の手段で回答してください。"
         else:
             prompt += "\n\nすべてのエージェントが利用可能です。"
+        if device_context is not None:
+            prompt += "\n\n利用可能なIoTデバイス情報:\n" + (device_context or "No devices are currently registered.")
         return prompt
 
     def _normalise_tasks(self, raw_tasks: Any, *, allowed_agents: Iterable[str] | None = None) -> List[TaskSpec]:

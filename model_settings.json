@@ -1,0 +1,27 @@
+{
+  "orchestrator": {
+    "provider": "openai",
+    "model": "gpt-5.1",
+    "base_url": "https://api.groq.com/openai/v1"
+  },
+  "browser": {
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "base_url": "https://api.groq.com/openai/v1"
+  },
+  "lifestyle": {
+    "provider": "groq",
+    "model": "llama-3.3-70b-versatile",
+    "base_url": "https://api.groq.com/openai/v1"
+  },
+  "iot": {
+    "provider": "groq",
+    "model": "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "base_url": "https://api.groq.com/openai/v1"
+  },
+  "scheduler": {
+    "provider": "openai",
+    "model": "gpt-4.1",
+    "base_url": ""
+  }
+}

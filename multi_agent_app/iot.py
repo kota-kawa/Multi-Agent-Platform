@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import os
+import json
 import logging
+import os
+import time
 from typing import Any, Dict, List
 
 import requests
@@ -128,6 +130,133 @@ def _fetch_iot_model_selection() -> Dict[str, str] | None:
             continue
 
         return {"provider": provider, "model": model, "base_url": base_url}
+
+    return None
+
+
+def _format_device_context(devices: List[Dict[str, Any]]) -> str:
+    """Convert IoT Agent device payloads into a planner-friendly context block."""
+
+    if not devices:
+        return "No devices are currently registered."
+
+    def _format_timestamp(value: Any) -> str:
+        try:
+            return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(value)))
+        except Exception:  # noqa: BLE001 - defensive
+            return "-"
+
+    lines: list[str] = []
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        device_id = str(device.get("device_id") or "").strip() or "unknown-device"
+        lines.append(f"Device ID: {device_id}")
+
+        meta = device.get("meta") if isinstance(device.get("meta"), dict) else {}
+        display_name = meta.get("display_name")
+        if isinstance(display_name, str) and display_name.strip():
+            lines.append(f"  Friendly name: {display_name.strip()}")
+
+        role = meta.get("role") or meta.get("device_role")
+        if isinstance(role, str) and role.strip():
+            lines.append(f"  Role tag: {role.strip()}")
+
+        action_catalog = device.get("action_catalog") if isinstance(device.get("action_catalog"), list) else []
+        if action_catalog:
+            action_names = [
+                str(entry.get("name")).strip()
+                for entry in action_catalog
+                if isinstance(entry, dict) and entry.get("name")
+            ]
+            action_names = [name for name in action_names if name]
+            if action_names:
+                lines.append("  Agent predefined actions: " + ", ".join(action_names))
+
+        queue_depth = device.get("queue_depth")
+        if queue_depth is not None:
+            lines.append(f"  Queue depth: {queue_depth}")
+
+        registered_at = device.get("registered_at")
+        last_seen = device.get("last_seen")
+        if registered_at:
+            lines.append("  Registered at: " + _format_timestamp(registered_at))
+        if last_seen:
+            lines.append("  Last seen: " + _format_timestamp(last_seen))
+
+        capabilities = device.get("capabilities") if isinstance(device.get("capabilities"), list) else []
+        lines.append("  Capabilities:")
+        for capability in capabilities:
+            if not isinstance(capability, dict):
+                continue
+            name = str(capability.get("name") or "").strip()
+            if not name:
+                continue
+            description = str(capability.get("description") or "").strip()
+            params = capability.get("params") if isinstance(capability.get("params"), list) else []
+            if params:
+                param_desc = ", ".join(
+                    f"{param.get('name')} ({param.get('type', 'unknown')})"
+                    + (
+                        f" default={json.dumps(param.get('default'), ensure_ascii=False)}"
+                        if param.get("default") is not None
+                        else ""
+                    )
+                    for param in params
+                    if isinstance(param, dict) and param.get("name")
+                )
+            else:
+                param_desc = "no parameters"
+            if description:
+                lines.append(f"    - {name}: {description} | params: {param_desc}")
+            else:
+                lines.append(f"    - {name} | params: {param_desc}")
+
+        last_result = device.get("last_result")
+        if isinstance(last_result, dict) and last_result:
+            summary = {
+                "job_id": last_result.get("job_id"),
+                "ok": last_result.get("ok"),
+                "return_value": last_result.get("return_value"),
+            }
+            lines.append("  Most recent result: " + json.dumps(summary, ensure_ascii=False, default=str))
+
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+def _fetch_iot_device_context() -> str | None:
+    """Fetch device information from the IoT Agent for orchestrator prompts."""
+
+    bases = _iter_iot_agent_bases()
+    if not bases:
+        logging.info("IoT device context fetch skipped because no agent bases are configured.")
+        return None
+
+    for base in bases:
+        url = _build_iot_agent_url(base, "/api/devices")
+        try:
+            response = requests.get(url, timeout=IOT_AGENT_TIMEOUT)
+        except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
+            logging.info("IoT device context fetch attempt to %s skipped (%s)", url, exc)
+            continue
+
+        if not response.ok:
+            logging.info(
+                "IoT device context fetch attempt to %s failed: %s %s", url, response.status_code, response.text
+            )
+            continue
+
+        try:
+            payload = response.json()
+        except ValueError:
+            logging.info("IoT device context fetch attempt to %s returned invalid JSON", url)
+            continue
+
+        devices = payload.get("devices") if isinstance(payload, dict) else None
+        if isinstance(devices, list):
+            return _format_device_context(devices)
 
     return None
 
