@@ -67,7 +67,7 @@ DEFAULT_LIFESTYLE_BASES = (
     "http://lifestyle_agent:5000",
     "http://localhost:5000",
 )
-LIFESTYLE_TIMEOUT = float(os.environ.get("LIFESTYLE_AGENT_TIMEOUT", "30"))
+LIFESTYLE_TIMEOUT = float(os.environ.get("LIFESTYLE_AGENT_TIMEOUT", "120"))
 
 # Known upstream IoT Agent deployment that should be reachable from public environments.
 PUBLIC_IOT_AGENT_BASE = "https://iot-agent.project-kk.com"

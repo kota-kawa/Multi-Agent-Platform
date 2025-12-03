@@ -20,8 +20,8 @@
     "base_url": ""
   },
   "scheduler": {
-    "provider": "openai",
-    "model": "gpt-5.1",
-    "base_url": ""
+    "provider": "groq",
+    "model": "openai/gpt-oss-20b",
+    "base_url": "https://api.groq.com/openai/v1"
   }
 }

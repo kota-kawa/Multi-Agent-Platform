@@ -438,12 +438,13 @@ function prefixOrchestratorText(text) {
   if (typeof text !== "string") return "";
   const trimmed = text.trim();
   if (!trimmed) return "";
-  if (ORCHESTRATOR_LABEL_PATTERN.test(trimmed)) {
+  
+  // If it already has a label (starts with [...]), respect it.
+  if (/^\[[^\]]+\]/.test(trimmed)) {
     return trimmed;
   }
-  const withoutLeadingLabel = trimmed.replace(/^\[[^\]]+\]\s*/, "").trim();
-  const body = withoutLeadingLabel || trimmed;
-  return `${ORCHESTRATOR_SPEAKER_LABEL} ${body}`;
+
+  return `${ORCHESTRATOR_SPEAKER_LABEL} ${trimmed}`;
 }
 
 function getOrchestratorIntroMessage() {
