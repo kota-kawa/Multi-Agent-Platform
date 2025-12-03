@@ -230,12 +230,39 @@ def _post_scheduler_agent(path: str, payload: Dict[str, Any], *, method: str = "
 
 
 def _call_scheduler_agent_chat(command: str) -> Dict[str, Any]:
-    """Send a single-shot chat command to the Scheduler Agent."""
+    """Send a single-shot chat command to the Scheduler Agent using MCP."""
+    import asyncio
+    from mcp.client.session import ClientSession
+    from mcp.client.sse import sse_client
 
-    return _post_scheduler_agent(
-        "/api/chat",
-        {"messages": [{"role": "user", "content": command}]},
-    )
+    async def run_mcp():
+        base = _get_first_scheduler_agent_base()
+        if not base:
+             raise SchedulerAgentError("Scheduler Agent base URL is not configured.")
+        
+        sse_url = f"{base}/mcp/sse"
+        
+        async with sse_client(sse_url) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                
+                result = await session.call_tool(
+                    "manage_schedule",
+                    arguments={"instruction": command}
+                )
+                
+                text_content = ""
+                if result.content:
+                    for item in result.content:
+                        if item.type == "text":
+                            text_content += item.text
+                
+                return {"reply": text_content}
+
+    try:
+        return asyncio.run(run_mcp())
+    except Exception as e:
+        raise SchedulerAgentError(f"MCP Call failed: {e}")
 
 
 def _call_scheduler_agent_conversation_review(

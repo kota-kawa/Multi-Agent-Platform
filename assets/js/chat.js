@@ -337,6 +337,33 @@ async function* orchestratorRequest(message, { signal, view, logHistory } = {}) 
   }
 }
 
+const AGENT_ICONS = {
+  orchestrator: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z"/></svg>`, // Simple Abstract
+  browser: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-5 14H4v-4h11v4zm0-5H4V9h11v4zm5 5h-4V9h4v9z"/></svg>`,
+  iot: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 2h6v2h2v2h2v6h-2v2h-2v2h-6v-2H7v-2H5V6h2V4h2V2zm0 4v2H7v6h2v2h6v-2h2V8h-2V6H9z"/></svg>`,
+  scheduler: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11z"/></svg>`,
+  lifestyle: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>`,
+  user: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>`,
+  system: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M11 18h2v-2h-2v2zm1-16C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-14c-2.21 0-4 1.79-4 4h2c0-1.1.9-2 2-2s2 .9 2 2c0 2-3 1.75-3 5h2c0-2.25 3-2.5 3-5 0-2.21-1.79-4-4-4z"/></svg>`,
+  default: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>`
+};
+
+function getAgentIcon(name) {
+  const key = Object.keys(AGENT_ICONS).find(k => name.toLowerCase().includes(k)) || "default";
+  return AGENT_ICONS[key];
+}
+
+function formatMessageTime(ts) {
+  if (!ts) return "";
+  const date = new Date(ts);
+  const now = new Date();
+  const isToday = date.getDate() === now.getDate() && date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
+  
+  const timeStr = date.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+  if (isToday) return timeStr;
+  return `${date.getMonth() + 1}/${date.getDate()} ${timeStr}`;
+}
+
 function createMessageElement(message, { compact = false } = {}) {
   const el = document.createElement("div");
   const roleClass = message.role === "user" ? "user" : "system";
@@ -345,8 +372,30 @@ function createMessageElement(message, { compact = false } = {}) {
   if (message.role === "assistant") el.classList.add("assistant");
   if (message.pending) el.classList.add("pending");
 
-  const time = message.ts ? new Date(message.ts).toLocaleString("ja-JP") : "";
-  const text = message.text ?? "";
+  let text = message.text ?? "";
+  let agentName = message.role === "user" ? "User" : (message.role === "assistant" ? "Assistant" : "System");
+  let agentIcon = AGENT_ICONS.default;
+
+  // Parse agent label
+  if (message.role !== "user") {
+    const match = text.match(/^\[([^\]]+)\]\s*(.*)/s);
+    if (match) {
+      agentName = match[1];
+      text = match[2];
+    }
+    agentIcon = getAgentIcon(agentName);
+  } else {
+    agentIcon = AGENT_ICONS.user;
+  }
+  
+  // Normalize specific known names for cleaner display
+  if (agentName.toLowerCase().includes("orchestrator")) agentName = "Orchestrator";
+  else if (agentName.toLowerCase().includes("life-assistant")) agentName = "Life-Assistant";
+  else if (agentName.toLowerCase().includes("browser")) agentName = "Browser Agent";
+  else if (agentName.toLowerCase().includes("iot")) agentName = "IoT Agent";
+  else if (agentName.toLowerCase().includes("scheduler")) agentName = "Scheduler Agent";
+
+  const time = formatMessageTime(message.ts);
   const escapedText = escapeHTML(text);
 
   if (message.role === "assistant" && message.pending) {
@@ -364,10 +413,19 @@ function createMessageElement(message, { compact = false } = {}) {
     return el;
   }
 
+  // Rich message structure
   el.innerHTML = `
-      ${escapedText}
-      ${time ? `<span class="msg-time">${time}</span>` : ""}
-    `;
+    <div class="msg-inner">
+      <div class="msg-avatar" aria-hidden="true">${agentIcon}</div>
+      <div class="msg-content">
+        <div class="msg-header">
+          <span class="msg-sender">${agentName}</span>
+          <span class="msg-time">${time}</span>
+        </div>
+        <div class="msg-body">${escapedText}</div>
+      </div>
+    </div>
+  `;
   return el;
 }
 

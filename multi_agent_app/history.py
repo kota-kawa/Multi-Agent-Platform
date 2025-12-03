@@ -12,6 +12,7 @@ from langchain_core.messages import SystemMessage
 from langchain_openai import ChatOpenAI
 
 from .browser import _call_browser_agent_chat, _call_browser_agent_history_check
+from .config import _current_datetime_line
 from .errors import BrowserAgentError, LifestyleAPIError, IotAgentError, SchedulerAgentError
 from .lifestyle import _call_lifestyle
 from .iot import _call_iot_agent_command, _call_iot_agent_conversation_review
@@ -159,7 +160,12 @@ def _format_history_lines(history: List[Dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def _build_memory_prompt(kind_label: str, current_memory: Dict[str, Any], recent_history: List[Dict[str, str]]) -> str:
+def _build_memory_prompt(
+    kind_label: str,
+    current_memory: Dict[str, Any],
+    recent_history: List[Dict[str, str]],
+    current_datetime_str: str,
+) -> str:
     """Craft a prompt that reconciles existing memory with the latest chat, requesting JSON diffs."""
 
     history_text = _format_history_lines(recent_history)
@@ -167,8 +173,10 @@ def _build_memory_prompt(kind_label: str, current_memory: Dict[str, Any], recent
     memory_json = json.dumps(current_memory, ensure_ascii=False, indent=2)
 
     return f"""
-あなたはユーザーに関する{kind_label}を更新する担当です。
-現在保持している記憶データと、直近の会話履歴をもとに、記憶の更新差分（JSON）を作成してください。
+現在の日時: {current_datetime_str}
+
+あなたはユーザーに関する{kind_label}を更新する専門のエージェントです。
+提供された「現在の記憶データ」と「直近の会話履歴」を分析し、記憶の更新差分（JSON）を作成してください。
 
 ### 現在の記憶データ
 ```json
@@ -179,16 +187,52 @@ def _build_memory_prompt(kind_label: str, current_memory: Dict[str, Any], recent
 {history_text}
 
 ### 指示
-1. **summary_textの更新**: 
-   - 会話の全体的な要約を更新してください。古い情報を保持しつつ、新しい文脈を反映してください。
-2. **スロット（slots）の更新**:
-   - ユーザーの属性、好み、現在の状態、計画などの重要な事実を抽出してスロットに入れてください。
-   - 既存のスロットの値が変わった場合は更新してください。
-   - **重要な変更**（好みの変化、決定事項の変更など）の場合、`log_change: true` とし、`reason`（理由）を記述してください。些細な更新では `false` にしてください。
-   - 新しい事実が見つかった場合、新しい `slot_id` でスロットを追加してください。その際、`label`（日本語のラベル）と `category`（カテゴリ）も推測して指定してください。
-3. **出力形式**:
-   - **JSON形式のみ**を出力してください。Markdownのコードブロック（```json ... ```）で囲んでください。
-   - 以下のスキーマに従ってください:
+
+#### 1. summary_text (要約) の更新
+- 会話の文脈を取り込み、全体的な要約を更新してください。
+- **具体例**: "ユーザーは旅行が好き" → "ユーザーは国内旅行が好きで、次は北海道を計画している"。
+- **否定指示**: 些細な挨拶や一時的な感情（「今日は疲れた」など）だけで要約を上書きしないでください。重要な文脈のみを追加・更新してください。
+
+#### 2. スロット (slots) の更新ルール
+会話からユーザーに関する「事実」を抽出してスロットに保存します。
+
+- **相対日時の絶対化**:
+  - 「明日」「来週」などの表現は、現在日時 ({current_datetime_str}) を基準に絶対的な日付(YYYY-MM-DD)に変換して保存してください。
+  - 例: "来週の水曜日にジムに行く" (現在: 2025-10-20) → `2025-10-29` として保存。
+
+- **削除・訂正・無効化**:
+  - 以前の事実が否定されたり、無効になった場合（例: "もうタバコはやめた"）、`value` に `null` を設定してスロットを更新してください。
+
+- **データの正規化と配列化**:
+  - 表記ゆれを防ぐため、一般的な名称に正規化してください（例: "マック" → "マクドナルド"）。
+  - 複数の値を持つ可能性がある項目（趣味、好きな食べ物など）は、JSON配列 `["A", "B"]` で保存してください。
+
+- **プライバシー保護 (Security)**:
+  - **機密情報の除外**: パスワード、クレジットカード番号、APIキーなどの機密情報は**絶対にスロットに保存しないでください**。
+
+- **スロットIDの命名規則**:
+  - 英小文字とアンダースコアのみ使用 (`user_preference_food`, `user_profile_age` など)。
+  - `category_subcategory_item` の形式を推奨。
+
+- **カテゴリの限定**:
+  - 以下のいずれかを使用: `profile` (基本情報), `preference` (好み), `health` (健康), `work` (仕事), `hobby` (趣味), `plan` (計画), `relationship` (人間関係), `general` (その他)。
+
+- **信頼度スコア (confidence) のガイドライン**:
+  - `1.0`: ユーザーが明言した事実（例: "私は30歳です"）。
+  - `0.8`: 文脈から強く推測される（例: "毎朝コーヒーを飲む" → コーヒーが好き）。
+  - `0.5`: 不確実または一時的（例: "たぶん来週行くかも"）。
+
+- **変更検知の基準 (log_change)**:
+  - **重要な変更 (`true`)**: 好みの逆転（好き→嫌い）、居住地の変更、転職、長期計画の決定。
+  - **些細な変更 (`false`)**: 詳細の微修正、言い回しの変化。
+
+- **会話のコンテキスト認識**:
+  - **事実と仮定の区別**: "もし犬を飼うなら柴犬がいい" は `preference_pet_potential` として保存し、`user_has_pet` ではありません。
+  - **質問の除外**: ユーザーの質問（"天気はどう？"）自体を事実として保存しないでください。
+
+#### 3. 出力形式
+- **JSON形式のみ**を出力してください。Markdownのコードブロック（```json ... ```）で囲んでください。
+- 以下のスキーマに従ってください:
 
 ```json
 {{
@@ -196,12 +240,12 @@ def _build_memory_prompt(kind_label: str, current_memory: Dict[str, Any], recent
   "operations": [
     {{
       "op": "set_slot",
-      "slot_id": "unique_id_string",
-      "value": "値（文字列、数値など）",
+      "slot_id": "preference_food_ramen",
+      "value": "醤油ラーメン",
       "log_change": true,
-      "reason": "変更の理由（log_changeがtrueの場合必須）",
-      "label": "表示用ラベル（新規作成時必須）",
-      "category": "travel/food/work/etc（新規作成時必須）",
+      "reason": "以前は塩ラーメンが好きだったが、最近は醤油にはまっていると発言したため",
+      "label": "好きなラーメンの味",
+      "category": "preference",
       "confidence": 0.9
     }}
   ]
@@ -238,7 +282,8 @@ def _refresh_memory(memory_kind: str, recent_history: List[Dict[str, str]]) -> N
     manager = MemoryManager(memory_path)
     current_memory = manager.load_memory()
     
-    prompt = _build_memory_prompt(label, current_memory, normalized_history)
+    current_datetime_str = _current_datetime_line()
+    prompt = _build_memory_prompt(label, current_memory, normalized_history, current_datetime_str)
 
     try:
         response = llm.invoke([SystemMessage(content=prompt)])
