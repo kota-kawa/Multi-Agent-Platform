@@ -7,7 +7,7 @@
   "browser": {
     "provider": "openai",
     "model": "gpt-5.1",
-    "base_url": ""
+    "base_url": "https://api.groq.com/openai/v1"
   },
   "lifestyle": {
     "provider": "claude",
