@@ -420,18 +420,27 @@ def scheduler_calendar_partial():
 
     try:
         data = _fetch_calendar_data(year, month)
-    except ConnectionError as exc:
+        
+        if not isinstance(data, dict):
+             raise ValueError("Invalid response format")
+             
+        for week in data.get('calendar_data', []):
+            for day_data in week:
+                if 'date' in day_data and isinstance(day_data['date'], str):
+                    day_data['date'] = datetime.date.fromisoformat(day_data['date'])
+        
+        if 'today' in data and isinstance(data['today'], str):
+            data['today'] = datetime.date.fromisoformat(data['today'])
+        else:
+            data['today'] = datetime.date.today()
+            
+    except (ConnectionError, ValueError, KeyError, TypeError) as exc:
         logging.error("Failed to fetch calendar partial data: %s", exc)
-        return jsonify({"error": str(exc)}), 500
-    
-    for week in data['calendar_data']:
-        for day_data in week:
-            day_data['date'] = datetime.date.fromisoformat(day_data['date'])
-    data['today'] = datetime.date.fromisoformat(data['today'])
+        return jsonify({"error": str(exc)}), 502
     
     return render_template(
         "scheduler_calendar_partial.html",
-        calendar_data=data['calendar_data'],
+        calendar_data=data.get('calendar_data', []),
         today=data['today']
     )
 
@@ -448,15 +457,21 @@ def scheduler_day_view(date_str):
 
     try:
         data = _fetch_day_view_data(date_str)
-    except ConnectionError as exc:
+        
+        if not isinstance(data, dict):
+             raise ValueError("Invalid response format")
+
+        if 'date' in data and isinstance(data['date'], str):
+            data['date'] = datetime.date.fromisoformat(data['date'])
+        else:
+            raise KeyError("Response missing 'date'")
+
+    except (ConnectionError, ValueError, KeyError, TypeError) as exc:
         logging.error("Failed to fetch day view data for %s: %s", date_str, exc)
-        return jsonify({"error": str(exc)}), 500
-    
-    # Convert ISO format date string back to datetime.date object for Jinja
-    data['date'] = datetime.date.fromisoformat(data['date'])
+        return jsonify({"error": str(exc)}), 502
     
     # Convert timeline item dates if necessary (though they are usually just strings)
-    for item in data['timeline_items']:
+    for item in data.get('timeline_items', []):
         # Assuming 'log_memo' and 'is_done' might be None or boolean
         if item.get('log_memo') is None:
             item['log_memo'] = ""
@@ -466,22 +481,29 @@ def scheduler_day_view(date_str):
     return render_template(
         "scheduler_day.html",
         date=data['date'],
-        timeline_items=data['timeline_items'],
-        day_log={'content': data['day_log_content']} if data['day_log_content'] else None,
-        completion_rate=data['completion_rate']
+        timeline_items=data.get('timeline_items', []),
+        day_log={'content': data.get('day_log_content')} if data.get('day_log_content') else None,
+        completion_rate=data.get('completion_rate', 0)
     )
 
 @bp.route("/scheduler-ui/day/<date_str>/timeline")
 def scheduler_day_view_timeline(date_str):
     try:
         data = _fetch_day_view_data(date_str)
-    except ConnectionError as exc:
+
+        if not isinstance(data, dict):
+             raise ValueError("Invalid response format")
+             
+        if 'date' in data and isinstance(data['date'], str):
+            data['date'] = datetime.date.fromisoformat(data['date'])
+        else:
+             raise KeyError("Response missing 'date'")
+             
+    except (ConnectionError, ValueError, KeyError, TypeError) as exc:
         logging.error("Failed to fetch day view timeline data for %s: %s", date_str, exc)
-        return jsonify({"error": str(exc)}), 500
+        return jsonify({"error": str(exc)}), 502
     
-    data['date'] = datetime.date.fromisoformat(data['date'])
-    
-    for item in data['timeline_items']:
+    for item in data.get('timeline_items', []):
         if item.get('log_memo') is None:
             item['log_memo'] = ""
         if item.get('is_done') is None:
@@ -490,32 +512,36 @@ def scheduler_day_view_timeline(date_str):
     return render_template(
         "scheduler_timeline_partial.html",
         date=data['date'],
-        timeline_items=data['timeline_items'],
-        completion_rate=data['completion_rate']
+        timeline_items=data.get('timeline_items', []),
+        completion_rate=data.get('completion_rate', 0)
     )
 
 @bp.route("/scheduler-ui/day/<date_str>/log_partial")
 def scheduler_day_view_log_partial(date_str):
     try:
         data = _fetch_day_view_data(date_str)
-    except ConnectionError as exc:
+        if not isinstance(data, dict):
+             raise ValueError("Invalid response format")
+    except (ConnectionError, ValueError, KeyError, TypeError) as exc:
         logging.error("Failed to fetch day view log partial data for %s: %s", date_str, exc)
-        return jsonify({"error": str(exc)}), 500
+        return jsonify({"error": str(exc)}), 502
     
     return render_template(
         "scheduler_log_partial.html",
-        day_log={'content': data['day_log_content']} if data['day_log_content'] else None
+        day_log={'content': data.get('day_log_content')} if data.get('day_log_content') else None
     )
 
 @bp.route("/scheduler-ui/routines")
 def scheduler_routines_list():
     try:
         data = _fetch_routines_data()
-    except ConnectionError as exc:
+        if not isinstance(data, dict):
+             raise ValueError("Invalid response format")
+    except (ConnectionError, ValueError, KeyError, TypeError) as exc:
         logging.error("Failed to fetch routines data: %s", exc)
-        return jsonify({"error": str(exc)}), 500
+        return jsonify({"error": str(exc)}), 502
 
-    return render_template("scheduler_routines.html", routines=data['routines'])
+    return render_template("scheduler_routines.html", routines=data.get('routines', []))
 
 @bp.route("/")
 def serve_index() -> Any:

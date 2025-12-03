@@ -5,3 +5,4 @@ langchain-openai==0.1.7
 langchain-google-genai
 langchain-anthropic
 langchain-core==0.2.38
+mcp[cli]

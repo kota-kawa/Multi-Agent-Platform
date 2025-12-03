@@ -117,6 +117,8 @@ class MultiAgentOrchestrator:
         "scheduler": "Scheduler エージェント",
     }
 
+    _ORCHESTRATOR_LABEL = "[Orchestrator]"
+
     MAX_RETRIES = 2
 
     _REVIEWER_PROMPT = """
@@ -1058,6 +1060,19 @@ class MultiAgentOrchestrator:
 
         return lines[0]
 
+    @classmethod
+    def _prepend_orchestrator_label(cls, text: str) -> str:
+        """Ensure orchestrator-facing messages carry a consistent prefix."""
+
+        cleaned = text.strip() if isinstance(text, str) else ""
+        if not cleaned:
+            return ""
+        if cleaned.lower().startswith("[orchestrator]"):
+            return cleaned
+        stripped = re.sub(r"^\[[^\]]+\]\s*", "", cleaned).strip()
+        body = stripped or cleaned
+        return f"{cls._ORCHESTRATOR_LABEL} {body}"
+
     def _execution_result_text(self, result: ExecutionResult) -> str:
         agent_name = str(result.get("agent") or "agent")
         agent_label = self._AGENT_DISPLAY_NAMES.get(agent_name, agent_name)
@@ -1207,6 +1222,16 @@ class MultiAgentOrchestrator:
         plan_summary = state.get("plan_summary") or ""
         executions = state.get("executions") or []
         assistant_messages = self._format_assistant_messages(plan_summary, executions)
+        if log_history:
+            updated_messages = []
+            for message in assistant_messages:
+                text = str(message.get("text") or "")
+                # Only prepend [Orchestrator] label to Orchestrator's own messages (plan/status).
+                # Execution results already have their specific agent label (e.g. [Browser Agent]).
+                if message.get("type") in ("plan", "status"):
+                    text = self._prepend_orchestrator_label(text)
+                updated_messages.append({**message, "text": text})
+            assistant_messages = updated_messages
 
         if log_history:
             has_browser_execution = any(
@@ -1216,7 +1241,9 @@ class MultiAgentOrchestrator:
                 logged_browser_output = False
                 for result in reversed(executions):
                     if isinstance(result, dict) and result.get("agent") == "browser":
-                        _append_to_chat_history("assistant", self._execution_result_text(result))
+                        # Use the text directly to preserve [Browser Agent] label
+                        text = self._execution_result_text(result)
+                        _append_to_chat_history("assistant", text)
                         logged_browser_output = True
                         break
                 if not logged_browser_output:

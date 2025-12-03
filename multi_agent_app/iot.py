@@ -6,12 +6,18 @@ import json
 import logging
 import os
 import time
+import asyncio
 from typing import Any, Dict, List
 
 import requests
 from flask import Response, jsonify, request
+from mcp.client.sse import sse_client
+from mcp import ClientSession
 
 from .config import DEFAULT_IOT_AGENT_BASES, IOT_AGENT_TIMEOUT
+
+# Context fetch should be best-effort to avoid blocking orchestrator planning.
+IOT_DEVICE_CONTEXT_TIMEOUT = 5.0
 from .errors import IotAgentError
 
 
@@ -227,36 +233,53 @@ def _format_device_context(devices: List[Dict[str, Any]]) -> str:
 
 
 def _fetch_iot_device_context() -> str | None:
-    """Fetch device information from the IoT Agent for orchestrator prompts."""
+    """Fetch device information from the IoT Agent for orchestrator prompts using MCP."""
 
     bases = _iter_iot_agent_bases()
     if not bases:
         logging.info("IoT device context fetch skipped because no agent bases are configured.")
         return None
 
+    async def _fetch_via_mcp(base_url: str):
+        sse_url = _build_iot_agent_url(base_url, "/mcp/sse")
+        async with sse_client(sse_url, timeout=IOT_DEVICE_CONTEXT_TIMEOUT) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                resources_result = await session.list_resources()
+                devices = []
+                for res in resources_result.resources:
+                    try:
+                        content_result = await session.read_resource(res.uri)
+                        for content in content_result.contents:
+                            if hasattr(content, "text"):
+                                devices.append(json.loads(content.text))
+                    except Exception as e:
+                        logging.warning(f"Failed to read resource {res.uri}: {e}")
+                return devices
+
     for base in bases:
-        url = _build_iot_agent_url(base, "/api/devices")
+        # Try MCP first
         try:
-            response = requests.get(url, timeout=IOT_AGENT_TIMEOUT)
-        except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
-            logging.info("IoT device context fetch attempt to %s skipped (%s)", url, exc)
-            continue
-
-        if not response.ok:
-            logging.info(
-                "IoT device context fetch attempt to %s failed: %s %s", url, response.status_code, response.text
-            )
-            continue
-
-        try:
-            payload = response.json()
-        except ValueError:
-            logging.info("IoT device context fetch attempt to %s returned invalid JSON", url)
-            continue
-
-        devices = payload.get("devices") if isinstance(payload, dict) else None
-        if isinstance(devices, list):
-            return _format_device_context(devices)
+            # asyncio.run might fail if loop is running, but we are in sync Flask/LangGraph context usually
+            devices = asyncio.run(asyncio.wait_for(_fetch_via_mcp(base), timeout=IOT_DEVICE_CONTEXT_TIMEOUT))
+            if devices:
+                return _format_device_context(devices)
+        except Exception as exc:
+            logging.info("MCP device fetch failed for %s: %s. Falling back to HTTP API.", base, exc)
+            
+            # Fallback to Legacy HTTP API
+            url = _build_iot_agent_url(base, "/api/devices")
+            try:
+                response = requests.get(url, timeout=min(IOT_DEVICE_CONTEXT_TIMEOUT, IOT_AGENT_TIMEOUT))
+                if response.ok:
+                    payload = response.json()
+                    devices = payload.get("devices") if isinstance(payload, dict) else None
+                    if isinstance(devices, list):
+                        return _format_device_context(devices)
+            except requests.exceptions.Timeout:
+                logging.info("IoT device context fetch timed out for %s", url)
+            except Exception as exc:
+                logging.info("IoT device context fetch failed for %s: %s", url, exc)
 
     return None
 

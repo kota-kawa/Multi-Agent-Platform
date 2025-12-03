@@ -185,7 +185,10 @@ def _call_scheduler_agent(path: str, method: str = "GET", params: Dict[str, Any]
             timeout=(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT),
         )
         response.raise_for_status() # Raise an exception for HTTP errors
-        return response.json()
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise ConnectionError(f"Scheduler Agent at {url} returned invalid JSON") from exc
     except requests.exceptions.RequestException as exc:
         raise ConnectionError(f"Failed to call Scheduler Agent API at {url}: {exc}") from exc
 

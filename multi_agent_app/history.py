@@ -50,6 +50,11 @@ def _extract_reply(agent_label: str, response: Optional[Dict[str, str]]) -> bool
         _append_agent_reply(agent_label, reply.strip())
         return True
 
+    execution_reply = response.get("execution_reply") or ""
+    if isinstance(execution_reply, str) and execution_reply.strip():
+        _append_agent_reply(agent_label, execution_reply.strip())
+        return True
+
     # Allow agents to opt-in even without explicit flag if they provided text.
     if reply_is_meaningful:
         _append_agent_reply(agent_label, reply.strip())
@@ -275,9 +280,22 @@ def _handle_agent_responses(
 
     iot_response = responses.get("IoT")
     if isinstance(iot_response, dict):
-        action_required = iot_response.get("action_required")
-        device_commands = iot_response.get("device_commands") or []
-        if action_required and device_commands:
+        analysis = iot_response.get("analysis") if isinstance(iot_response.get("analysis"), dict) else {}
+        action_required = analysis.get("action_required") if isinstance(analysis, dict) else None
+        if action_required is None:
+            action_required = iot_response.get("action_required")
+        action_taken = bool(iot_response.get("action_taken"))
+
+        suggested_commands = analysis.get("suggested_device_commands") if isinstance(analysis, dict) else None
+        executed_commands = analysis.get("executed_commands") if isinstance(analysis, dict) else None
+        device_commands = suggested_commands or executed_commands or iot_response.get("device_commands") or []
+
+        execution_reply = iot_response.get("execution_reply")
+        if action_taken and isinstance(execution_reply, str) and execution_reply.strip():
+            _append_agent_reply("IoT", execution_reply.strip())
+            had_reply = True
+
+        if action_required and not action_taken and device_commands:
             commands_summary = "; ".join(
                 f"{cmd.get('name') or cmd.get('device_id')}: {cmd}"
                 for cmd in device_commands

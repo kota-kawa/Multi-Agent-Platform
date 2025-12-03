@@ -10,18 +10,18 @@
     "base_url": "https://api.groq.com/openai/v1"
   },
   "lifestyle": {
-    "provider": "groq",
-    "model": "llama-3.3-70b-versatile",
+    "provider": "claude",
+    "model": "claude-haiku-4-5",
     "base_url": "https://api.groq.com/openai/v1"
   },
   "iot": {
-    "provider": "groq",
-    "model": "meta-llama/llama-4-maverick-17b-128e-instruct",
-    "base_url": "https://api.groq.com/openai/v1"
+    "provider": "openai",
+    "model": "gpt-5.1",
+    "base_url": ""
   },
   "scheduler": {
     "provider": "openai",
-    "model": "gpt-4.1",
+    "model": "gpt-5.1",
     "base_url": ""
   }
 }

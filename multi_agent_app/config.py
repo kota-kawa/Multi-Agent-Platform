@@ -75,7 +75,7 @@ PUBLIC_IOT_AGENT_BASE = "https://iot-agent.project-kk.com"
 DEFAULT_IOT_AGENT_BASES = (
     PUBLIC_IOT_AGENT_BASE,
 )
-IOT_AGENT_TIMEOUT = float(os.environ.get("IOT_AGENT_TIMEOUT", "30"))
+IOT_AGENT_TIMEOUT = float(os.environ.get("IOT_AGENT_TIMEOUT", "60"))
 
 DEFAULT_SCHEDULER_AGENT_BASES = (
     # Local processes on the same host

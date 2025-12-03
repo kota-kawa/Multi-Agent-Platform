@@ -8,7 +8,7 @@ import {
   registerGeneralProxyRenderHook,
 } from "./layout.js";
 import { ensureIotDashboardInitialized, iotAgentRequest, summarizeIotDevices } from "./iot.js";
-import { schedulerAgentRequest } from "./scheduler.js";
+import { schedulerAgentRequest, ensureSchedulerAgentInitialized } from "./scheduler.js";
 
 /* ---------- Chat + Summarizer (Life-Assistant integration) ---------- */
 
@@ -48,6 +48,8 @@ const SUMMARY_PLACEHOLDER = "左側のチャットでメッセージを送信す
 const SUMMARY_LOADING_TEXT = THINKING_MESSAGE_TEXT;
 const INTRO_MESSAGE_TEXT = "ここは要約チャットです。左サイドバーの共通チャットからメッセージを送信すると重要なポイントをここに表示します。";
 const ORCHESTRATOR_INTRO_TEXT = "一般ビューではマルチエージェント・オーケストレーターがタスクを計画し、適切なエージェントに指示を送ります。共通チャットからリクエストを入力してください。";
+const ORCHESTRATOR_SPEAKER_LABEL = "[Orchestrator]";
+const ORCHESTRATOR_LABEL_PATTERN = /^\[orchestrator\]/i;
 
 const chatState = {
   messages: [],
@@ -432,10 +434,22 @@ function normalizeAssistantText(value) {
   return `${normalizedLabel || label.trim().toLowerCase()}:::${normalizedBody}`;
 }
 
+function prefixOrchestratorText(text) {
+  if (typeof text !== "string") return "";
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  if (ORCHESTRATOR_LABEL_PATTERN.test(trimmed)) {
+    return trimmed;
+  }
+  const withoutLeadingLabel = trimmed.replace(/^\[[^\]]+\]\s*/, "").trim();
+  const body = withoutLeadingLabel || trimmed;
+  return `${ORCHESTRATOR_SPEAKER_LABEL} ${body}`;
+}
+
 function getOrchestratorIntroMessage() {
   return {
     role: "assistant",
-    text: ORCHESTRATOR_INTRO_TEXT,
+    text: prefixOrchestratorText(ORCHESTRATOR_INTRO_TEXT),
     ts: Date.now(),
   };
 }
@@ -454,7 +468,11 @@ async function fetchChatHistory() {
       : records.map((item, index) => {
           const rawRole = typeof item?.role === "string" ? item.role.trim().toLowerCase() : "";
           const role = rawRole === "user" ? "user" : rawRole === "assistant" ? "assistant" : "system";
-          const text = typeof item?.content === "string" ? item.content : "";
+          const text = typeof item?.content === "string"
+            ? role === "assistant"
+              ? prefixOrchestratorText(item.content)
+              : item.content
+            : "";
           return { role, text, ts: now + index };
         });
 
@@ -539,6 +557,7 @@ function mirrorBrowserMessageToOrchestrator(message) {
 
   const label = ORCHESTRATOR_AGENT_LABELS.browser || "ブラウザエージェント";
   const formatted = `[${label}] ${text}`;
+  const prefixedFormatted = prefixOrchestratorText(formatted);
 
   const key =
     typeof message.id === "number"
@@ -554,11 +573,11 @@ function mirrorBrowserMessageToOrchestrator(message) {
   }
 
   if (target) {
-    target.text = formatted;
+    target.text = prefixedFormatted;
     target.pending = false;
     target.ts = Date.now();
   } else {
-    const appended = addOrchestratorAssistantMessage(formatted);
+    const appended = addOrchestratorAssistantMessage(prefixedFormatted);
     appended.pending = false;
     appended.ts = Date.now();
     target = appended;
@@ -590,7 +609,7 @@ function addOrchestratorUserMessage(text) {
 function addOrchestratorAssistantMessage(text, { pending = false } = {}) {
   const message = {
     role: "assistant",
-    text: text ?? "",
+    text: prefixOrchestratorText(text ?? ""),
     pending,
     ts: Date.now(),
   };
@@ -1511,7 +1530,7 @@ async function sendOrchestratorMessage(text) {
         } else {
           textValue = "計画を作成しました。タスクを実行します…";
         }
-        planMessage.text = textValue;
+        planMessage.text = prefixOrchestratorText(textValue);
         planMessage.pending = false;
         planMessage.ts = Date.now();
         renderOrchestratorChat({ forceSidebar: currentChatMode === "orchestrator" });
@@ -1622,7 +1641,7 @@ async function sendOrchestratorMessage(text) {
         const entry = taskIndex !== null ? ensureTaskEntry(taskIndex) : null;
         const existing = entry && entry.placeholder ? entry.placeholder : null;
         const targetMessage = existing || addOrchestratorAssistantMessage(finalText);
-        targetMessage.text = finalText;
+        targetMessage.text = prefixOrchestratorText(finalText);
         targetMessage.pending = false;
         targetMessage.ts = Date.now();
         moveOrchestratorMessageToEnd(targetMessage);
@@ -1644,7 +1663,7 @@ async function sendOrchestratorMessage(text) {
 
       if (eventType === "error") {
         const errorText = typeof eventData.error === "string" ? eventData.error : "エラーが発生しました。";
-        planMessage.text = `エラー: ${errorText}`;
+        planMessage.text = prefixOrchestratorText(`エラー: ${errorText}`);
         planMessage.pending = false;
         planMessage.ts = Date.now();
         orchestratorBrowserTaskActive = false;
@@ -1663,7 +1682,7 @@ async function sendOrchestratorMessage(text) {
           const firstText = typeof first?.text === "string" ? first.text.trim() : "";
           if (firstType === "plan" || firstType === "status") {
             if (firstText) {
-              planMessage.text = firstText;
+              planMessage.text = prefixOrchestratorText(firstText);
               planMessage.pending = false;
               planMessage.ts = planMessage.ts || Date.now();
             }
@@ -1678,13 +1697,14 @@ async function sendOrchestratorMessage(text) {
           remaining.forEach(entry => {
             const textValue = typeof entry?.text === "string" ? entry.text.trim() : "";
             if (!textValue) return;
-            const normalizedValue = normalizeAssistantText(textValue);
+            const prefixedValue = prefixOrchestratorText(textValue);
+            const normalizedValue = normalizeAssistantText(prefixedValue);
             if (!normalizedValue) return;
             const alreadyExists = orchestratorState.messages.some(
               message => message.role === "assistant" && normalizeAssistantText(message.text) === normalizedValue,
             );
             if (!alreadyExists) {
-              addOrchestratorAssistantMessage(textValue);
+              addOrchestratorAssistantMessage(prefixedValue);
             }
           });
         }
@@ -1701,7 +1721,7 @@ async function sendOrchestratorMessage(text) {
       }
     }
   } catch (error) {
-    planMessage.text = `エラー: ${error.message}`;
+    planMessage.text = prefixOrchestratorText(`エラー: ${error.message}`);
     planMessage.pending = false;
     planMessage.ts = Date.now();
     orchestratorBrowserTaskActive = false;
