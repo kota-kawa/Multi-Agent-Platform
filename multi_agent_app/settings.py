@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Iterable
 
 from .config import ORCHESTRATOR_MODEL
 
@@ -52,7 +52,9 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "claude": {
         "label": "Claude (Anthropic)",
         "api_key_env": "ANTHROPIC_API_KEY",
+        "api_key_env_aliases": ["CLAUDE_API_KEY"],
         "base_url_env": "ANTHROPIC_API_BASE",
+        "base_url_env_aliases": ["CLAUDE_API_BASE"],
         "default_base_url": None,
         "models": [
             {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"},
@@ -167,6 +169,22 @@ def _load_agent_env(agent: str) -> Dict[str, str]:
     if env_path:
         env.update(_read_env_file(env_path))
     return env
+
+
+def _pick_env_value(env: Dict[str, str], names: Iterable[str]) -> str | None:
+    """Return the first non-empty env value for the given list of names."""
+
+    for name in names:
+        if not name:
+            continue
+        for candidate in (name, name.lower()):
+            value = env.get(candidate)
+            if value is None:
+                continue
+            cleaned = str(value).strip()
+            if cleaned:
+                return cleaned
+    return None
 
 
 def _merge_model_selection(raw: Any) -> Dict[str, Dict[str, str]]:
@@ -290,14 +308,22 @@ def resolve_llm_config(agent: str) -> Dict[str, Any]:
 
     env = _load_agent_env(agent)
     api_key_name = provider_meta.get("api_key_env") or "OPENAI_API_KEY"
-    api_key = env.get(api_key_name) or env.get(api_key_name.lower())
+    api_key_aliases = provider_meta.get("api_key_env_aliases") or []
+    api_key = _pick_env_value(env, [api_key_name, *api_key_aliases])
     if not api_key:
-        raise ValueError(f"{api_key_name} を {agent} の secrets.env に設定してください。")
+        missing_key_hint = api_key_name
+        if api_key_aliases:
+            missing_key_hint = f"{api_key_name} または {', '.join(api_key_aliases)}"
+        raise ValueError(f"{missing_key_hint} を {agent} の secrets.env に設定してください。")
 
     base_url_env = provider_meta.get("base_url_env")
-    base_url = env.get(base_url_env, "").strip() if base_url_env else ""
-    if not base_url:
-        base_url = provider_meta.get("default_base_url")
+    base_url_aliases = provider_meta.get("base_url_env_aliases") or []
+    base_url_candidates: List[str] = []
+    if base_url_env:
+        base_url_candidates.append(base_url_env)
+    base_url_candidates.extend(base_url_aliases)
+
+    base_url = _pick_env_value(env, base_url_candidates) or provider_meta.get("default_base_url")
 
     key_fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
     return {

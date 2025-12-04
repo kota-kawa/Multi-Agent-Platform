@@ -513,6 +513,17 @@ function getOrchestratorIntroMessage() {
   };
 }
 
+let orchestratorPollingInterval = null;
+
+function startOrchestratorPolling() {
+  if (orchestratorPollingInterval) return;
+  orchestratorPollingInterval = setInterval(() => {
+    if (currentChatMode === "orchestrator" && !orchestratorState.sending) {
+      fetchChatHistory();
+    }
+  }, 3000);
+}
+
 async function fetchChatHistory() {
   try {
     const response = await fetch("/chat_history");
@@ -520,6 +531,14 @@ async function fetchChatHistory() {
       throw new Error("Failed to fetch chat history");
     }
     const history = await response.json();
+
+    // Check for updates to avoid unnecessary re-renders
+    const currentJson = JSON.stringify(history);
+    if (orchestratorState.lastHistoryJson === currentJson) {
+      return;
+    }
+    orchestratorState.lastHistoryJson = currentJson;
+
     const records = Array.isArray(history) ? history : [];
     const now = Date.now();
     const normalisedHistory = records.length === 0
@@ -654,6 +673,7 @@ export function ensureOrchestratorInitialized({ forceSidebar = false } = {}) {
   if (!orchestratorState.initialized) {
     orchestratorState.initialized = true;
     fetchChatHistory();
+    startOrchestratorPolling();
   }
   renderOrchestratorChat({ forceSidebar });
 }

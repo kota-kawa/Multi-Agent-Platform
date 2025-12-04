@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import queue
@@ -160,19 +161,20 @@ class MultiAgentOrchestrator:
         - エージェントで対応できない内容の場合もタスクを生成せず、plan_summary でその旨やユーザーへ伝えるべき情報を説明してください。
 - plan_summary やタスク説明では、ユーザーが求める具体的な内容を必ず書き切り、件数を指定された場合はその数ちょうどの候補を詳細（例: 献立名や理由）付きで提示してください。「〜を提案します」「〜を確認します」などの宣言だけで回答を終わらせてはいけません。
 - 実行予定の宣言だけで終わらないでください。「〜を実行します」「〜をします」「確認します」など未来形の宣言だけを書かず、必ず実際にタスクを作成して実行するか、タスクを作成しない場合はその理由とユーザーへの具体的な回答や追加質問を plan_summary に含めてください。
-- **最優先事項:** ユーザーの依頼が不明確または曖昧で、タスク実行に「絶対に必要な情報」が不足している場合は、いかなるタスクも生成してはいけません。代わりに、`plan_summary` を使って、不足している情報をユーザーに質問してください。
-    - **質問のルール:**
-      1. **詳細すぎないこと**: 些細な点はエージェントが常識的に判断して進めてください。ユーザーへの負担を最小限にしてください。
-      2. **必要最小限**: タスク実行に不可欠な情報（例: 「誰に」「何を」）のみを聞いてください。
-      3. **個数制限**: 1回のターンで質問する数は**最大3個**までとしてください。
-    - 質問例: 「宅配を予約するために、届け先の住所を教えていただけますか？」「電気を消すのは、リビングと寝室のどちらですか？」
+- **最優先事項（曖昧さへの対応）:**
+    - ユーザーの依頼が曖昧または情報不足であっても、可能な限りユーザーの意図や文脈を予測し、質問をせずにタスクを実行してください。「たぶんこういうことだろう」と合理的に推測できる場合は、その推測に基づいてエージェントへの命令を作成してください。
+    - 例: 「電気を消して」と言われたが場所が不明な場合 → 文脈から推測するか、家中の主要な電気を消すコマンドを発行するなど、気を利かせた対応をする。
+    - 例: 「いい感じのレストランを探して」 → 一般的な良店条件で検索を実行する。
+    - **例外（質問すべきケース）:**
+        - 物理的な配送や金銭的な取引など、取り返しがつかない操作において、住所や決済情報など**不可欠かつ推測不可能な重要情報**が欠落している場合に限り、`plan_summary` でユーザーに質問してください。
+        - 質問する場合も、必要最小限の項目（最大3つまで）に絞り、ユーザーの負担を減らしてください。
 - 上記の確認を経て、ユーザーの意図が完全に明確になった場合にのみ、エージェントのタスクを作成してください。最新情報や検証が必要な内容は、ブラウザやIoTなどの専門エージェントに任せてください。
 """
 
     _ACTIONABILITY_PROMPT = """
 あなたはマルチエージェント・オーケストレーターの安全管理者です。渡されたエージェント種別とコマンドが、そのまま実行できるだけの具体性を持っているか確認してください。
 
-- 対応できない、または情報不足なら、JSON で {{"status": "needs_info", "message": "<不足している情報や確認すべき点を簡潔に日本語で列挙。ユーザーに尋ねる具体的な質問を含める>"}} を返してください。
+- 対応できない、または情報不足なら、JSON で {{"status": "needs_info", "message": "<不足している情報や確認すべき点を簡潔に日本語で列挙。ユーザーに尋ねる具体的な質問を含める（最大3つまで）>"}} を返してください。
 - 十分に実行可能なら、JSON で {{"status": "ok"}} のみを返してください。
 - Markdown や箇条書き記号は使わず、文章だけで短く書いてください。
 - {agent_name} の役割: {agent_capability}
@@ -349,14 +351,20 @@ class MultiAgentOrchestrator:
         prompt += "\n\n以下は直近の会話履歴です:\n" + history_prompt
         messages = [SystemMessage(content=prompt), HumanMessage(content=user_input)]
 
-        try:
-            response = self._llm.invoke(messages)
-        except Exception as exc:  # noqa: BLE001
-            raise OrchestratorError(f"プラン生成に失敗しました: {exc}") from exc
-
-        raw_content = response.content
-        plan_text = self._extract_text(raw_content)
-        plan_data = self._parse_plan(plan_text)
+        plan_data = None
+        for attempt in range(3):
+            try:
+                response = self._llm.invoke(messages)
+                raw_content = response.content
+                plan_text = self._extract_text(raw_content)
+                plan_data = self._parse_plan(plan_text)
+                break
+            except Exception as exc:  # noqa: BLE001
+                logging.warning("Plan generation attempt %d failed: %s", attempt + 1, exc)
+                if attempt == 2:
+                    if isinstance(exc, OrchestratorError):
+                        raise exc
+                    raise OrchestratorError(f"プラン生成に失敗しました: {exc}") from exc
 
         raw_tasks = plan_data.get("tasks")
         tasks = self._normalise_tasks(raw_tasks, allowed_agents=enabled_agents)
@@ -1179,51 +1187,114 @@ class MultiAgentOrchestrator:
 
         yield self._event_payload("plan", state)
 
-        for index, task in enumerate(tasks):
-            state["current_index"] = index
-            yield self._event_payload("before_execution", state, task_index=index, task=task)
+        executions_map: Dict[int, ExecutionResult] = {}
+        event_queue: queue.Queue[Dict[str, Any]] = queue.Queue()
 
-            if task["agent"] == "browser":
-                yield self._event_payload("browser_init", state, task_index=index, task=task)
+        def task_worker(idx: int, task_spec: TaskSpec) -> None:
+            try:
+                # Notify start
+                # We pass a snapshot of state, but note executions list is currently empty/incomplete
+                event_queue.put({
+                    "kind": "event",
+                    "payload": self._event_payload("before_execution", state, task_index=idx, task=task_spec)
+                })
 
-            if task["agent"] == "browser":
                 result: ExecutionResult | None = None
-                for event in self._execute_browser_task_with_progress(task):
-                    event_type = event.get("type")
-                    if event_type == "progress":
-                        yield self._event_payload(
-                            "execution_progress",
-                            state,
-                            task_index=index,
-                            task=task,
-                            progress=event,
+
+                if task_spec["agent"] == "browser":
+                    event_queue.put({
+                        "kind": "event",
+                        "payload": self._event_payload("browser_init", state, task_index=idx, task=task_spec)
+                    })
+                    
+                    # Streaming browser execution
+                    for event in self._execute_browser_task_with_progress(task_spec):
+                        etype = event.get("type")
+                        if etype == "progress":
+                            event_queue.put({
+                                "kind": "event",
+                                "payload": self._event_payload(
+                                    "execution_progress", 
+                                    state, 
+                                    task_index=idx, 
+                                    task=task_spec, 
+                                    progress=event
+                                )
+                            })
+                        elif etype == "result":
+                            maybe_result = event.get("result")
+                            if isinstance(maybe_result, dict):
+                                result = cast(ExecutionResult, maybe_result)
+                    
+                    if result is None:
+                        result = self._browser_error_result(
+                            task_spec["command"],
+                            BrowserAgentError("ブラウザエージェントからの結果を取得できませんでした。"),
                         )
-                    elif event_type == "result":
-                        maybe_result = event.get("result")
-                        if isinstance(maybe_result, dict):
-                            result = cast(ExecutionResult, maybe_result)
-                if result is None:
-                    result = self._browser_error_result(
-                        task["command"],
-                        BrowserAgentError("ブラウザエージェントからの結果を取得できませんでした。"),
+                else:
+                    # Synchronous execution for other agents
+                    result = self._execute_task(task_spec)
+
+                executions_map[idx] = result
+                
+                event_queue.put({
+                    "kind": "event",
+                    "payload": self._event_payload(
+                        "after_execution", 
+                        state, 
+                        task_index=idx, 
+                        task=task_spec, 
+                        result=result
                     )
-            else:
-                result = self._execute_task(task)
+                })
 
-            executions = state.get("executions")
-            if not isinstance(executions, list):
-                executions = []
-                state["executions"] = executions
-            executions.append(result)
-            state["current_index"] = index + 1
+            except Exception as exc:  # noqa: BLE001
+                logging.exception("Task execution failed for index %d", idx)
+                error_result: ExecutionResult = {
+                    "agent": task_spec["agent"],
+                    "command": task_spec["command"],
+                    "status": "error",
+                    "error": str(exc),
+                    "response": None,
+                }
+                executions_map[idx] = error_result
+                event_queue.put({
+                    "kind": "event",
+                    "payload": self._event_payload(
+                        "after_execution", 
+                        state, 
+                        task_index=idx, 
+                        task=task_spec, 
+                        result=error_result
+                    )
+                })
+            finally:
+                event_queue.put({"kind": "done"})
 
-            yield self._event_payload(
-                "after_execution",
-                state,
-                task_index=index,
-                task=task,
-                result=result,
-            )
+        # Execute tasks in parallel
+        total_tasks = len(tasks)
+        if total_tasks > 0:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=total_tasks) as executor:
+                futures = [executor.submit(task_worker, i, t) for i, t in enumerate(tasks)]
+                
+                finished_count = 0
+                while finished_count < total_tasks:
+                    try:
+                        item = event_queue.get(timeout=0.1)
+                        if item["kind"] == "done":
+                            finished_count += 1
+                        elif item["kind"] == "event":
+                            yield item["payload"]
+                    except queue.Empty:
+                        continue
+        
+        # Reconstruct executions in order and update state
+        sorted_executions = []
+        for i in range(total_tasks):
+            sorted_executions.append(executions_map.get(i))
+        
+        state["executions"] = sorted_executions
+        state["current_index"] = total_tasks
 
         plan_summary = state.get("plan_summary") or ""
         executions = state.get("executions") or []
