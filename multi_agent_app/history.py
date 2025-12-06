@@ -379,7 +379,8 @@ def _handle_agent_responses(
             if summary:
                 _append_agent_reply("Scheduler", f"スケジュールを更新しました: {summary}")
                 had_reply = True
-        had_reply = _extract_reply("Scheduler", scheduler_response) or had_reply
+        # Note: _extract_reply for Scheduler is already called in _send_recent_history_to_agents,
+        # so we skip it here to avoid duplicate writes to chat_history.
         response_order.append("Scheduler")
 
     if response_order:
@@ -508,12 +509,14 @@ def _append_to_chat_history(role: str, content: str, *, broadcast: bool = True) 
                 history = json.load(f)
             except json.JSONDecodeError:
                 history = []
-            history.append({"role": role, "content": content})
+            next_id = len(history) + 1
+            history.append({"id": next_id, "role": role, "content": content})
             f.seek(0)
             json.dump(history, f, ensure_ascii=False, indent=2)
             f.truncate()
     except FileNotFoundError:
-        history = [{"role": role, "content": content}]
+        next_id = 1
+        history = [{"id": next_id, "role": role, "content": content}]
         with open("chat_history.json", "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
 
