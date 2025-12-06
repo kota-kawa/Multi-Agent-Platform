@@ -36,16 +36,20 @@ class ImportantChange(TypedDict):
     to_value: Any
     note: str
 
+# Category summaries store per-category text summaries
+CategorySummaries = Dict[str, str]
+
 class MemoryStore(TypedDict):
     type: str
     version: int
     last_updated: str
-    summary_text: str
+    summary_text: str  # Legacy field, kept for backwards compatibility
+    category_summaries: CategorySummaries  # New: per-category summaries
     slots: List[MemorySlot]
     important_changes: List[ImportantChange]
 
 class MemoryOperation(TypedDict, total=False):
-    op: str  # "set_slot"
+    op: str  # "set_slot" or "set_category_summary"
     slot_id: str
     value: Any
     log_change: bool
@@ -55,15 +59,33 @@ class MemoryOperation(TypedDict, total=False):
     category: str
     confidence: float
 
-class MemoryDiff(TypedDict):
-    summary_text: str
+class MemoryDiff(TypedDict, total=False):
+    summary_text: str  # Legacy field
+    category_summaries: CategorySummaries  # New: partial updates to category summaries
     operations: List[MemoryOperation]
+
+
+# Standard categories for memory organization
+MEMORY_CATEGORIES = [
+    "profile",       # 基本情報（年齢、職業、居住地など）
+    "preference",    # 好み（食べ物、趣味など）
+    "health",        # 健康情報
+    "work",          # 仕事・学業
+    "hobby",         # 趣味
+    "plan",          # 予定・計画
+    "relationship",  # 人間関係
+    "life",          # 生活習慣・エリア
+    "travel",        # 旅行
+    "food",          # 食事
+    "schedule",      # スケジュール
+    "general",       # その他
+]
 
 
 class MemoryManager:
     """Manages reading, writing, and updating structured memory files."""
 
-    VERSION = 1
+    VERSION = 2  # Bumped for category_summaries support
     TYPE = "chat_memory"
 
     def __init__(self, file_path: str):
@@ -94,6 +116,13 @@ class MemoryManager:
             data["important_changes"] = []
         if "summary_text" not in data:
             data["summary_text"] = ""
+        
+        # Migration: add category_summaries if missing
+        if "category_summaries" not in data:
+            data["category_summaries"] = {}
+            # Migrate summary_text to general category if it exists
+            if data.get("summary_text"):
+                data["category_summaries"]["general"] = data["summary_text"]
             
         return cast(MemoryStore, data)
 
@@ -110,22 +139,58 @@ class MemoryManager:
         """Apply a semantic diff (operations) to the current memory."""
         memory = self.load_memory()
         
-        # 1. Update summary
+        # 1. Update category summaries (new behavior)
+        new_category_summaries = diff.get("category_summaries")
+        if isinstance(new_category_summaries, dict):
+            for category, summary in new_category_summaries.items():
+                if isinstance(summary, str) and summary.strip():
+                    memory["category_summaries"][category] = summary.strip()
+        
+        # 2. Update legacy summary_text for backwards compatibility
         new_summary = diff.get("summary_text")
-        if new_summary:
+        if new_summary and isinstance(new_summary, str):
             memory["summary_text"] = new_summary
+            # Also update general category if no category_summaries provided
+            if not new_category_summaries:
+                memory["category_summaries"]["general"] = new_summary
 
-        # 2. Apply operations
+        # 3. Apply operations
         operations = diff.get("operations") or []
         for op in operations:
             op_type = op.get("op")
             if op_type == "set_slot":
                 self._apply_set_slot(memory, op)
+            elif op_type == "set_category_summary":
+                self._apply_set_category_summary(memory, op)
             else:
                 logging.warning(f"Unknown memory operation: {op_type}")
 
+        # 4. Regenerate summary_text from category summaries for legacy compatibility
+        self._sync_summary_text(memory)
+
         self.save_memory(memory)
         return memory
+    
+    def _apply_set_category_summary(self, memory: MemoryStore, op: MemoryOperation) -> None:
+        """Apply a category summary update operation."""
+        category = op.get("category")
+        value = op.get("value")
+        if category and isinstance(value, str) and value.strip():
+            memory["category_summaries"][category] = value.strip()
+    
+    def _sync_summary_text(self, memory: MemoryStore) -> None:
+        """Regenerate summary_text from category_summaries for legacy compatibility."""
+        if not memory.get("category_summaries"):
+            return
+        
+        parts = []
+        for category in MEMORY_CATEGORIES:
+            summary = memory["category_summaries"].get(category)
+            if summary:
+                parts.append(summary)
+        
+        if parts:
+            memory["summary_text"] = " ".join(parts)
 
     def _create_empty_memory(self) -> MemoryStore:
         return {
@@ -133,6 +198,7 @@ class MemoryManager:
             "version": self.VERSION,
             "last_updated": datetime.now().isoformat(),
             "summary_text": "",
+            "category_summaries": {},
             "slots": [],
             "important_changes": []
         }
@@ -143,10 +209,70 @@ class MemoryManager:
             "type": self.TYPE,
             "version": self.VERSION,
             "last_updated": datetime.now().isoformat(),
-            "summary_text": text, # Use the old text as summary
+            "summary_text": text,
+            "category_summaries": {"general": text} if text else {},
             "slots": [],
             "important_changes": []
         }
+
+    def get_formatted_memory(self) -> str:
+        """Get memory formatted for prompt injection, organized by category."""
+        memory = self.load_memory()
+        
+        # Group slots by category
+        slots_by_category: Dict[str, List[MemorySlot]] = {}
+        for slot in memory.get("slots", []):
+            category = slot.get("category", "general")
+            if category not in slots_by_category:
+                slots_by_category[category] = []
+            slots_by_category[category].append(slot)
+        
+        sections = []
+        
+        for category in MEMORY_CATEGORIES:
+            category_parts = []
+            
+            # Add category summary if exists
+            category_summary = memory.get("category_summaries", {}).get(category)
+            if category_summary:
+                category_parts.append(f"概要: {category_summary}")
+            
+            # Add slots for this category
+            category_slots = slots_by_category.get(category, [])
+            for slot in category_slots:
+                label = slot.get("label", slot.get("id", ""))
+                value = slot.get("current_value")
+                if value is not None:
+                    if isinstance(value, (dict, list)):
+                        value_str = json.dumps(value, ensure_ascii=False)
+                    else:
+                        value_str = str(value)
+                    category_parts.append(f"- {label}: {value_str}")
+            
+            if category_parts:
+                category_label = self._get_category_label(category)
+                section = f"【{category_label}】\n" + "\n".join(category_parts)
+                sections.append(section)
+        
+        return "\n\n".join(sections) if sections else ""
+    
+    def _get_category_label(self, category: str) -> str:
+        """Get Japanese label for category."""
+        labels = {
+            "profile": "基本情報",
+            "preference": "好み・嗜好",
+            "health": "健康",
+            "work": "仕事・学業",
+            "hobby": "趣味",
+            "plan": "予定・計画",
+            "relationship": "人間関係",
+            "life": "生活",
+            "travel": "旅行",
+            "food": "食事",
+            "schedule": "スケジュール",
+            "general": "その他",
+        }
+        return labels.get(category, category)
 
     def _apply_set_slot(self, memory: MemoryStore, op: MemoryOperation) -> None:
         slot_id = op.get("slot_id")

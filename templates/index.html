@@ -236,7 +236,7 @@
         <!-- 4) Scheduler Agent -->
         <section id="view-schedule" class="view" aria-label="Scheduler Agent">
           <div class="schedule-layout">
-            <div class="schedule-panel schedule-panel--calendar">
+            <div class="schedule-panel schedule-panel--calendar" id="schedulerCalendarPanel">
               <div class="section-header">
                 <div class="section-title">
                   <span class="section-icon" aria-hidden="true">
@@ -320,6 +320,26 @@
 
                 <div id="schedulerCalendarFallback" class="scheduler-fallback" hidden>
                   カレンダーを読み込めませんでした。Scheduler-Agent が起動しているか確認してください。
+                </div>
+              </div>
+            </div>
+
+            <!-- Day View Panel (appears when a date is clicked) -->
+            <div class="schedule-panel schedule-panel--day" id="schedulerDayPanel" hidden>
+              <div class="scheduler-day-view">
+                <div class="scheduler-day-view__header">
+                  <button id="schedulerDayBackBtn" class="btn subtle" type="button">
+                    <i class="bi bi-arrow-left me-1"></i> カレンダーに戻る
+                  </button>
+                </div>
+                <div class="scheduler-day-view__content" id="schedulerDayContent">
+                  <!-- Timeline and Log will be loaded here -->
+                  <div class="scheduler-day-view__loading">
+                    <div class="spinner-border text-primary" role="status">
+                      <span class="visually-hidden">読み込み中...</span>
+                    </div>
+                    <p>データを読み込んでいます...</p>
+                  </div>
                 </div>
               </div>
             </div>

@@ -33,7 +33,15 @@ def _append_agent_reply(agent_label: str, reply: str) -> None:
 
     safe_label = agent_label.strip() or "Agent"
     content = f"[{safe_label}] {reply}"
-    _append_to_chat_history("assistant", content, broadcast=False)
+    _append_to_chat_history(
+        "assistant",
+        content,
+        broadcast=False,
+        metadata={
+            "is_conversation_analysis": True,
+            "analysis_agent": safe_label,
+        },
+    )
 
 
 def _extract_reply(agent_label: str, response: Optional[Dict[str, str]]) -> bool:
@@ -126,23 +134,30 @@ def _coerce_memory_diff(response_text: str, memory_kind: str) -> dict[str, Any]:
         parsed = json.loads(json_str)
     except json.JSONDecodeError:
         logging.warning("Memory update (%s) returned non-JSON; wrapping raw text.", memory_kind)
-        return {"summary_text": response_text, "operations": []}
+        return {"category_summaries": {"general": response_text}, "operations": []}
 
     if not isinstance(parsed, dict):
         logging.warning("Memory update (%s) returned JSON that is not an object; coercing.", memory_kind)
         summary_text = (
             parsed if isinstance(parsed, (str, int, float, bool)) else json.dumps(parsed, ensure_ascii=False)
         )
-        return {"summary_text": str(summary_text), "operations": []}
+        return {"category_summaries": {"general": str(summary_text)}, "operations": []}
 
+    # Handle category_summaries (new format)
+    category_summaries = parsed.get("category_summaries")
+    if not isinstance(category_summaries, dict):
+        category_summaries = {}
+    
+    # Handle legacy summary_text for backwards compatibility
     summary_text = parsed.get("summary_text")
-    if not isinstance(summary_text, str):
-        summary_text = response_text
+    if isinstance(summary_text, str) and summary_text.strip() and not category_summaries:
+        category_summaries["general"] = summary_text
+    
     operations = parsed.get("operations")
     if not isinstance(operations, list):
         operations = []
 
-    parsed["summary_text"] = summary_text
+    parsed["category_summaries"] = category_summaries
     parsed["operations"] = operations
     return parsed
 
@@ -188,10 +203,28 @@ def _build_memory_prompt(
 
 ### 指示
 
-#### 1. summary_text (要約) の更新
-- 会話の文脈を取り込み、全体的な要約を更新してください。
-- **具体例**: "ユーザーは旅行が好き" → "ユーザーは国内旅行が好きで、次は北海道を計画している"。
-- **否定指示**: 些細な挨拶や一時的な感情（「今日は疲れた」など）だけで要約を上書きしないでください。重要な文脈のみを追加・更新してください。
+#### 1. カテゴリ別サマリー (category_summaries) の更新
+各カテゴリに該当する情報を、そのカテゴリのサマリーとして更新してください。
+**重要**: 各カテゴリのサマリーは独立して更新されるため、他のカテゴリの情報が失われることはありません。
+更新が必要なカテゴリのみを`category_summaries`に含めてください。
+
+利用可能なカテゴリ:
+- `profile`: 基本情報（年齢、職業、居住地など）
+- `preference`: 好み・嗜好（食べ物、趣味など）
+- `health`: 健康情報
+- `work`: 仕事・学業
+- `hobby`: 趣味
+- `plan`: 予定・計画
+- `relationship`: 人間関係
+- `life`: 生活習慣・エリア
+- `travel`: 旅行
+- `food`: 食事
+- `schedule`: スケジュール
+- `general`: その他
+
+**具体例**:
+- 「ラーメンは醤油が好き」→ `"preference": "醤油ラーメンが好き"`
+- 「来週京都に旅行」→ `"travel": "来週京都への旅行を計画中"`
 
 #### 2. スロット (slots) の更新ルール
 会話からユーザーに関する「事実」を抽出してスロットに保存します。
@@ -215,7 +248,7 @@ def _build_memory_prompt(
   - `category_subcategory_item` の形式を推奨。
 
 - **カテゴリの限定**:
-  - 以下のいずれかを使用: `profile` (基本情報), `preference` (好み), `health` (健康), `work` (仕事), `hobby` (趣味), `plan` (計画), `relationship` (人間関係), `general` (その他)。
+  - 以下のいずれかを使用: `profile` (基本情報), `preference` (好み), `health` (健康), `work` (仕事), `hobby` (趣味), `plan` (計画), `relationship` (人間関係), `life` (生活), `travel` (旅行), `food` (食事), `schedule` (スケジュール), `general` (その他)。
 
 - **信頼度スコア (confidence) のガイドライン**:
   - `1.0`: ユーザーが明言した事実（例: "私は30歳です"）。
@@ -236,7 +269,10 @@ def _build_memory_prompt(
 
 ```json
 {{
-  "summary_text": "更新後の要約テキスト",
+  "category_summaries": {{
+    "preference": "醤油ラーメンが好き。寿司も好む。",
+    "travel": "来週京都への旅行を計画中"
+  }},
   "operations": [
     {{
       "op": "set_slot",
@@ -499,10 +535,13 @@ def _send_recent_history_to_agents(history: List[Dict[str, str]]) -> None:
     _handle_agent_responses(responses, normalized_history, had_reply, response_order)
 
 
-def _append_to_chat_history(role: str, content: str, *, broadcast: bool = True) -> None:
+def _append_to_chat_history(
+    role: str, content: str, *, broadcast: bool = True, metadata: Optional[Dict[str, Any]] = None
+) -> None:
     """Append a message to the chat history file."""
 
     history: List[Dict[str, str]] = []
+    extras = metadata if isinstance(metadata, dict) else None
     try:
         with open("chat_history.json", "r+", encoding="utf-8") as f:
             try:
@@ -510,13 +549,25 @@ def _append_to_chat_history(role: str, content: str, *, broadcast: bool = True) 
             except json.JSONDecodeError:
                 history = []
             next_id = len(history) + 1
-            history.append({"id": next_id, "role": role, "content": content})
+            entry: Dict[str, Any] = {"id": next_id, "role": role, "content": content}
+            if extras:
+                for key, value in extras.items():
+                    if key in {"id", "role", "content"}:
+                        continue
+                    entry[key] = value
+            history.append(entry)
             f.seek(0)
             json.dump(history, f, ensure_ascii=False, indent=2)
             f.truncate()
     except FileNotFoundError:
         next_id = 1
-        history = [{"id": next_id, "role": role, "content": content}]
+        entry = {"id": next_id, "role": role, "content": content}
+        if extras:
+            for key, value in extras.items():
+                if key in {"id", "role", "content"}:
+                    continue
+                entry[key] = value
+        history = [entry]
         with open("chat_history.json", "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
 

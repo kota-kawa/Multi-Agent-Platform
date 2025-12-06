@@ -19,15 +19,19 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from .config import DEFAULT_IOT_AGENT_BASES, IOT_AGENT_TIMEOUT
+from .config import DEFAULT_IOT_AGENT_BASES, IOT_AGENT_TIMEOUT, PUBLIC_IOT_AGENT_BASE
 from .settings import resolve_llm_config
 
 # Context fetch should be best-effort to avoid blocking orchestrator planning.
 from .errors import IotAgentError
 
-IOT_DEVICE_CONTEXT_TIMEOUT = 5.0
+IOT_DEVICE_CONTEXT_TIMEOUT = float(os.environ.get("IOT_DEVICE_CONTEXT_TIMEOUT", "8.0"))
+IOT_MCP_SSE_TIMEOUT = float(os.environ.get("IOT_MCP_SSE_TIMEOUT", "15.0"))
+IOT_MCP_COMMAND_TIMEOUT = float(os.environ.get("IOT_MCP_COMMAND_TIMEOUT", "45.0"))
 _USE_IOT_AGENT_HISTORY_MCP = os.environ.get("IOT_AGENT_HISTORY_USE_MCP", "1").strip().lower() not in {"0", "false", "no", "off"}
 _IOT_AGENT_MCP_CONVERSATION_TOOL = os.environ.get("IOT_AGENT_MCP_CONVERSATION_TOOL", "analyze_conversation").strip() or "analyze_conversation"
+# Skip MCP for external HTTPS endpoints to avoid SSE connection issues
+_SKIP_MCP_FOR_EXTERNAL = os.environ.get("IOT_SKIP_MCP_FOR_EXTERNAL", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _iter_iot_agent_bases() -> list[str]:
@@ -58,6 +62,20 @@ def _build_iot_agent_url(base: str, path: str) -> str:
     if not path.startswith("/"):
         path = f"/{path}"
     return f"{base}{path}"
+
+
+def _is_external_endpoint(base: str) -> bool:
+    """Check if the endpoint is an external HTTPS endpoint (not localhost/docker)."""
+    if not base:
+        return False
+    normalized = base.lower()
+    # External endpoints typically use HTTPS and are not localhost/docker-internal
+    if normalized.startswith("https://"):
+        return True
+    # Check for public domain patterns
+    if "project-kk.com" in normalized:
+        return True
+    return False
 
 
 def _post_iot_agent(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -149,6 +167,35 @@ def _fetch_iot_model_selection() -> Dict[str, str] | None:
     return None
 
 
+def _count_iot_devices() -> int | None:
+    """Return the number of registered IoT devices, or None if unavailable."""
+
+    bases = _iter_iot_agent_bases()
+    if not bases:
+        return None
+
+    for base in bases:
+        url = _build_iot_agent_url(base, "/api/devices")
+        try:
+            response = requests.get(url, timeout=IOT_DEVICE_CONTEXT_TIMEOUT)
+        except requests.exceptions.RequestException:
+            continue
+
+        if not response.ok:
+            continue
+
+        try:
+            payload = response.json()
+        except ValueError:
+            continue
+
+        devices = payload.get("devices") if isinstance(payload, dict) else None
+        if isinstance(devices, list):
+            return len(devices)
+
+    return None
+
+
 def _format_device_context(devices: List[Dict[str, Any]]) -> str:
     """Convert IoT Agent device payloads into a planner-friendly context block."""
 
@@ -179,14 +226,32 @@ def _format_device_context(devices: List[Dict[str, Any]]) -> str:
 
         action_catalog = device.get("action_catalog") if isinstance(device.get("action_catalog"), list) else []
         if action_catalog:
-            action_names = [
-                str(entry.get("name")).strip()
-                for entry in action_catalog
-                if isinstance(entry, dict) and entry.get("name")
-            ]
-            action_names = [name for name in action_names if name]
-            if action_names:
-                lines.append("  Agent predefined actions: " + ", ".join(action_names))
+            lines.append("  Agent predefined actions:")
+            for entry in action_catalog:
+                if not isinstance(entry, dict):
+                    continue
+                name = str(entry.get("name") or "").strip()
+                if not name:
+                    continue
+                desc = str(entry.get("description") or "").strip()
+                params = entry.get("params") if isinstance(entry.get("params"), list) else []
+                if params:
+                    param_desc = ", ".join(
+                        f"{p.get('name')} ({p.get('type', 'unknown')})"
+                        + (
+                            f" default={json.dumps(p.get('default'), ensure_ascii=False)}"
+                            if p.get("default") is not None
+                            else ""
+                        )
+                        for p in params
+                        if isinstance(p, dict) and p.get("name")
+                    )
+                else:
+                    param_desc = "no parameters"
+                if desc:
+                    lines.append(f"    - {name}: {desc} | params: {param_desc}")
+                else:
+                    lines.append(f"    - {name} | params: {param_desc}")
 
         queue_depth = device.get("queue_depth")
         if queue_depth is not None:
@@ -242,7 +307,11 @@ def _format_device_context(devices: List[Dict[str, Any]]) -> str:
 
 
 def _fetch_iot_device_context() -> str | None:
-    """Fetch device information from the IoT Agent for orchestrator prompts using MCP."""
+    """Fetch device information from the IoT Agent for orchestrator prompts.
+    
+    For external HTTPS endpoints, directly use HTTP API to avoid SSE connection issues.
+    For local/docker endpoints, try MCP first with fallback to HTTP API.
+    """
 
     bases = _iter_iot_agent_bases()
     if not bases:
@@ -251,44 +320,86 @@ def _fetch_iot_device_context() -> str | None:
 
     async def _fetch_via_mcp(base_url: str):
         sse_url = _build_iot_agent_url(base_url, "/mcp/sse")
-        async with sse_client(sse_url, timeout=IOT_DEVICE_CONTEXT_TIMEOUT) as (read, write):
+        async with sse_client(sse_url, timeout=IOT_MCP_SSE_TIMEOUT) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                resources_result = await session.list_resources()
                 devices = []
+
+                # Prefer the aggregated MCP tool if available (more robust for multi-device setups)
+                try:
+                    tools_result = await session.list_tools()
+                    tool_names = [getattr(t, "name", "") for t in getattr(tools_result, "tools", None) or []]
+                    if "get_device_list" in tool_names:
+                        tool_res = await session.call_tool("get_device_list", {})
+                        for content in tool_res.contents:
+                            if hasattr(content, "text") and content.text:
+                                try:
+                                    parsed = json.loads(content.text)
+                                    if isinstance(parsed, list):
+                                        devices.extend(parsed)
+                                except json.JSONDecodeError:
+                                    logging.debug("Failed to parse get_device_list payload")
+                        if devices:
+                            return devices
+                except Exception as exc:  # noqa: BLE001 - best-effort
+                    logging.debug("MCP get_device_list failed for %s: %s", base_url, exc)
+
+                # Fallback: read per-device resources
+                try:
+                    resources_result = await session.list_resources()
+                except Exception as exc:  # noqa: BLE001
+                    logging.debug("MCP list_resources failed for %s: %s", base_url, exc)
+                    return []
+
                 for res in resources_result.resources:
                     try:
                         content_result = await session.read_resource(res.uri)
                         for content in content_result.contents:
-                            if hasattr(content, "text"):
+                            if hasattr(content, "text") and content.text:
                                 devices.append(json.loads(content.text))
-                    except Exception as e:
-                        logging.warning(f"Failed to read resource {res.uri}: {e}")
+                    except Exception as exc:
+                        logging.warning("Failed to read resource %s: %s", res.uri, exc)
                 return devices
 
-    for base in bases:
-        # Try MCP first
+    def _fetch_via_http(base_url: str) -> list | None:
+        """Fetch devices via HTTP API (more reliable for external endpoints)."""
+        url = _build_iot_agent_url(base_url, "/api/devices")
         try:
-            # asyncio.run might fail if loop is running, but we are in sync Flask/LangGraph context usually
-            devices = asyncio.run(asyncio.wait_for(_fetch_via_mcp(base), timeout=IOT_DEVICE_CONTEXT_TIMEOUT))
+            response = requests.get(url, timeout=IOT_DEVICE_CONTEXT_TIMEOUT)
+            if response.ok:
+                payload = response.json()
+                devices = payload.get("devices") if isinstance(payload, dict) else None
+                if isinstance(devices, list):
+                    return devices
+        except requests.exceptions.Timeout:
+            logging.debug("IoT device context fetch timed out for %s", url)
+        except requests.exceptions.RequestException as exc:
+            logging.debug("IoT device context fetch failed for %s: %s", url, exc)
+        return None
+
+    for base in bases:
+        is_external = _is_external_endpoint(base)
+        
+        # For external HTTPS endpoints, skip MCP and use HTTP directly
+        if is_external and _SKIP_MCP_FOR_EXTERNAL:
+            logging.debug("Using HTTP API for external IoT endpoint: %s", base)
+            devices = _fetch_via_http(base)
+            if devices:
+                return _format_device_context(devices)
+            continue
+        
+        # For local/docker endpoints, try MCP first with fallback to HTTP
+        try:
+            devices = asyncio.run(asyncio.wait_for(_fetch_via_mcp(base), timeout=IOT_MCP_SSE_TIMEOUT))
             if devices:
                 return _format_device_context(devices)
         except Exception as exc:
-            logging.info("MCP device fetch failed for %s: %s. Falling back to HTTP API.", base, exc)
+            logging.debug("MCP device fetch failed for %s: %s. Falling back to HTTP API.", base, exc)
             
-            # Fallback to Legacy HTTP API
-            url = _build_iot_agent_url(base, "/api/devices")
-            try:
-                response = requests.get(url, timeout=min(IOT_DEVICE_CONTEXT_TIMEOUT, IOT_AGENT_TIMEOUT))
-                if response.ok:
-                    payload = response.json()
-                    devices = payload.get("devices") if isinstance(payload, dict) else None
-                    if isinstance(devices, list):
-                        return _format_device_context(devices)
-            except requests.exceptions.Timeout:
-                logging.info("IoT device context fetch timed out for %s", url)
-            except Exception as exc:
-                logging.info("IoT device context fetch failed for %s: %s", url, exc)
+            # Fallback to HTTP API
+            devices = _fetch_via_http(base)
+            if devices:
+                return _format_device_context(devices)
 
     return None
 
@@ -336,7 +447,7 @@ async def _execute_via_mcp(command: str, base_url: str) -> Dict[str, Any]:
 
     sse_url = _build_iot_agent_url(base_url, "/mcp/sse")
 
-    async with sse_client(sse_url, timeout=30.0) as (read, write):
+    async with sse_client(sse_url, timeout=IOT_MCP_COMMAND_TIMEOUT) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
 
@@ -368,6 +479,12 @@ async def _execute_via_mcp(command: str, base_url: str) -> Dict[str, Any]:
             system_prompt = (
                 "You are an IoT assistant. You have access to the following tools to control devices. "
                 "Select the most appropriate tool and arguments to fulfill the user's request. "
+                "IMPORTANT RULES: "
+                "1. If the task uniquely maps to one device/command, execute immediately WITHOUT asking for clarification. "
+                "2. If only ONE device is registered, always use it without asking. "
+                "3. When the action is clear (e.g., 'ring buzzer', 'turn on LED', 'take photo'), execute immediately. "
+                "4. Use default values for missing parameters (e.g., duration=5.0 seconds). "
+                "5. Only ask for clarification when multiple devices have the SAME capability and you truly cannot infer which one to use. "
                 "If no tool is appropriate, reply with a message explaining why."
             )
 
@@ -425,8 +542,29 @@ def _execute_iot_agent_via_mcp_sync(command: str, base_url: str) -> Dict[str, An
         new_loop.close()
 
 
+def _execute_via_http_chat(command: str, base_url: str) -> Dict[str, Any]:
+    """Execute a command via the HTTP /api/chat endpoint (for external endpoints)."""
+    url = _build_iot_agent_url(base_url, "/api/chat")
+    try:
+        response = requests.post(
+            url,
+            json={"messages": [{"role": "user", "content": command}]},
+            timeout=IOT_AGENT_TIMEOUT,
+        )
+        if response.ok:
+            return response.json()
+        error_msg = response.text or f"{response.status_code} {response.reason}"
+        raise IotAgentError(f"HTTP API エラー: {error_msg}", status_code=response.status_code)
+    except requests.exceptions.RequestException as exc:
+        raise IotAgentError(f"HTTP API 接続エラー: {exc}") from exc
+
+
 def _call_iot_agent_command(command: str) -> Dict[str, Any]:
-    """Send a command to the IoT Agent using MCP (no legacy HTTP execution)."""
+    """Send a command to the IoT Agent.
+    
+    For external HTTPS endpoints, use HTTP API directly for reliability.
+    For local/docker endpoints, use MCP with fallback to HTTP API.
+    """
 
     bases = _iter_iot_agent_bases()
     if not bases:
@@ -434,12 +572,35 @@ def _call_iot_agent_command(command: str) -> Dict[str, Any]:
 
     errors: list[str] = []
     for base in bases:
+        is_external = _is_external_endpoint(base)
+        
+        # For external HTTPS endpoints, use HTTP API directly
+        if is_external and _SKIP_MCP_FOR_EXTERNAL:
+            logging.debug("Using HTTP API for external IoT command: %s", base)
+            try:
+                return _execute_via_http_chat(command, base)
+            except IotAgentError as exc:
+                message = f"{base} (HTTP): {exc}"
+                errors.append(message)
+                logging.warning("HTTP execution failed for %s: %s", base, exc)
+                continue
+        
+        # For local/docker endpoints, try MCP first
         try:
             return _execute_iot_agent_via_mcp_sync(command, base)
         except IotAgentError as exc:
-            message = f"{base}: {exc}"
+            message = f"{base} (MCP): {exc}"
             errors.append(message)
             logging.warning("MCP execution failed for %s: %s", base, exc)
+            
+            # Fallback to HTTP API for local endpoints too
+            if not is_external:
+                try:
+                    logging.debug("Falling back to HTTP API for %s", base)
+                    return _execute_via_http_chat(command, base)
+                except IotAgentError as http_exc:
+                    errors.append(f"{base} (HTTP fallback): {http_exc}")
+                    logging.warning("HTTP fallback failed for %s: %s", base, http_exc)
             continue
         except Exception as exc:  # pragma: no cover - defensive guard
             message = f"{base}: {exc}"
@@ -449,8 +610,7 @@ def _call_iot_agent_command(command: str) -> Dict[str, Any]:
 
     details = "\n".join(f"- {error}" for error in errors) if errors else "- 理由不明のエラー"
     raise IotAgentError(
-        "MCP 経由で IoT Agent コマンドを実行できませんでした。安全のため HTTP API にはフォールバックしませんでした。\n"
-        + details
+        "IoT Agent コマンドを実行できませんでした。\n" + details
     )
 
 
@@ -530,7 +690,10 @@ async def _call_iot_agent_conversation_review_async(
 def _call_iot_agent_conversation_review_via_mcp(
     conversation_history: List[Dict[str, str]],
 ) -> tuple[Dict[str, Any] | None, list[str]]:
-    """Best-effort MCP call for conversation review with fallback to HTTP."""
+    """Best-effort MCP call for conversation review with fallback to HTTP.
+    
+    For external HTTPS endpoints, skip MCP and return None to trigger HTTP fallback.
+    """
 
     errors: list[str] = []
 
@@ -542,6 +705,11 @@ def _call_iot_agent_conversation_review_via_mcp(
         return None, ["IoT Agent API の接続先が設定されていません。"]
 
     for base in bases:
+        # Skip MCP for external endpoints - let HTTP fallback handle it
+        if _is_external_endpoint(base) and _SKIP_MCP_FOR_EXTERNAL:
+            logging.debug("Skipping MCP for external endpoint %s in conversation review", base)
+            continue
+            
         try:
             try:
                 asyncio.get_running_loop()

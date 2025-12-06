@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import logging
 import queue
@@ -44,7 +43,7 @@ from .errors import (
 )
 from .lifestyle import _call_lifestyle
 from .history import _append_to_chat_history
-from .iot import _call_iot_agent_command, _fetch_iot_device_context
+from .iot import _call_iot_agent_command, _count_iot_devices, _fetch_iot_device_context
 from .scheduler import _call_scheduler_agent_chat
 from .settings import load_agent_connections, resolve_llm_config, load_memory_settings
 from .memory_manager import MemoryManager
@@ -149,10 +148,11 @@ class MultiAgentOrchestrator:
 あなたはマルチエージェントシステムのオーケストレーターです。与えられたユーザーの依頼を読み、実行すべきタスクを分析して下さい。
 
 - 利用可能なエージェント:
-  - "lifestyle"（Life-Styleエージェント）: 家庭内の出来事や料理、家電、人間関係に詳しい専門家エージェントで、IoTなどに対してナレッジベースに質問できます。
-  - "browser": ブラウザ自動化エージェントで Web を閲覧・操作できます。
-  - "iot": IoT エージェントを通じてデバイスの状態確認や操作ができます。
-  - "scheduler": Scheduler エージェントを通じて予定の確認やタスクの登録・更新ができます。
+  - "lifestyle"（Life-Styleエージェント）: 生活全般の相談やQ&Aを担当。レシピ提案、家電の使い方、雑談や助言などのナレッジ回答のみを行い、予定管理・日報更新・外部サービスへの記録は担当しません。
+  - "browser": ブラウザ自動化エージェント。Web検索/閲覧/フォーム入力/クリックなどの画面操作を行い、指定キーワードで最新情報を収集します。
+  - "iot": IoT エージェント。登録済みデバイスの状態確認や操作（LEDのオン/オフ、ブザー、モーター等）を実行します。
+  - "scheduler": Scheduler エージェント。予定やタスク、日報の確認・作成・更新・完了処理を担当し、スケジュールや日報への書き込みは必ずこのエージェントに任せます。
+    - ルーティング厳守: 日報作成/更新、予定登録・変更、リマインド設定などの「記録・予定管理」系は scheduler で行い、lifestyle には振り分けない。
 - 出力は JSON オブジェクトのみで、追加の説明やマークダウンを含めてはいけません。
 - JSON には必ず次のキーを含めてください:
   - "plan_summary": 実行方針を 1 文でまとめた文字列。
@@ -171,6 +171,17 @@ class MultiAgentOrchestrator:
         - 物理的な配送や金銭的な取引など、取り返しがつかない操作において、住所や決済情報など**不可欠かつ推測不可能な重要情報**が欠落している場合に限り、`plan_summary` でユーザーに質問してください。
         - 質問する場合も、必要最小限の項目（最大3つまで）に絞り、ユーザーの負担を減らしてください。
 - 上記の確認を経て、ユーザーの意図が完全に明確になった場合にのみ、エージェントのタスクを作成してください。最新情報や検証が必要な内容は、ブラウザやIoTなどの専門エージェントに任せてください。
+
+【タスク command を「具体的な依頼文」にするルール】
+- 曖昧な要約は不可。各 command は実行担当エージェントへの具体的な指示文にする（例: 「ブラウザで〇〇を検索し、公式サイトを開いて価格を1件抽出」）。
+- 必ず「対象」「操作」「必要パラメータ」を含める。足りない情報は文脈から合理的に補い、補った値も文中に明記する。
+- 命令形（〜して / 〜せよ）で書き、質問や確認の形では書かない。
+- デフォルト値を埋めて明示する（例: duration=5秒, 件数=3件など）。
+- agent別ヒント:
+  - browser: 目的のページ/検索キーワード/取得項目/件数を含める。結果の条件（例: 最新、公式、上位3件）を指示。
+  - iot: device_id を明示（1台のみならそのIDをセット）、実行コマンド名と引数（例: duration=5.0, pattern='notify'）を具体的に書く。
+  - scheduler: 日付・時刻・タイムゾーン前提（未指定なら今日/現在のTZ）を埋め、予定タイトル/日報タイトルと状態変更を明記。日報やタスクの登録・更新・完了は必ず scheduler に発行する。
+  - lifestyle: 質問内容や制約（人数・予算・時間帯など）を含め、要望の粒度を指定。日報や予定管理は担当しない。
 """
 
     _ACTIONABILITY_PROMPT = """
@@ -178,6 +189,9 @@ class MultiAgentOrchestrator:
 
 - 対応できない、または情報不足なら、JSON で {{"status": "needs_info", "message": "<不足している情報や確認すべき点を簡潔に日本語で列挙。ユーザーに尋ねる具体的な質問を含める（最大3つまで）>"}} を返してください。
 - 十分に実行可能なら、JSON で {{"status": "ok"}} のみを返してください。
+- **質問は「不可欠な情報が欠けている時のみ」。検索エンジン・カテゴリ・件数など推測できる要素はデフォルトを即採用し、質問はしない。**
+- ブラウザタスクのデフォルト: サイト未指定→Yahoo! JAPAN、ニュースカテゴリ不明→主要トピック、件数不明→3件、日本語で実行。Google指定は禁止（明示された場合のみ）。
+- 取り返しのつかない操作（購入/予約/決済/送金/ログイン/個人情報入力など）で必須情報が欠ける場合だけ needs_info にする。
 - Markdown や箇条書き記号は使わず、文章だけで短く書いてください。
 - {agent_name} の役割: {agent_capability}
 - 入力コマンド: {command}
@@ -185,10 +199,54 @@ class MultiAgentOrchestrator:
 
     _AGENT_CAPABILITIES = {
         "browser": "Web検索・フォーム入力・クリックなどのブラウザ操作。どのサイト/URLで何をするか、完了条件、入力値が必要。",
-        "lifestyle": "生活全般のQ&Aとレシピ/家電の相談。質問内容、制約（人数・予算・アレルギー・時間帯など）が明確であるほど良い。",
+        "lifestyle": "生活全般のQ&Aとレシピ/家電の相談を担当。予定管理や日報更新などの記録タスクは扱わない。",
         "iot": "登録済みデバイスの状態確認と操作。対象デバイス名/場所、希望する操作（オン/オフ・調整値）や時刻が必要。",
-        "scheduler": "予定やタスク、日報の確認・更新。いつ・何を・どの時間帯に追加/完了させるか、日付や内容を具体的に指示してください。",
+        "scheduler": "予定やタスク、日報の確認・作成・更新・完了処理を担当。いつ・何を・どの時間帯に追加/更新するかを具体的に指示してください。日報への書き込みもここで行う。",
     }
+
+    _IOT_ACTION_KEYWORDS = (
+        "buzzer",
+        "ブザー",
+        "鳴ら",
+        "led",
+        "ライト",
+        "点灯",
+        "消灯",
+        "モーター",
+        "サーボ",
+        "回して",
+        "カメラ",
+        "撮影",
+        "写真",
+        "demo",
+        "オン",
+        "オフ",
+    )
+    _BROWSER_RISK_KEYWORDS = (
+        "購入",
+        "注文",
+        "予約",
+        "決済",
+        "支払",
+        "支払い",
+        "送金",
+        "振込",
+        "課金",
+        "チャージ",
+        "申し込み",
+        "申込",
+        "契約",
+        "解約",
+        "登録",
+        "ログイン",
+        "サインイン",
+        "会員",
+        "クレジット",
+        "カード",
+        "個人情報",
+        "住所",
+        "電話番号",
+    )
 
     def __init__(self, llm_config: Dict[str, Any] | None = None) -> None:
         try:
@@ -299,7 +357,27 @@ class MultiAgentOrchestrator:
 
         return {"executions": executions, **state}
 
-    def _plan_node(self, state: OrchestratorState) -> OrchestratorState:
+    def _execution_context_for_prompt(self, executions: List[ExecutionResult]) -> str:
+        """Render completed execution results for the planner prompt."""
+
+        lines: list[str] = []
+        for idx, item in enumerate(executions, start=1):
+            agent = item.get("agent") or "agent"
+            agent_label = self._AGENT_DISPLAY_NAMES.get(agent, agent)
+            command = (item.get("command") or "").strip()
+            status = item.get("status") or "unknown"
+            outcome = str(item.get("response") or item.get("error") or "").strip() or "結果なし"
+            if len(outcome) > 300:
+                outcome = outcome[:300] + "..."
+            header_bits = []
+            if command:
+                header_bits.append(f"command={command}")
+            header_bits.append(f"status={status}")
+            header = " / ".join(header_bits)
+            lines.append(f"{idx}. [{agent_label}] {header}\n   {outcome}")
+        return "\n".join(lines)
+
+    def _plan_node(self, state: OrchestratorState, *, incremental: bool = False) -> OrchestratorState:
         user_input = state.get("user_input", "")
         if not user_input:
             raise OrchestratorError("オーケストレーターに渡された入力が空でした。")
@@ -308,6 +386,9 @@ class MultiAgentOrchestrator:
         enabled_agents = [agent for agent, enabled in agent_connections.items() if enabled]
         disabled_agents = [agent for agent, enabled in agent_connections.items() if not enabled]
         state["agent_connections"] = agent_connections
+
+        previous_plan_summary = str(state.get("plan_summary") or "").strip()
+        previous_executions: List[ExecutionResult] = list(state.get("executions") or [])
 
         device_context: str | None = None
         if agent_connections.get("iot"):
@@ -324,14 +405,14 @@ class MultiAgentOrchestrator:
         if memory_enabled:
             try:
                 lt_mgr = MemoryManager("long_term_memory.json")
-                long_term_memory = lt_mgr.load_memory().get("summary_text", "")
+                long_term_memory = lt_mgr.get_formatted_memory()
             except Exception as exc:
                 logging.warning("Failed to load long-term memory: %s", exc)
                 long_term_memory = ""
 
             try:
                 st_mgr = MemoryManager("short_term_memory.json")
-                short_term_memory = st_mgr.load_memory().get("summary_text", "")
+                short_term_memory = st_mgr.get_formatted_memory()
             except Exception as exc:
                 logging.warning("Failed to load short-term memory: %s", exc)
                 short_term_memory = ""
@@ -346,6 +427,17 @@ class MultiAgentOrchestrator:
         history_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_history])
 
         prompt = self._planner_prompt(enabled_agents, disabled_agents, device_context)
+        if incremental:
+            prompt += "\n\nいままでの進捗（完了/失敗済みのタスクは繰り返さない）:\n"
+            prompt += self._execution_context_for_prompt(previous_executions) or "まだタスクは実行されていません。"
+            if previous_plan_summary:
+                prompt += "\n\n直前の計画要約:\n" + previous_plan_summary
+            prompt += (
+                "\n\n再計画ルール:\n"
+                "- 直前のエージェント結果を次のcommand内に要約して引き継ぐこと（必要なタイトルやデータを含める）。\n"
+                "- 既に完了したタスクや不要になったタスクは作成しない。\n"
+                "- 残りの目的を達成するための次の一歩のみを具体的に書く。\n"
+            )
         if long_term_memory:
             prompt += "\n\nユーザーの特性:\n" + long_term_memory
         if short_term_memory:
@@ -390,9 +482,9 @@ class MultiAgentOrchestrator:
             "plan_summary": plan_summary,
             "raw_plan": plan_data,
             "tasks": tasks,
-            "executions": [],
+            "executions": previous_executions if incremental else [],
             "current_index": 0,
-            "retry_counts": {},
+            "retry_counts": state.get("retry_counts") or {},
             "agent_connections": agent_connections,
         }
 
@@ -549,6 +641,24 @@ class MultiAgentOrchestrator:
             "finalized": False,
         }
 
+    def _iot_action_is_clear(self, command: str) -> bool:
+        """Heuristic to decide if an IoT command is actionable without clarification."""
+
+        if not command:
+            return False
+
+        lowered = command.lower()
+        return any(keyword in lowered or keyword in command for keyword in self._IOT_ACTION_KEYWORDS)
+
+    def _browser_action_is_high_risk(self, command: str) -> bool:
+        """Return True when the browser task involves irreversible or sensitive actions."""
+
+        if not command:
+            return False
+
+        lowered = command.lower()
+        return any(keyword in lowered or keyword in command for keyword in self._BROWSER_RISK_KEYWORDS)
+
     def _assess_actionability(self, task: TaskSpec) -> Dict[str, str]:
         """Ask the LLM whether the given task is actionable for the target agent."""
 
@@ -556,6 +666,19 @@ class MultiAgentOrchestrator:
         command = str(task.get("command") or "").strip()
         if not agent or not command:
             return {"status": "needs_info", "message": "実行コマンドが空です。もう一度入力してください。"}
+
+        if agent == "iot":
+            # IoT は「迷いなく実行」を優先。デバイスが複数でも基本は実行に進む。
+            try:
+                device_count = _count_iot_devices()
+            except Exception as exc:  # noqa: BLE001 - best-effort
+                logging.debug("Failed to count IoT devices for actionability check: %s", exc)
+                device_count = None
+
+            if self._iot_action_is_clear(command):
+                return {"status": "ok", "message": ""}
+            if device_count is None or device_count >= 1:
+                return {"status": "ok", "message": ""}
 
         agent_name = self._AGENT_DISPLAY_NAMES.get(agent, agent)
         capability = self._AGENT_CAPABILITIES.get(agent, "")
@@ -579,6 +702,9 @@ class MultiAgentOrchestrator:
 
         status = str(data.get("status") or "").strip().lower()
         message = str(data.get("message") or "").strip()
+        if agent == "browser" and status == "needs_info" and not self._browser_action_is_high_risk(command):
+            status = "ok"
+            message = ""
         if status not in {"ok", "needs_info"}:
             status = "ok"
         return {"status": status, "message": message}
@@ -1115,6 +1241,44 @@ class MultiAgentOrchestrator:
             body = result.get("error") or "タスクの実行に失敗しました。"
         return f"[{agent_label}] {body}"
 
+    def _load_recent_chat_history(self, limit: int = 30) -> List[Dict[str, Any]]:
+        """Return the most recent chat history entries (best-effort)."""
+
+        try:
+            with open("chat_history.json", "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return []
+
+        if not isinstance(history, list):
+            return []
+        return history[-limit:]
+
+    def _ensure_previous_result_logged(self, expected_text: str | None) -> List[Dict[str, Any]]:
+        """Make sure the previous task result exists in chat history before continuing."""
+
+        history = self._load_recent_chat_history()
+        if not expected_text:
+            return history
+
+        found = any(
+            isinstance(entry, dict)
+            and str(entry.get("content") or "").strip() == expected_text
+            for entry in history
+        )
+        if found:
+            return history
+
+        _append_to_chat_history("assistant", expected_text, broadcast=False)
+        return self._load_recent_chat_history()
+
+    def _log_execution_result_to_history(self, result: ExecutionResult) -> str:
+        """Append a formatted execution result to chat history."""
+
+        text = self._execution_result_text(result)
+        _append_to_chat_history("assistant", text, broadcast=False)
+        return text
+
     def _format_assistant_messages(
         self,
         plan_summary: str | None,
@@ -1142,6 +1306,27 @@ class MultiAgentOrchestrator:
             messages.append({"type": "status", "text": "今回のリクエストでは実行すべきタスクはありませんでした。"})
 
         return messages
+
+    def _plan_history_entry(self, plan_summary: str | None, tasks: List[TaskSpec]) -> str:
+        """Compose a chat_history entry describing the orchestrator's plan."""
+
+        lines: list[str] = []
+        summary = (plan_summary or "").strip()
+        if summary:
+            lines.append(f"計画: {summary}")
+        if tasks:
+            lines.append("タスク一覧:")
+            for idx, task in enumerate(tasks, start=1):
+                agent = task.get("agent") or "agent"
+                agent_label = self._AGENT_DISPLAY_NAMES.get(agent, agent)
+                command = (task.get("command") or "").strip()
+                command_text = command or "内容が空のタスク"
+                lines.append(f"{idx}. [{agent_label}] {command_text}")
+
+        if not lines:
+            return ""
+
+        return self._prepend_orchestrator_label("\n".join(lines))
 
     def _snapshot_state(self, state: OrchestratorState) -> Dict[str, Any]:
         tasks_raw = state.get("tasks") or []
@@ -1182,7 +1367,8 @@ class MultiAgentOrchestrator:
 
     def run_stream(self, user_input: str, *, log_history: bool = False) -> Iterator[Dict[str, Any]]:
         if log_history:
-            _append_to_chat_history("user", user_input)
+            # Avoid broadcasting to agents here to prevent duplicate agent replies from auto-history sync.
+            _append_to_chat_history("user", user_input, broadcast=False)
         agent_connections = load_agent_connections()
         state: OrchestratorState = {
             "user_input": user_input,
@@ -1196,124 +1382,151 @@ class MultiAgentOrchestrator:
 
         plan_state = self._plan_node(state)
         state.update(plan_state)
-        tasks = list(state.get("tasks") or [])
-        state["tasks"] = tasks
+        state["tasks"] = list(state.get("tasks") or [])
         state["executions"] = list(state.get("executions") or [])
         state["current_index"] = 0
 
+        logged_history_texts: List[str] = []
+        if log_history:
+            plan_history_entry = self._plan_history_entry(state.get("plan_summary"), state["tasks"])
+            if plan_history_entry:
+                _append_to_chat_history("assistant", plan_history_entry, broadcast=False)
+                logged_history_texts.append(plan_history_entry)
+
         yield self._event_payload("plan", state)
 
-        executions_map: Dict[int, ExecutionResult] = {}
-        event_queue: queue.Queue[Dict[str, Any]] = queue.Queue()
+        executions: List[ExecutionResult] = []
 
-        def task_worker(idx: int, task_spec: TaskSpec) -> None:
-            try:
-                # Notify start
-                # We pass a snapshot of state, but note executions list is currently empty/incomplete
-                event_queue.put({
-                    "kind": "event",
-                    "payload": self._event_payload("before_execution", state, task_index=idx, task=task_spec)
-                })
+        while True:
+            tasks = list(state.get("tasks") or [])
+            state["tasks"] = tasks
+            current_index = state.get("current_index", 0)
+            if current_index >= len(tasks):
+                break
+            task_spec = tasks[current_index]
+            task_run_index = len(executions)
+            state["current_index"] = task_run_index
 
-                result: ExecutionResult | None = None
+            history_context: List[Dict[str, Any]] = []
+            if log_history:
+                last_recorded = logged_history_texts[-1] if logged_history_texts else None
+                history_context = self._ensure_previous_result_logged(last_recorded)
 
-                if task_spec["agent"] == "browser":
-                    event_queue.put({
-                        "kind": "event",
-                        "payload": self._event_payload("browser_init", state, task_index=idx, task=task_spec)
-                    })
-                    
-                    # Streaming browser execution
-                    for event in self._execute_browser_task_with_progress(task_spec):
-                        etype = event.get("type")
-                        if etype == "progress":
-                            event_queue.put({
-                                "kind": "event",
-                                "payload": self._event_payload(
-                                    "execution_progress", 
-                                    state, 
-                                    task_index=idx, 
-                                    task=task_spec, 
-                                    progress=event
-                                )
-                            })
-                        elif etype == "result":
-                            maybe_result = event.get("result")
-                            if isinstance(maybe_result, dict):
-                                result = cast(ExecutionResult, maybe_result)
-                    
-                    if result is None:
-                        result = self._browser_error_result(
-                            task_spec["command"],
-                            BrowserAgentError("ブラウザエージェントからの結果を取得できませんでした。"),
+            yield self._event_payload(
+                "before_execution",
+                state,
+                task_index=task_run_index,
+                task=task_spec,
+                history_context=history_context,
+            )
+
+            result: ExecutionResult | None = None
+
+            if task_spec["agent"] == "browser":
+                yield self._event_payload(
+                    "browser_init",
+                    state,
+                    task_index=task_run_index,
+                    task=task_spec,
+                    history_context=history_context,
+                )
+
+                for event in self._execute_browser_task_with_progress(task_spec):
+                    etype = event.get("type")
+                    if etype == "progress":
+                        yield self._event_payload(
+                            "execution_progress",
+                            state,
+                            task_index=task_run_index,
+                            task=task_spec,
+                            progress=event,
+                            history_context=history_context,
                         )
-                else:
-                    # Synchronous execution for other agents
-                    result = self._execute_task(task_spec)
+                    elif etype == "result":
+                        maybe_result = event.get("result")
+                        if isinstance(maybe_result, dict):
+                            result = cast(ExecutionResult, maybe_result)
 
-                executions_map[idx] = result
-                
-                event_queue.put({
-                    "kind": "event",
-                    "payload": self._event_payload(
-                        "after_execution", 
-                        state, 
-                        task_index=idx, 
-                        task=task_spec, 
-                        result=result
+                if result is None:
+                    result = self._browser_error_result(
+                        task_spec["command"],
+                        BrowserAgentError("ブラウザエージェントからの結果を取得できませんでした。"),
                     )
-                })
+            else:
+                result = self._execute_task(task_spec)
 
-            except Exception as exc:  # noqa: BLE001
-                logging.exception("Task execution failed for index %d", idx)
-                error_result: ExecutionResult = {
-                    "agent": task_spec["agent"],
-                    "command": task_spec["command"],
-                    "status": "error",
-                    "error": str(exc),
-                    "response": None,
+            executions.append(result)
+            state["executions"] = executions
+            state["current_index"] = len(executions)
+
+            if log_history:
+                recorded = self._log_execution_result_to_history(result)
+                logged_history_texts.append(recorded)
+
+            yield self._event_payload(
+                "after_execution",
+                state,
+                task_index=task_run_index,
+                task=task_spec,
+                result=result,
+                history_context=history_context,
+            )
+
+            if result.get("status") == "needs_info":
+                clarification = (result.get("response") or result.get("error") or "").strip()
+                request_text = (
+                    f"追加の情報が必要です。以下の質問に回答してください: {clarification}"
+                    if clarification
+                    else "追加の情報が必要です。上記の質問に回答してください。"
+                )
+                state["plan_summary"] = request_text
+                state["tasks"] = []
+                state["current_index"] = len(executions)
+                if log_history:
+                    orchestrator_text = self._prepend_orchestrator_label(request_text)
+                    _append_to_chat_history("assistant", orchestrator_text, broadcast=False)
+                    logged_history_texts.append(orchestrator_text)
+                yield self._event_payload("plan", state, incremental=True)
+                break
+
+            # Re-plan after every execution so the next agent receives the latest context.
+            replan_input: OrchestratorState = {
+                "user_input": user_input,
+                "plan_summary": state.get("plan_summary"),
+                "raw_plan": state.get("raw_plan"),
+                "tasks": tasks,
+                "executions": executions,
+                "current_index": len(executions),
+                "retry_counts": state.get("retry_counts") or {},
+                "agent_connections": agent_connections,
+            }
+            replan_state = self._plan_node(replan_input, incremental=True)
+            state.update(replan_state)
+            state["executions"] = executions
+            state["current_index"] = 0
+
+            if executions:
+                completed = {
+                    (res.get("agent"), (res.get("command") or "").strip())
+                    for res in executions
+                    if res.get("status") == "success"
                 }
-                executions_map[idx] = error_result
-                event_queue.put({
-                    "kind": "event",
-                    "payload": self._event_payload(
-                        "after_execution", 
-                        state, 
-                        task_index=idx, 
-                        task=task_spec, 
-                        result=error_result
-                    )
-                })
-            finally:
-                event_queue.put({"kind": "done"})
+                state["tasks"] = [
+                    task
+                    for task in state.get("tasks") or []
+                    if (task.get("agent"), (task.get("command") or "").strip()) not in completed
+                ]
+            state["current_index"] = 0
 
-        # Execute tasks in parallel
-        total_tasks = len(tasks)
-        if total_tasks > 0:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=total_tasks) as executor:
-                futures = [executor.submit(task_worker, i, t) for i, t in enumerate(tasks)]
-                
-                finished_count = 0
-                while finished_count < total_tasks:
-                    try:
-                        item = event_queue.get(timeout=0.1)
-                        if item["kind"] == "done":
-                            finished_count += 1
-                        elif item["kind"] == "event":
-                            yield item["payload"]
-                    except queue.Empty:
-                        continue
-        
-        # Reconstruct executions in order and update state
-        sorted_executions = []
-        for i in range(total_tasks):
-            sorted_executions.append(executions_map.get(i))
-        
-        state["executions"] = sorted_executions
-        state["current_index"] = total_tasks
+            if log_history:
+                new_plan_history = self._plan_history_entry(state.get("plan_summary"), state.get("tasks") or [])
+                if new_plan_history and (not logged_history_texts or new_plan_history != logged_history_texts[-1]):
+                    _append_to_chat_history("assistant", new_plan_history, broadcast=False)
+                    logged_history_texts.append(new_plan_history)
+
+            yield self._event_payload("plan", state, incremental=True)
 
         plan_summary = state.get("plan_summary") or ""
-        executions = state.get("executions") or []
         assistant_messages = self._format_assistant_messages(plan_summary, executions)
         if log_history:
             updated_messages = []
@@ -1327,27 +1540,13 @@ class MultiAgentOrchestrator:
             assistant_messages = updated_messages
 
         if log_history:
-            has_browser_execution = any(
-                isinstance(result, dict) and result.get("agent") == "browser" for result in executions
-            )
-            if has_browser_execution:
-                logged_browser_output = False
-                for result in reversed(executions):
-                    if isinstance(result, dict) and result.get("agent") == "browser":
-                        # Use the text directly to preserve [Browser Agent] label
-                        text = self._execution_result_text(result)
-                        _append_to_chat_history("assistant", text)
-                        logged_browser_output = True
-                        break
-                if not logged_browser_output:
-                    for msg in reversed(assistant_messages):
-                        text = msg.get("text")
-                        if isinstance(text, str) and text.strip():
-                            _append_to_chat_history("assistant", text)
-                            break
-            else:
+            already_logged = bool(logged_history_texts)
+            if not already_logged:
                 for msg in assistant_messages:
-                    _append_to_chat_history("assistant", msg.get("text", ""))
+                    text = msg.get("text")
+                    if not isinstance(text, str) or not text.strip():
+                        continue
+                    _append_to_chat_history("assistant", text, broadcast=False)
 
         yield self._event_payload(
             "complete",

@@ -24,6 +24,7 @@ class TestMemoryManager(unittest.TestCase):
         
         self.assertEqual(memory["type"], "chat_memory")
         self.assertEqual(memory["summary_text"], "")
+        self.assertEqual(memory["category_summaries"], {})
         self.assertEqual(memory["slots"], [])
 
     def test_migrate_legacy_memory(self):
@@ -36,6 +37,7 @@ class TestMemoryManager(unittest.TestCase):
         
         self.assertEqual(memory["type"], "chat_memory")
         self.assertEqual(memory["summary_text"], "Old summary content")
+        self.assertEqual(memory["category_summaries"], {"general": "Old summary content"})
         self.assertEqual(memory["slots"], [])
 
     def test_apply_diff_update_summary(self):
@@ -47,15 +49,34 @@ class TestMemoryManager(unittest.TestCase):
         memory = manager.apply_diff(diff)
         
         self.assertEqual(memory["summary_text"], "New summary")
+        self.assertEqual(memory["category_summaries"]["general"], "New summary")
         
         # Verify persistence
         loaded_memory = manager.load_memory()
         self.assertEqual(loaded_memory["summary_text"], "New summary")
 
+    def test_apply_diff_category_summaries(self):
+        manager = MemoryManager(self.file_path)
+        diff = {
+            "category_summaries": {
+                "preference": "醤油ラーメンが好き",
+                "travel": "来週京都旅行を計画中"
+            },
+            "operations": []
+        }
+        memory = manager.apply_diff(diff)
+        
+        self.assertEqual(memory["category_summaries"]["preference"], "醤油ラーメンが好き")
+        self.assertEqual(memory["category_summaries"]["travel"], "来週京都旅行を計画中")
+        
+        # Verify persistence
+        loaded_memory = manager.load_memory()
+        self.assertEqual(loaded_memory["category_summaries"]["preference"], "醤油ラーメンが好き")
+
     def test_apply_diff_add_new_slot(self):
         manager = MemoryManager(self.file_path)
         diff = {
-            "summary_text": "User likes cats",
+            "category_summaries": {"preference": "User likes cats"},
             "operations": [
                 {
                     "op": "set_slot",
@@ -81,7 +102,7 @@ class TestMemoryManager(unittest.TestCase):
         # Initial setup
         manager = MemoryManager(self.file_path)
         initial_diff = {
-            "summary_text": "",
+            "category_summaries": {},
             "operations": [
                 {
                     "op": "set_slot",
@@ -94,7 +115,7 @@ class TestMemoryManager(unittest.TestCase):
         
         # Update
         update_diff = {
-            "summary_text": "",
+            "category_summaries": {},
             "operations": [
                 {
                     "op": "set_slot",
@@ -122,7 +143,7 @@ class TestMemoryManager(unittest.TestCase):
         # Initial setup
         manager = MemoryManager(self.file_path)
         initial_diff = {
-            "summary_text": "",
+            "category_summaries": {},
             "operations": [
                 {
                     "op": "set_slot",
@@ -135,7 +156,7 @@ class TestMemoryManager(unittest.TestCase):
         
         # Update with same value
         update_diff = {
-            "summary_text": "",
+            "category_summaries": {},
             "operations": [
                 {
                     "op": "set_slot",
@@ -150,6 +171,53 @@ class TestMemoryManager(unittest.TestCase):
         
         slot = memory["slots"][0]
         self.assertEqual(len(slot["history"]), 0) # Should not log history for no change
+
+    def test_get_formatted_memory(self):
+        manager = MemoryManager(self.file_path)
+        diff = {
+            "category_summaries": {
+                "preference": "醤油ラーメンが好き",
+                "travel": "来週京都旅行を計画中"
+            },
+            "operations": [
+                {
+                    "op": "set_slot",
+                    "slot_id": "favorite_food",
+                    "value": "ラーメン",
+                    "label": "好きな食べ物",
+                    "category": "preference"
+                }
+            ]
+        }
+        manager.apply_diff(diff)
+        
+        formatted = manager.get_formatted_memory()
+        
+        self.assertIn("【好み・嗜好】", formatted)
+        self.assertIn("醤油ラーメンが好き", formatted)
+        self.assertIn("好きな食べ物: ラーメン", formatted)
+        self.assertIn("【旅行】", formatted)
+        self.assertIn("来週京都旅行を計画中", formatted)
+
+    def test_migrate_memory_without_category_summaries(self):
+        # Existing memory format without category_summaries
+        old_format = {
+            "type": "chat_memory",
+            "version": 1,
+            "last_updated": "2025-01-01T00:00:00",
+            "summary_text": "User likes coffee",
+            "slots": [],
+            "important_changes": []
+        }
+        with open(self.file_path, "w", encoding="utf-8") as f:
+            json.dump(old_format, f)
+        
+        manager = MemoryManager(self.file_path)
+        memory = manager.load_memory()
+        
+        # Should migrate summary_text to category_summaries.general
+        self.assertEqual(memory["category_summaries"]["general"], "User likes coffee")
+        self.assertEqual(memory["summary_text"], "User likes coffee")
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,8 @@
         {% set date_str = day.date.isoformat() if day.date and day.date.isoformat is not none else day.date|string %}
         <div class="calendar-day {% if not day.is_current_month %}not-current-month{% endif %} {% if day.date == today %}today-highlight{% endif %}"
              style="{% if day.total_routines == 0 and day.has_day_log %}background-color: #f0f9ff; border: 1px solid #bae6fd;{% endif %}"
-             onclick="location.href='{{ url_for('multi_agent_app.scheduler_day_view', date_str=date_str) }}'">
+             data-date="{{ date_str }}"
+             onclick="if(window.openSchedulerDayView){window.openSchedulerDayView('{{ date_str }}');}">
             
             <div class="d-flex justify-content-between align-items-start">
                 <span class="day-number {% if not day.is_current_month %}text-muted{% endif %}">{{ day.day_num }}</span>

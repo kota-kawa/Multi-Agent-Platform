@@ -1331,9 +1331,10 @@ body{
 }
 
 /* Scheduler view */
-.schedule-layout{display:grid; grid-template-columns:repeat(auto-fit, minmax(420px, 1fr)); gap:20px; align-items:start;}
-.schedule-panel{background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:18px; box-shadow:var(--shadow); min-height:0;}
+.schedule-layout{display:flex; gap:20px; align-items:flex-start;}
+.schedule-panel{background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:18px; box-shadow:var(--shadow); min-height:0; flex:1; min-width:0;}
 .schedule-panel--calendar{min-height:520px;}
+.schedule-panel[hidden]{display:none;}
 .scheduler-frame-wrapper{position:relative; border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; background:var(--panel-2); min-height:520px;}
 .scheduler-frame{width:100%; height:100%; min-height:520px; border:0; background:var(--panel-2);}
 .scheduler-fallback{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:24px; text-align:center; color:var(--muted); background:rgba(15,17,21,.7);}
@@ -1370,6 +1371,82 @@ body{
 .flash-highlight{animation:flash 2s ease-out;}
 @keyframes scheduler-spin{to{transform:rotate(360deg);}}
 @keyframes flash{0%{background-color:rgba(255,243,205,.6);}100%{background-color:transparent;}}
+
+/* Scheduler Day View Panel */
+.schedule-panel--day{flex:1; min-width:0;}
+.scheduler-day-view{display:flex; flex-direction:column; gap:16px; max-width:700px; margin:0 auto;}
+.scheduler-day-view__header{margin-bottom:8px;}
+.scheduler-day-view__loading,
+.scheduler-day-view__error{
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  padding:48px 24px; text-align:center; color:var(--muted);
+}
+.scheduler-day-view__loading .spinner-border{
+  width:2.5rem; height:2.5rem; border:3px solid var(--accent); border-right-color:transparent;
+  border-radius:50%; animation:scheduler-spin .7s linear infinite; margin-bottom:16px;
+}
+.scheduler-day-view__error i{font-size:3rem; color:var(--warn); margin-bottom:12px;}
+.scheduler-day-view__error h4{color:var(--text); margin:0 0 8px;}
+.scheduler-day-view__error p{margin:0 0 16px;}
+
+.scheduler-day-schedule-card{background:var(--panel-2); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden;}
+.scheduler-day-schedule-header{display:flex; justify-content:space-between; align-items:flex-end; padding:20px 24px 12px;}
+.scheduler-day-weekday{margin:0 0 4px; font-size:12px; text-transform:uppercase; color:var(--muted); font-weight:600; letter-spacing:0.5px;}
+.scheduler-day-date{margin:0; font-size:28px; font-weight:700; color:var(--text);}
+.scheduler-day-completion{text-align:right;}
+.scheduler-day-completion-rate{font-size:28px; font-weight:700; color:var(--accent);}
+.scheduler-day-completion small{color:var(--muted); font-size:12px;}
+.scheduler-day-divider{margin:0 24px; border:none; border-top:1px solid var(--border); opacity:0.3;}
+
+.scheduler-day-empty{padding:48px 24px; text-align:center; color:var(--muted);}
+.scheduler-day-empty i{font-size:4rem; margin-bottom:16px; opacity:0.5;}
+.scheduler-day-empty h4{margin:0 0 8px; color:var(--text);}
+.scheduler-day-empty p{margin:0;}
+
+.scheduler-day-timeline{padding:24px; display:flex; flex-direction:column; gap:16px;}
+.scheduler-day-timeline-item{display:flex; gap:12px; position:relative;}
+.scheduler-day-timeline-item.is-done .scheduler-day-timeline-card{background:rgba(56,193,114,0.08); border-color:rgba(56,193,114,0.3);}
+.scheduler-day-timeline-dot{
+  width:12px; height:12px; border-radius:50%; background:var(--accent);
+  flex-shrink:0; margin-top:18px; position:relative; z-index:1;
+}
+.scheduler-day-timeline-item.is-done .scheduler-day-timeline-dot{background:var(--good);}
+.scheduler-day-timeline-item:not(:last-child)::before{
+  content:''; position:absolute; left:5px; top:30px; bottom:-16px; width:2px;
+  background:var(--border);
+}
+.scheduler-day-timeline-time{
+  font-size:14px; font-weight:600; color:var(--muted); min-width:50px;
+  flex-shrink:0; margin-top:14px;
+}
+.scheduler-day-timeline-card{
+  flex:1; background:var(--panel); border:1px solid var(--border);
+  border-radius:12px; padding:14px 16px; transition:border-color 0.2s ease;
+}
+.scheduler-day-timeline-header{display:flex; justify-content:space-between; align-items:flex-start; gap:12px;}
+.scheduler-day-badge{
+  display:inline-block; padding:2px 8px; border-radius:6px; font-size:11px;
+  font-weight:600; text-transform:uppercase; letter-spacing:0.3px; margin-bottom:6px;
+  background:var(--border); color:var(--text);
+}
+.scheduler-day-badge.badge-iot{background:rgba(91,209,255,0.15); color:var(--accent);}
+.scheduler-day-badge.badge-browser{background:rgba(23,125,229,0.15); color:var(--primary);}
+.scheduler-day-badge.badge-lifestyle{background:rgba(56,193,114,0.15); color:var(--good);}
+.scheduler-day-badge.badge-custom{background:rgba(184,193,204,0.15); color:var(--muted);}
+.scheduler-day-task-name{margin:0 0 4px; font-size:16px; font-weight:600; color:var(--text);}
+.scheduler-day-routine-name{font-size:12px; color:var(--muted);}
+.scheduler-day-status{font-size:20px;}
+.scheduler-day-status .text-success{color:var(--good);}
+.scheduler-day-status .text-muted{color:var(--muted);}
+.scheduler-day-memo{margin-top:10px; padding-top:10px; border-top:1px solid var(--border); font-size:13px; color:var(--muted);}
+
+.scheduler-day-log-card{background:var(--panel-2); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden;}
+.scheduler-day-log-header{padding:16px 24px 12px; border-bottom:1px solid var(--border);}
+.scheduler-day-log-header h5{margin:0 0 4px; font-size:16px; font-weight:600; color:var(--text);}
+.scheduler-day-log-header small{color:var(--muted); font-size:12px;}
+.scheduler-day-log-content{padding:16px 24px 20px;}
+.scheduler-day-log-text{margin:0; line-height:1.7; color:var(--text); white-space:pre-wrap;}
+.scheduler-day-log-empty{margin:0; color:var(--muted); font-style:italic;}
 
 @media (max-width: 960px){
   .layout{flex-direction:column;}

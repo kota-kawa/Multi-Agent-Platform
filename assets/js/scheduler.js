@@ -9,6 +9,12 @@ const inlinePlaceholder = schedulerInline?.querySelector(".scheduler-inline__pla
 const prevMonthBtn = schedulerInline?.querySelector("[data-action='prev-month']");
 const nextMonthBtn = schedulerInline?.querySelector("[data-action='next-month']");
 
+// Day view panel elements
+const schedulerCalendarPanel = $("#schedulerCalendarPanel");
+const schedulerDayPanel = $("#schedulerDayPanel");
+const schedulerDayBackBtn = $("#schedulerDayBackBtn");
+const schedulerDayContent = $("#schedulerDayContent");
+
 function sanitizeBase(value) {
   return typeof value === "string" ? value.trim().replace(/\/+$/, "") : "";
 }
@@ -196,6 +202,188 @@ async function refreshInlineCalendar({ year, month, delta } = {}) {
   }
 }
 
+// Day view functions
+function formatWeekday(dateStr) {
+  const date = new Date(dateStr);
+  const weekdays = ["日曜日", "月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日"];
+  return weekdays[date.getDay()];
+}
+
+function formatDate(dateStr) {
+  const date = new Date(dateStr);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}.${month}.${day}`;
+}
+
+function renderDayViewContent(data) {
+  const { date, timeline_items, completion_rate, day_log_content } = data;
+  
+  let timelineHtml = "";
+  if (timeline_items && timeline_items.length > 0) {
+    const timelineItemsHtml = timeline_items.map(item => {
+      const isDone = item.is_done || item.log_done;
+      const memo = item.log_memo || "";
+      const categoryClass = item.step_category ? `badge-${item.step_category.toLowerCase()}` : "badge-other";
+      
+      return `
+        <div class="scheduler-day-timeline-item ${isDone ? 'is-done' : ''}">
+          <div class="scheduler-day-timeline-dot"></div>
+          <div class="scheduler-day-timeline-time">${item.time}</div>
+          <div class="scheduler-day-timeline-card">
+            <div class="scheduler-day-timeline-header">
+              <div>
+                <span class="scheduler-day-badge ${categoryClass}">${item.step_category || 'Other'}</span>
+                <h5 class="scheduler-day-task-name">${item.step_name}</h5>
+                <small class="scheduler-day-routine-name">
+                  <i class="bi bi-collection me-1"></i>${item.routine_name}
+                </small>
+              </div>
+              <div class="scheduler-day-status">
+                ${isDone 
+                  ? '<i class="bi bi-check-circle-fill text-success"></i>' 
+                  : '<i class="bi bi-circle text-muted"></i>'}
+              </div>
+            </div>
+            ${memo ? `<div class="scheduler-day-memo"><i class="bi bi-chat-left-text me-1"></i>${memo}</div>` : ''}
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    timelineHtml = `
+      <div class="scheduler-day-schedule-card">
+        <div class="scheduler-day-schedule-header">
+          <div>
+            <h6 class="scheduler-day-weekday">${formatWeekday(date)}</h6>
+            <h2 class="scheduler-day-date">${formatDate(date)}</h2>
+          </div>
+          <div class="scheduler-day-completion">
+            <div class="scheduler-day-completion-rate">${completion_rate}%</div>
+            <small>完了率</small>
+          </div>
+        </div>
+        <hr class="scheduler-day-divider">
+        <div class="scheduler-day-timeline">
+          ${timelineItemsHtml}
+        </div>
+      </div>
+    `;
+  } else {
+    timelineHtml = `
+      <div class="scheduler-day-schedule-card">
+        <div class="scheduler-day-schedule-header">
+          <div>
+            <h6 class="scheduler-day-weekday">${formatWeekday(date)}</h6>
+            <h2 class="scheduler-day-date">${formatDate(date)}</h2>
+          </div>
+        </div>
+        <hr class="scheduler-day-divider">
+        <div class="scheduler-day-empty">
+          <i class="bi bi-calendar-check"></i>
+          <h4>タスクがありません</h4>
+          <p>この日にはスケジュールされたタスクがありません。</p>
+        </div>
+      </div>
+    `;
+  }
+
+  const logHtml = `
+    <div class="scheduler-day-log-card">
+      <div class="scheduler-day-log-header">
+        <h5><i class="bi bi-journal-text me-2"></i>日報</h5>
+        <small>今日の記録・感想</small>
+      </div>
+      <div class="scheduler-day-log-content">
+        ${day_log_content 
+          ? `<p class="scheduler-day-log-text">${day_log_content.replace(/\n/g, '<br>')}</p>` 
+          : '<p class="scheduler-day-log-empty">日報は記録されていません。</p>'}
+      </div>
+    </div>
+  `;
+
+  return timelineHtml + logHtml;
+}
+
+async function fetchDayViewData(dateStr) {
+  const url = buildSchedulerAgentUrl(`/api/day/${dateStr}`);
+  const res = await fetch(url, { headers: { "X-Requested-With": "fetch" } });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    let errorMessage = `HTTP ${res.status}`;
+    try {
+      const json = JSON.parse(text);
+      if (json.error) errorMessage = json.error;
+    } catch (_) {
+      if (text) errorMessage = text;
+    }
+    throw new Error(errorMessage);
+  }
+  return res.json();
+}
+
+function showDayView() {
+  if (schedulerCalendarPanel) schedulerCalendarPanel.hidden = true;
+  if (schedulerDayPanel) schedulerDayPanel.hidden = false;
+}
+
+function hideDayView() {
+  if (schedulerDayPanel) schedulerDayPanel.hidden = true;
+  if (schedulerCalendarPanel) schedulerCalendarPanel.hidden = false;
+}
+
+function showDayViewLoading() {
+  if (schedulerDayContent) {
+    schedulerDayContent.innerHTML = `
+      <div class="scheduler-day-view__loading">
+        <div class="spinner-border" role="status">
+          <span class="visually-hidden">読み込み中...</span>
+        </div>
+        <p>データを読み込んでいます...</p>
+      </div>
+    `;
+  }
+}
+
+function showDayViewError(message) {
+  if (schedulerDayContent) {
+    schedulerDayContent.innerHTML = `
+      <div class="scheduler-day-view__error">
+        <i class="bi bi-exclamation-triangle"></i>
+        <h4>読み込みに失敗しました</h4>
+        <p>${message || 'データの取得中にエラーが発生しました。'}</p>
+        <button class="btn subtle" onclick="window.closeSchedulerDayView()">カレンダーに戻る</button>
+      </div>
+    `;
+  }
+}
+
+async function openSchedulerDayView(dateStr) {
+  showDayView();
+  showDayViewLoading();
+
+  try {
+    const data = await fetchDayViewData(dateStr);
+    if (schedulerDayContent) {
+      schedulerDayContent.innerHTML = renderDayViewContent(data);
+    }
+  } catch (error) {
+    console.error("Failed to load day view:", error);
+    showDayViewError(error.message);
+  }
+}
+
+function closeSchedulerDayView() {
+  hideDayView();
+  // Refresh calendar to reflect any changes
+  refreshInlineCalendar();
+}
+
+// Expose functions globally for onclick handlers
+window.openSchedulerDayView = openSchedulerDayView;
+window.closeSchedulerDayView = closeSchedulerDayView;
+
 let inlineBound = false;
 function bindInlineScheduler() {
   if (inlineBound || !schedulerInline) return;
@@ -215,6 +403,9 @@ function bindInlineScheduler() {
     schedulerRefreshBtn.addEventListener("click", () => {
       refreshInlineCalendar();
     });
+  }
+  if (schedulerDayBackBtn) {
+    schedulerDayBackBtn.addEventListener("click", closeSchedulerDayView);
   }
 
   if (schedulerInline.dataset.hasData !== "1") {

@@ -1551,7 +1551,6 @@ async function sendOrchestratorMessage(text) {
 
   const userMessage = addOrchestratorUserMessage(text);
   const planMessage = addOrchestratorAssistantMessage(THINKING_MESSAGE_TEXT, { pending: true });
-  setGeneralProxyAgent(null);
   resetOrchestratorBrowserMirror();
 
   const taskMessages = new Map();
@@ -1617,6 +1616,12 @@ async function sendOrchestratorMessage(text) {
       }
 
       if (eventType === "before_execution") {
+        // planMessageがまだpending状態の場合は解除する（2つのthinkingインジケーター表示を防ぐ）
+        if (planMessage.pending) {
+          planMessage.text = prefixOrchestratorText("計画を作成しました。タスクを実行します…");
+          planMessage.pending = false;
+          planMessage.ts = Date.now();
+        }
         const task = eventData.task && typeof eventData.task === "object" ? eventData.task : {};
         const taskIndex = typeof eventData.task_index === "number" ? eventData.task_index : null;
         const agentRaw = typeof task.agent === "string" ? task.agent.trim().toLowerCase() : "";
@@ -1889,7 +1894,6 @@ async function handleGeneralModeSubmission(value) {
     }
     return;
   }
-  setGeneralProxyAgent(null);
   await sendOrchestratorMessage(value);
 }
 
