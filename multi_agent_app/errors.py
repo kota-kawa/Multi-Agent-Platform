@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 class LifestyleAPIError(RuntimeError):
-    """Raised when the upstream Life-Assistant API responds with an error."""
+    """Raised when the upstream Life-Style API responds with an error."""
 
     def __init__(self, message: str, status_code: int = 502) -> None:
         super().__init__(message)

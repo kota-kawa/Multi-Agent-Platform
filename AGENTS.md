@@ -58,7 +58,8 @@
   - `_execute_browser_task_with_progress` opens both `/api/stream` (event stream) and `/api/chat` (task execution) concurrently, converts them to orchestrator `execution_progress` events, and tracks `[browser-agent-final]` markers plus `BROWSER_AGENT_FINAL_NOTICE`.
   - `_post_browser_agent` is used for history checks and `chat` API shims outside orchestrator flows.
 - IoT Agent helpers:
-  - `_call_iot_agent_command` and `_call_iot_agent_conversation_review` wrap JSON bodies for `/api/chat` and `/api/conversations/review`.
+  - `_call_iot_agent_command` executes device actions exclusively via the IoT Agent's MCP server (tool schemas + dynamic device capabilities) without falling back to the legacy HTTP `/api/chat`.
+  - `_call_iot_agent_conversation_review` keeps the JSON shim for `/api/conversations/review`.
   - `_proxy_iot_agent_request` mirrors incoming verbs to `/iot_agent` routes so the SPA can talk to remote IoT APIs without CORS pain.
 - Keep timeout constants near the top of `app.py` in sync with real-world deployments; expose new env toggles for any behavior change.
 

@@ -78,13 +78,13 @@ DEFAULT_IOT_AGENT_BASES = (
 IOT_AGENT_TIMEOUT = float(os.environ.get("IOT_AGENT_TIMEOUT", "60"))
 
 DEFAULT_SCHEDULER_AGENT_BASES = (
-    # Local processes on the same host
-    "http://127.0.0.1:5010",
-    "http://localhost:5010",
-    # Docker Compose service name (same network)
+    # Docker Compose service name (same network) - prioritize for container environments
     "http://scheduler-agent:5010",
     # Host machine from inside a container (Docker Desktop / host-gateway)
     "http://host.docker.internal:5010",
+    # Local processes on the same host (for non-container development)
+    "http://127.0.0.1:5010",
+    "http://localhost:5010",
 )
 SCHEDULER_AGENT_CONNECT_TIMEOUT = _parse_timeout_env("SCHEDULER_AGENT_CONNECT_TIMEOUT", 3.0)
 SCHEDULER_AGENT_TIMEOUT = float(os.environ.get("SCHEDULER_AGENT_TIMEOUT", "30"))

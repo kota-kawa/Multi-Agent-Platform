@@ -104,6 +104,9 @@ def _broadcast_model_settings(selection: Dict[str, Any]) -> None:
         for base in iter_bases():
             if not base or base.startswith("/"):
                 continue
+            # Skip localhost URLs when running in Docker (they won't resolve)
+            if "localhost" in base or "127.0.0.1" in base:
+                continue
             url = build_url(base, "model_settings")
             try:
                 resp = requests.post(url, json=payload, timeout=2.0, headers=headers)
@@ -172,7 +175,7 @@ def orchestrator_chat() -> Any:
 
 @bp.route("/rag_answer", methods=["POST"])
 def rag_answer() -> Any:
-    """Proxy the rag_answer endpoint to the Life-Assistant backend."""
+    """Proxy the rag_answer endpoint to the Life-Style backend."""
 
     payload = request.get_json(silent=True) or {}
     question = (payload.get("question") or "").strip()
@@ -182,7 +185,7 @@ def rag_answer() -> Any:
     try:
         data = _call_lifestyle("/rag_answer", method="POST", payload={"question": question})
     except LifestyleAPIError as exc:
-        logging.exception("Life-Assistant rag_answer failed: %s", exc)
+        logging.exception("Life-Style rag_answer failed: %s", exc)
         return jsonify({"error": str(exc)}), exc.status_code
 
     return jsonify(data)
@@ -190,12 +193,12 @@ def rag_answer() -> Any:
 
 @bp.route("/conversation_history", methods=["GET"])
 def conversation_history() -> Any:
-    """Fetch the conversation history from the Life-Assistant backend."""
+    """Fetch the conversation history from the Life-Style backend."""
 
     try:
         data = _call_lifestyle("/conversation_history")
     except LifestyleAPIError as exc:
-        logging.exception("Life-Assistant conversation_history failed: %s", exc)
+        logging.exception("Life-Style conversation_history failed: %s", exc)
         return jsonify({"error": str(exc)}), exc.status_code
 
     return jsonify(data)
@@ -203,12 +206,12 @@ def conversation_history() -> Any:
 
 @bp.route("/conversation_summary", methods=["GET"])
 def conversation_summary() -> Any:
-    """Fetch the conversation summary from the Life-Assistant backend."""
+    """Fetch the conversation summary from the Life-Style backend."""
 
     try:
         data = _call_lifestyle("/conversation_summary")
     except LifestyleAPIError as exc:
-        logging.exception("Life-Assistant conversation_summary failed: %s", exc)
+        logging.exception("Life-Style conversation_summary failed: %s", exc)
         return jsonify({"error": str(exc)}), exc.status_code
 
     return jsonify(data)
@@ -216,12 +219,12 @@ def conversation_summary() -> Any:
 
 @bp.route("/reset_history", methods=["POST"])
 def reset_history() -> Any:
-    """Request the Life-Assistant backend to clear the conversation history."""
+    """Request the Life-Style backend to clear the conversation history."""
 
     try:
         data = _call_lifestyle("/reset_history", method="POST")
     except LifestyleAPIError as exc:
-        logging.exception("Life-Assistant reset_history failed: %s", exc)
+        logging.exception("Life-Style reset_history failed: %s", exc)
         return jsonify({"error": str(exc)}), exc.status_code
 
     return jsonify(data)

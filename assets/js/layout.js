@@ -72,7 +72,7 @@ let generalBrowserFullscreenBtn = null;
 const viewPlacements = new Map();
 const AGENT_TO_VIEW_MAP = { browser: "browser", iot: "iot", lifestyle: "chat", chat: "chat", scheduler: "schedule" };
 const GENERAL_PROXY_AGENT_LABELS = {
-  lifestyle: "Life-Assistantエージェント",
+  lifestyle: "Life-Styleエージェント",
   browser: "ブラウザエージェント",
   iot: "IoT エージェント",
   scheduler: "Scheduler エージェント",
@@ -305,7 +305,7 @@ export function activateView(viewKey) {
   // Update sidebar chat title and icon based on the current view
   if (sidebarChatTitleTextNode && sidebarChatIcon) {
     const isGeneralViewActive = target === "general";
-    let titleText = isGeneralViewActive ? " 共通チャット" : " ライフスタイルエージェント";
+    let titleText = isGeneralViewActive ? " 共通チャット" : " Life-Style エージェント";
     let iconSvg = isGeneralViewActive ? ICONS.generalChat : ICONS.chat;
 
     if (target === "browser") {

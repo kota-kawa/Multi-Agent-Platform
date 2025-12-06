@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
-from typing import Any, Dict, Iterable
+from typing import Any, Dict, Iterable, List, Tuple
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -16,6 +18,19 @@ from .config import (
     DEFAULT_BROWSER_AGENT_BASES,
 )
 from .errors import BrowserAgentError
+
+_USE_BROWSER_AGENT_MCP = os.environ.get("BROWSER_AGENT_USE_MCP", "0").strip().lower() not in {"0", "false", "no", "off"}
+_BROWSER_AGENT_MCP_TOOL = os.environ.get("BROWSER_AGENT_MCP_TOOL", "retry_with_browser_use_agent").strip()
+_BROWSER_AGENT_MCP_ARG_KEY = os.environ.get("BROWSER_AGENT_MCP_ARG_KEY", "task").strip() or "task"
+_USE_BROWSER_AGENT_HISTORY_MCP = (
+    os.environ.get("BROWSER_AGENT_HISTORY_USE_MCP", "1").strip().lower() not in {"0", "false", "no", "off"}
+)
+_BROWSER_AGENT_MCP_HISTORY_TOOL = (
+    os.environ.get("BROWSER_AGENT_MCP_HISTORY_TOOL", "analyze_conversation").strip() or "analyze_conversation"
+)
+_BROWSER_AGENT_MCP_HISTORY_ARG_KEY = (
+    os.environ.get("BROWSER_AGENT_MCP_HISTORY_ARG_KEY", "conversation_history").strip() or "conversation_history"
+)
 
 
 def _browser_agent_timeout(read_timeout: float | None) -> tuple[float, float | None]:
@@ -128,6 +143,130 @@ def _normalise_browser_base_values(values: Any) -> list[str]:
 
     _consume(values)
     return cleaned
+
+
+def _run_with_event_loop(coro_factory):
+    """Run an async coroutine with a timeout, even when already inside a loop."""
+
+    try:
+        return asyncio.run(asyncio.wait_for(coro_factory(), timeout=BROWSER_AGENT_TIMEOUT))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(asyncio.wait_for(coro_factory(), timeout=BROWSER_AGENT_TIMEOUT))
+        finally:
+            loop.close()
+
+
+def _select_browser_mcp_tool(tools: Iterable[Any]) -> Any | None:
+    """Pick a Browser Agent MCP tool that accepts a free-form task string."""
+
+    preferred = None
+    for tool in tools or []:
+        if getattr(tool, "name", None) == _BROWSER_AGENT_MCP_TOOL:
+            preferred = tool
+            break
+    if preferred is not None:
+        return preferred
+
+    for tool in tools or []:
+        schema = getattr(tool, "inputSchema", None)
+        properties = schema.get("properties") if isinstance(schema, dict) else {}
+        if properties and _BROWSER_AGENT_MCP_ARG_KEY in properties:
+            return tool
+
+    for tool in tools or []:
+        schema = getattr(tool, "inputSchema", None)
+        properties = schema.get("properties") if isinstance(schema, dict) else {}
+        if not properties:
+            continue
+        for _, meta in properties.items():
+            if isinstance(meta, dict) and meta.get("type") == "string":
+                return tool
+
+    return None
+
+
+def _build_browser_mcp_args(tool: Any, prompt: str) -> Dict[str, Any]:
+    """Construct arguments for the selected MCP tool using a string-friendly field."""
+
+    schema = getattr(tool, "inputSchema", None)
+    properties = schema.get("properties") if isinstance(schema, dict) else {}
+
+    candidate_keys = [_BROWSER_AGENT_MCP_ARG_KEY] if _BROWSER_AGENT_MCP_ARG_KEY else []
+    candidate_keys.extend(["instruction", "prompt", "task", "query", "text"])
+
+    for key in candidate_keys:
+        if properties and key in properties:
+            return {key: prompt}
+
+    if properties:
+        for key, meta in properties.items():
+            if isinstance(meta, dict) and meta.get("type") == "string":
+                return {key: prompt}
+
+    return {_BROWSER_AGENT_MCP_ARG_KEY or "task": prompt}
+
+
+def _format_browser_mcp_result(result: Any) -> Dict[str, Any]:
+    """Convert an MCP tool result into the Browser Agent payload shape."""
+
+    contents = getattr(result, "content", None) or getattr(result, "contents", None) or []
+    text_parts: list[str] = []
+    for content in contents:
+        text = getattr(content, "text", None)
+        if isinstance(text, str) and text.strip():
+            text_parts.append(text.strip())
+
+    summary = "\n".join(text_parts).strip()
+    if not summary:
+        summary = "MCP 経由のブラウザエージェント応答が空でした。"
+
+    return {"run_summary": summary, "messages": [{"role": "assistant", "content": summary}]}
+
+
+def _call_browser_agent_chat_via_mcp(prompt: str) -> Tuple[Dict[str, Any] | None, List[str]]:
+    """Best-effort MCP call to the Browser Agent, returning payload + errors."""
+
+    errors: list[str] = []
+
+    if not _USE_BROWSER_AGENT_MCP:
+        return None, errors
+
+    try:
+        from mcp import ClientSession
+        from mcp.client.sse import sse_client
+    except Exception as exc:  # noqa: BLE001
+        return None, [f"MCP クライアントの初期化に失敗しました: {exc}"]
+
+    bases = _iter_browser_agent_bases()
+    if not bases:
+        return None, ["ブラウザエージェントの接続先が設定されていません。"]
+
+    async def _call_tool(base_url: str):
+        sse_url = _build_browser_agent_url(base_url, "/mcp/sse")
+        async with sse_client(sse_url, timeout=BROWSER_AGENT_TIMEOUT) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+
+                tools_result = await session.list_tools()
+                tool = _select_browser_mcp_tool(getattr(tools_result, "tools", None))
+                if tool is None:
+                    raise BrowserAgentError("MCP 経由で利用できるブラウザエージェントツールが見つかりませんでした。")
+
+                args = _build_browser_mcp_args(tool, prompt)
+                call_result = await session.call_tool(getattr(tool, "name", ""), args)
+                return _format_browser_mcp_result(call_result)
+
+    for base in bases:
+        try:
+            result = _run_with_event_loop(lambda: _call_tool(base))
+            return result, errors
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{base}: {exc}")
+            continue
+
+    return None, errors
 
 
 def _iter_browser_agent_bases() -> list[str]:
@@ -259,19 +398,116 @@ def _post_browser_agent(path: str, payload: Dict[str, Any], *, timeout: float | 
 def _call_browser_agent_history_check(history: Iterable[Dict[str, str]]) -> Dict[str, Any]:
     """Call the Browser Agent history check endpoint."""
 
+    mcp_result: Dict[str, Any] | None = None
+    mcp_errors: list[str] = []
+
+    mcp_result, mcp_errors = _call_browser_agent_history_check_via_mcp(history)
+    if mcp_result is not None:
+        return mcp_result
+
     payload = {"history": list(history)}
-    return _post_browser_agent(
-        "/api/conversations/review",
-        payload,
-        timeout=_browser_agent_timeout(BROWSER_AGENT_TIMEOUT),
-    )
+    try:
+        return _post_browser_agent(
+            "/api/conversations/review",
+            payload,
+            timeout=_browser_agent_timeout(BROWSER_AGENT_TIMEOUT),
+        )
+    except BrowserAgentError as exc:
+        if mcp_errors:
+            message_lines = [str(exc), "MCP 経由での履歴共有も失敗しました:"]
+            message_lines.extend(f"- {error}" for error in mcp_errors)
+            raise BrowserAgentError("\n".join(message_lines), status_code=getattr(exc, "status_code", 502)) from exc
+        raise
+
+
+def _parse_browser_history_result_from_mcp(result: Any) -> Dict[str, Any]:
+    """Extract a JSON payload from a Browser Agent MCP analyze_conversation result."""
+
+    contents = getattr(result, "content", None) or getattr(result, "contents", None) or []
+    for content in contents:
+        text = getattr(content, "text", None)
+        if not isinstance(text, str) or not text.strip():
+            continue
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    raise BrowserAgentError("ブラウザエージェント MCP analyze_conversation から有効な内容が返りませんでした。")
+
+
+def _call_browser_agent_history_check_via_mcp(
+    history: Iterable[Dict[str, str]],
+) -> Tuple[Dict[str, Any] | None, List[str]]:
+    """Best-effort MCP call to analyze recent history, with HTTP fallback support."""
+
+    errors: list[str] = []
+
+    if not _USE_BROWSER_AGENT_HISTORY_MCP:
+        return None, errors
+
+    try:
+        from mcp import ClientSession
+        from mcp.client.sse import sse_client
+    except Exception as exc:  # noqa: BLE001
+        return None, [f"MCP クライアントの初期化に失敗しました: {exc}"]
+
+    bases = _iter_browser_agent_bases()
+    if not bases:
+        return None, ["ブラウザエージェントの接続先が設定されていません。"]
+
+    history_payload = list(history)
+
+    async def _call_tool(base_url: str):
+        sse_url = _build_browser_agent_url(base_url, "/mcp/sse")
+        async with sse_client(sse_url, timeout=BROWSER_AGENT_TIMEOUT) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+
+                tools_result = await session.list_tools()
+                tool_names = [getattr(tool, "name", "") for tool in getattr(tools_result, "tools", None) or []]
+                if _BROWSER_AGENT_MCP_HISTORY_TOOL not in tool_names:
+                    raise BrowserAgentError("MCP 経由で利用できる analyze_conversation ツールが見つかりませんでした。")
+
+                result = await session.call_tool(
+                    _BROWSER_AGENT_MCP_HISTORY_TOOL,
+                    {_BROWSER_AGENT_MCP_HISTORY_ARG_KEY: history_payload},
+                )
+                return _parse_browser_history_result_from_mcp(result)
+
+    for base in bases:
+        try:
+            result = _run_with_event_loop(lambda: _call_tool(base))
+            return result, errors
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{base}: {exc}")
+            continue
+
+    return None, errors
 
 
 def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
-	"""Call the Browser Agent chat endpoint."""
+    """Call the Browser Agent chat endpoint or MCP tool."""
 
-	return _post_browser_agent(
-		"/api/chat",
-		{"prompt": prompt, "new_task": True, "skip_conversation_review": True},
-		timeout=_browser_agent_timeout(BROWSER_AGENT_CHAT_TIMEOUT),
-	)
+    mcp_result: Dict[str, Any] | None = None
+    mcp_errors: list[str] = []
+
+    if _USE_BROWSER_AGENT_MCP:
+        mcp_result, mcp_errors = _call_browser_agent_chat_via_mcp(prompt)
+        if mcp_result is not None:
+            return mcp_result
+
+    try:
+        return _post_browser_agent(
+            "/api/chat",
+            {"prompt": prompt, "new_task": True, "skip_conversation_review": True},
+            timeout=_browser_agent_timeout(BROWSER_AGENT_CHAT_TIMEOUT),
+        )
+    except BrowserAgentError as exc:
+        if mcp_errors:
+            message_lines = [str(exc), "MCP 経由での呼び出しも失敗しました:"]
+            message_lines.extend(f"- {error}" for error in mcp_errors)
+            raise BrowserAgentError("\n".join(message_lines), status_code=getattr(exc, "status_code", 502)) from exc
+        raise

@@ -82,7 +82,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _AGENT_ENV_PATHS: Dict[str, Path] = {
     "orchestrator": _REPO_ROOT / "Multi-Agent-Platform" / "secrets.env",
     "browser": _REPO_ROOT / "Browser-Agent" / "secrets.env",
-    "lifestyle": _REPO_ROOT / "Life-Assistant-Agent" / "secrets.env",
+    "lifestyle": _REPO_ROOT / "Life-Style-Agent" / "secrets.env",
     "iot": _REPO_ROOT / "IoT-Agent" / "secrets.env",
     "scheduler": _REPO_ROOT / "Scheduler-Agent" / "secrets.env",
 }

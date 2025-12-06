@@ -1,4 +1,4 @@
-"""Life-Assistant (Lifestyle) client helpers."""
+"""Life-Style (Lifestyle) client helpers."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ _USE_LIFESTYLE_MCP = os.environ.get("LIFESTYLE_USE_MCP", "1").strip().lower() no
 
 
 def _iter_lifestyle_bases() -> list[str]:
-    """Return the configured Life-Assistant base URLs in priority order."""
+    """Return the configured Life-Style base URLs in priority order."""
 
     configured = os.environ.get("LIFESTYLE_API_BASE", "")
     candidates: list[str] = []
@@ -44,7 +44,7 @@ def _iter_lifestyle_bases() -> list[str]:
 
 
 def _build_lifestyle_url(base: str, path: str) -> str:
-    """Build an absolute URL to the upstream Life-Assistant API."""
+    """Build an absolute URL to the upstream Life-Style API."""
 
     if not path.startswith("/"):
         path = f"/{path}"
@@ -77,7 +77,7 @@ def _run_coroutine(coro_factory):
 def _call_lifestyle_tool_via_mcp(
     bases: list[str], tool_name: str, arguments: Dict[str, Any]
 ) -> tuple[Dict[str, Any] | None, list[str]]:
-    """Best-effort MCP call for Life-Assistant tools, with detailed error capture."""
+    """Best-effort MCP call for Life-Style tools, with detailed error capture."""
 
     errors: list[str] = []
 
@@ -89,13 +89,13 @@ def _call_lifestyle_tool_via_mcp(
                 result = await session.call_tool(tool_name, arguments)
                 text = _first_text_content(result.content)
                 if not text:
-                    raise LifestyleAPIError("Life-Assistant MCP call returned empty content.", status_code=502)
+                    raise LifestyleAPIError("Life-Style MCP call returned empty content.", status_code=502)
                 try:
                     parsed = json.loads(text)
                 except json.JSONDecodeError as exc:  # pragma: no cover - defensive
-                    raise LifestyleAPIError("Life-Assistant MCP call returned non-JSON response.", status_code=502) from exc
+                    raise LifestyleAPIError("Life-Style MCP call returned non-JSON response.", status_code=502) from exc
                 if not isinstance(parsed, dict):
-                    raise LifestyleAPIError("Life-Assistant MCP call returned unexpected format.", status_code=502)
+                    raise LifestyleAPIError("Life-Style MCP call returned unexpected format.", status_code=502)
                 return parsed
 
     for base in bases:
@@ -110,11 +110,11 @@ def _call_lifestyle_tool_via_mcp(
 
 
 def _call_lifestyle(path: str, *, method: str = "GET", payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    """Call the upstream Life-Assistant API and return the JSON payload."""
+    """Call the upstream Life-Style API and return the JSON payload."""
 
     bases = _iter_lifestyle_bases()
     if not bases:
-        raise LifestyleAPIError("Life-Assistantエージェント API の接続先が設定されていません。", status_code=500)
+        raise LifestyleAPIError("Life-Styleエージェント API の接続先が設定されていません。", status_code=500)
 
     mcp_errors: list[str] = []
     if _USE_LIFESTYLE_MCP:
@@ -153,7 +153,7 @@ def _call_lifestyle(path: str, *, method: str = "GET", payload: Dict[str, Any] |
             break
 
     if response is None:
-        message_lines = ["Life-Assistantエージェント API への接続に失敗しました。"]
+        message_lines = ["Life-Styleエージェント API への接続に失敗しました。"]
         if connection_errors:
             message_lines.append("試行した URL:")
             message_lines.extend(f"- {error}" for error in connection_errors)
@@ -166,7 +166,7 @@ def _call_lifestyle(path: str, *, method: str = "GET", payload: Dict[str, Any] |
     try:
         data = response.json()
     except ValueError:  # pragma: no cover - unexpected upstream response
-        data = {"error": response.text or "Unexpected response from Life-Assistantエージェント API."}
+        data = {"error": response.text or "Unexpected response from Life-Styleエージェント API."}
 
     if not response.ok:
         message = data.get("error") if isinstance(data, dict) else None
@@ -175,6 +175,6 @@ def _call_lifestyle(path: str, *, method: str = "GET", payload: Dict[str, Any] |
         raise LifestyleAPIError(message, status_code=response.status_code)
 
     if not isinstance(data, dict):
-        raise LifestyleAPIError("Life-Assistantエージェント API から不正なレスポンス形式が返されました。", status_code=502)
+        raise LifestyleAPIError("Life-Styleエージェント API から不正なレスポンス形式が返されました。", status_code=502)
 
     return data

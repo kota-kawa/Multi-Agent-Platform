@@ -2,7 +2,7 @@
 
 ## Overview
 This project is a **Multi-Agent Platform** built with **Flask**, **LangGraph**, and **OpenAI**. It serves as an orchestrator that coordinates tasks across specialized agents:
-*   **Life-Assistant Agent** (Lifestyle/schedule management)
+*   **Life-Style Agent** (Lifestyle/schedule management)
 *   **Browser Agent** (Web automation via Selenium/Playwright/etc.)
 *   **IoT Agent** (Smart home control)
 
@@ -66,7 +66,7 @@ docker compose up --build web
 ## Environment Variables
 Important variables defined in `multi_agent_app/config.py` and `docker-compose.yml`:
 *   `OPENAI_API_KEY`: Required.
-*   `LIFESTYLE_API_BASE`: URL for the Life-Assistant Agent.
+*   `LIFESTYLE_API_BASE`: URL for the Life-Style Agent.
 *   `BROWSER_AGENT_API_BASE`: URL for the Browser Agent.
 *   `IOT_AGENT_API_BASE`: URL for the IoT Agent.
 *   `FLASK_DEBUG`: Set to "1" for debug mode.

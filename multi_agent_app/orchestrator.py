@@ -21,8 +21,10 @@ from .browser import (
     _browser_agent_timeout,
     _build_browser_agent_url,
     _call_browser_agent_chat,
+    _call_browser_agent_chat_via_mcp,
     _extract_browser_error_message,
     _iter_browser_agent_bases,
+    _USE_BROWSER_AGENT_MCP,
 )
 from .config import (
     BROWSER_AGENT_CHAT_TIMEOUT,
@@ -91,8 +93,8 @@ class MultiAgentOrchestrator:
         "faq_gemini": "lifestyle",
         "gemini": "lifestyle",
         "lifestyle": "lifestyle",
-        "life-assistant": "lifestyle",
-        "life_assistant": "lifestyle",
+        "life-style": "lifestyle",
+        "life_style": "lifestyle",
         "knowledge": "lifestyle",
         "knowledge_base": "lifestyle",
         "docs": "lifestyle",
@@ -112,7 +114,7 @@ class MultiAgentOrchestrator:
     }
 
     _AGENT_DISPLAY_NAMES = {
-        "lifestyle": "Life-Assistantエージェント",
+        "lifestyle": "Life-Styleエージェント",
         "browser": "ブラウザエージェント",
         "iot": "IoT エージェント",
         "scheduler": "Scheduler エージェント",
@@ -147,7 +149,7 @@ class MultiAgentOrchestrator:
 あなたはマルチエージェントシステムのオーケストレーターです。与えられたユーザーの依頼を読み、実行すべきタスクを分析して下さい。
 
 - 利用可能なエージェント:
-  - "lifestyle"（Life-Assistantエージェント）: 家庭内の出来事や料理、家電、人間関係に詳しい専門家エージェントで、IoTなどに対してナレッジベースに質問できます。
+  - "lifestyle"（Life-Styleエージェント）: 家庭内の出来事や料理、家電、人間関係に詳しい専門家エージェントで、IoTなどに対してナレッジベースに質問できます。
   - "browser": ブラウザ自動化エージェントで Web を閲覧・操作できます。
   - "iot": IoT エージェントを通じてデバイスの状態確認や操作ができます。
   - "scheduler": Scheduler エージェントを通じて予定の確認やタスクの登録・更新ができます。
@@ -562,7 +564,10 @@ class MultiAgentOrchestrator:
             agent_capability=capability,
             command=command,
         )
-        messages = [SystemMessage(content=prompt)]
+        messages = [
+            SystemMessage(content=prompt),
+            HumanMessage(content="上記のタスクの実行可能性を判定してJSONで回答してください。"),
+        ]
 
         try:
             response = self._llm.invoke(messages)
@@ -616,7 +621,7 @@ class MultiAgentOrchestrator:
                     "response": None,
                     "error": str(exc),
                 }
-            answer = str(data.get("answer") or "").strip() or "Life-Assistantエージェントから回答が得られませんでした。"
+            answer = str(data.get("answer") or "").strip() or "Life-Styleエージェントから回答が得られませんでした。"
             return {
                 "agent": agent,
                 "command": command,
@@ -694,6 +699,17 @@ class MultiAgentOrchestrator:
                 "result": clarification,
             }
             return
+
+        if _USE_BROWSER_AGENT_MCP:
+            mcp_result, mcp_errors = _call_browser_agent_chat_via_mcp(command)
+            if mcp_result is not None:
+                yield {
+                    "type": "result",
+                    "result": self._browser_result_from_payload(command, mcp_result),
+                }
+                return
+            if mcp_errors:
+                logging.info("Browser Agent MCP execution failed, falling back to HTTP: %s", "; ".join(mcp_errors))
 
         try:
             yield from self._iter_browser_agent_progress(command)

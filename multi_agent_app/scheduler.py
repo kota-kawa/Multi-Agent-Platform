@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import os
+import asyncio
+import json
 import logging
+import os
 from typing import Any, Dict, Iterable, List
 
 import requests
@@ -17,6 +19,11 @@ from .config import (
 from .errors import SchedulerAgentError
 
 _scheduler_agent_preferred_base: str | None = None
+_USE_SCHEDULER_AGENT_MCP = os.environ.get("SCHEDULER_AGENT_USE_MCP", "1").strip().lower() not in {"0", "false", "no", "off"}
+_SCHEDULER_AGENT_MCP_TOOL = os.environ.get("SCHEDULER_AGENT_MCP_TOOL", "manage_schedule").strip() or "manage_schedule"
+_SCHEDULER_AGENT_MCP_CONVERSATION_TOOL = (
+    os.environ.get("SCHEDULER_AGENT_MCP_CONVERSATION_TOOL", "analyze_conversation").strip() or "analyze_conversation"
+)
 
 
 def _iter_scheduler_agent_bases() -> list[str]:
@@ -174,7 +181,7 @@ def _call_scheduler_agent(path: str, method: str = "GET", params: Dict[str, Any]
 
     url = _build_scheduler_agent_url(base, path)
     
-    headers = {"X-Platform-Propagation": "1"} # Propagate a header if needed for agent logic
+    headers = {"X-Platform-Propagation": "1"}  # Propagate a header if needed for agent logic
 
     try:
         response = requests.request(
@@ -184,7 +191,7 @@ def _call_scheduler_agent(path: str, method: str = "GET", params: Dict[str, Any]
             headers=headers,
             timeout=(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT),
         )
-        response.raise_for_status() # Raise an exception for HTTP errors
+        response.raise_for_status()  # Raise an exception for HTTP errors
         try:
             return response.json()
         except ValueError as exc:
@@ -229,40 +236,105 @@ def _post_scheduler_agent(path: str, payload: Dict[str, Any], *, method: str = "
         raise SchedulerAgentError("Scheduler Agent からの応答を JSON として解析できませんでした。") from exc
 
 
-def _call_scheduler_agent_chat(command: str) -> Dict[str, Any]:
-    """Send a single-shot chat command to the Scheduler Agent using MCP."""
-    import asyncio
-    from mcp.client.session import ClientSession
-    from mcp.client.sse import sse_client
-
-    async def run_mcp():
-        base = _get_first_scheduler_agent_base()
-        if not base:
-             raise SchedulerAgentError("Scheduler Agent base URL is not configured.")
-        
-        sse_url = f"{base}/mcp/sse"
-        
-        async with sse_client(sse_url) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                
-                result = await session.call_tool(
-                    "manage_schedule",
-                    arguments={"instruction": command}
-                )
-                
-                text_content = ""
-                if result.content:
-                    for item in result.content:
-                        if item.type == "text":
-                            text_content += item.text
-                
-                return {"reply": text_content}
+def _run_scheduler_mcp_with_timeout(coro_factory):
+    """Run an async MCP coroutine with a timeout, even when already inside a loop."""
 
     try:
-        return asyncio.run(run_mcp())
-    except Exception as e:
-        raise SchedulerAgentError(f"MCP Call failed: {e}")
+        return asyncio.run(asyncio.wait_for(coro_factory(), timeout=SCHEDULER_AGENT_TIMEOUT))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(asyncio.wait_for(coro_factory(), timeout=SCHEDULER_AGENT_TIMEOUT))
+        finally:
+            loop.close()
+
+
+def _format_scheduler_mcp_result(result: Any) -> Dict[str, Any]:
+    """Convert an MCP tool result into the Scheduler Agent payload shape."""
+
+    contents = getattr(result, "content", None) or getattr(result, "contents", None) or []
+    text_parts: list[str] = []
+    for item in contents:
+        text = getattr(item, "text", None)
+        if isinstance(text, str) and text.strip():
+            text_parts.append(text.strip())
+
+    reply = "\n".join(text_parts).strip()
+    if not reply:
+        reply = "Scheduler エージェントからの応答が空でした。"
+
+    return {"reply": reply}
+
+
+def _call_scheduler_agent_chat_via_mcp(command: str) -> tuple[Dict[str, Any] | None, list[str]]:
+    """Best-effort MCP call to the Scheduler Agent."""
+
+    errors: list[str] = []
+
+    if not _USE_SCHEDULER_AGENT_MCP:
+        return None, errors
+
+    try:
+        from mcp import ClientSession
+        from mcp.client.sse import sse_client
+    except Exception as exc:  # noqa: BLE001
+        return None, [f"MCP クライアントの初期化に失敗しました: {exc}"]
+
+    base = _get_first_scheduler_agent_base()
+    if not base:
+        return None, ["Scheduler Agent base URL is not configured."]
+
+    async def _call_tool():
+        sse_url = _build_scheduler_agent_url(base, "/mcp/sse")
+        async with sse_client(sse_url, timeout=SCHEDULER_AGENT_TIMEOUT) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+
+                tools_result = await session.list_tools()
+                tool_names = [getattr(tool, "name", "") for tool in getattr(tools_result, "tools", None) or []]
+                if _SCHEDULER_AGENT_MCP_TOOL not in tool_names:
+                    raise SchedulerAgentError(
+                        f"MCP ツール {_SCHEDULER_AGENT_MCP_TOOL} が Scheduler Agent で見つかりませんでした。"
+                    )
+
+                result = await session.call_tool(_SCHEDULER_AGENT_MCP_TOOL, {"instruction": command})
+                return _format_scheduler_mcp_result(result)
+
+    try:
+        return _run_scheduler_mcp_with_timeout(_call_tool), errors
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"{base}: {exc}")
+        return None, errors
+
+
+def _call_scheduler_agent_chat_via_http(command: str) -> Dict[str, Any]:
+    """Fallback HTTP call to Scheduler Agent chat endpoint."""
+
+    payload = {"messages": [{"role": "user", "content": command}]}
+    return _post_scheduler_agent("/api/chat", payload)
+
+
+def _call_scheduler_agent_chat(command: str) -> Dict[str, Any]:
+    """Send a single-shot chat command to the Scheduler Agent via MCP with HTTP fallback."""
+
+    mcp_result: Dict[str, Any] | None = None
+    mcp_errors: list[str] = []
+
+    mcp_result, mcp_errors = _call_scheduler_agent_chat_via_mcp(command)
+    if mcp_result is not None:
+        return mcp_result
+
+    try:
+        return _call_scheduler_agent_chat_via_http(command)
+    except SchedulerAgentError as exc:
+        if mcp_errors:
+            message_lines = [str(exc), "MCP 経由での呼び出しも失敗しました:"]
+            message_lines.extend(f"- {error}" for error in mcp_errors)
+            raise SchedulerAgentError(
+                "\n".join(message_lines),
+                status_code=getattr(exc, "status_code", 502),
+            ) from exc
+        raise
 
 
 def _call_scheduler_agent_conversation_review(
@@ -270,19 +342,103 @@ def _call_scheduler_agent_conversation_review(
 ) -> Dict[str, Any]:
     """Send recent conversation turns to the Scheduler Agent for analysis."""
 
-    return _post_scheduler_agent(
-        "/api/conversations/review",
-        {"history": conversation_history},
-    )
+    mcp_result: Dict[str, Any] | None = None
+    mcp_errors: list[str] = []
+
+    mcp_result, mcp_errors = _call_scheduler_agent_conversation_review_via_mcp(conversation_history)
+    if mcp_result is not None:
+        return mcp_result
+
+    try:
+        return _post_scheduler_agent(
+            "/api/conversations/review",
+            {"history": conversation_history},
+        )
+    except SchedulerAgentError as exc:
+        if mcp_errors:
+            message_lines = [str(exc), "MCP 経由での会話同期も失敗しました:"]
+            message_lines.extend(f"- {error}" for error in mcp_errors)
+            raise SchedulerAgentError(
+                "\n".join(message_lines),
+                status_code=getattr(exc, "status_code", 502),
+            ) from exc
+        raise
+
+
+def _parse_scheduler_history_mcp_result(result: Any) -> Dict[str, Any]:
+    """Extract JSON payload from Scheduler Agent MCP analyze_conversation."""
+
+    contents = getattr(result, "content", None) or getattr(result, "contents", None) or []
+    for content in contents:
+        text = getattr(content, "text", None)
+        if not isinstance(text, str) or not text.strip():
+            continue
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    raise SchedulerAgentError("Scheduler Agent MCP analyze_conversation が空の応答を返しました。")
+
+
+def _call_scheduler_agent_conversation_review_via_mcp(
+    conversation_history: List[Dict[str, str]],
+) -> tuple[Dict[str, Any] | None, list[str]]:
+    """Best-effort MCP call for conversation review."""
+
+    errors: list[str] = []
+
+    if not _USE_SCHEDULER_AGENT_MCP:
+        return None, errors
+
+    try:
+        from mcp import ClientSession
+        from mcp.client.sse import sse_client
+    except Exception as exc:  # noqa: BLE001
+        return None, [f"MCP クライアントの初期化に失敗しました: {exc}"]
+
+    bases = _iter_scheduler_agent_bases()
+    if not bases:
+        return None, ["Scheduler Agent の接続先が設定されていません。"]
+
+    async def _call_tool(base: str):
+        sse_url = _build_scheduler_agent_url(base, "/mcp/sse")
+        async with sse_client(sse_url, timeout=SCHEDULER_AGENT_TIMEOUT) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools_result = await session.list_tools()
+                tool_names = [getattr(tool, "name", "") for tool in getattr(tools_result, "tools", None) or []]
+                if _SCHEDULER_AGENT_MCP_CONVERSATION_TOOL not in tool_names:
+                    raise SchedulerAgentError("MCP ツール analyze_conversation が Scheduler Agent で見つかりませんでした。")
+
+                result = await session.call_tool(
+                    _SCHEDULER_AGENT_MCP_CONVERSATION_TOOL,
+                    {"conversation_history": conversation_history},
+                )
+                return _parse_scheduler_history_mcp_result(result)
+
+    for base in bases:
+        try:
+            result = _run_scheduler_mcp_with_timeout(lambda: _call_tool(base))
+            return result, errors
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{base}: {exc}")
+            continue
+
+    return None, errors
 
 
 def _fetch_calendar_data(year: int, month: int) -> Dict[str, Any]:
     """Fetch calendar data from Scheduler Agent."""
     return _call_scheduler_agent("/api/calendar", params={"year": year, "month": month})
 
+
 def _fetch_day_view_data(date_str: str) -> Dict[str, Any]:
     """Fetch day view data from Scheduler Agent."""
     return _call_scheduler_agent(f"/api/day/{date_str}")
+
 
 def _fetch_routines_data() -> Dict[str, Any]:
     """Fetch routines data from Scheduler Agent."""

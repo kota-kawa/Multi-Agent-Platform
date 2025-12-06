@@ -8,7 +8,7 @@ import re
 import threading
 from typing import Any, Dict, List, Optional
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from .browser import _call_browser_agent_chat, _call_browser_agent_history_check
@@ -286,7 +286,10 @@ def _refresh_memory(memory_kind: str, recent_history: List[Dict[str, str]]) -> N
     prompt = _build_memory_prompt(label, current_memory, normalized_history, current_datetime_str)
 
     try:
-        response = llm.invoke([SystemMessage(content=prompt)])
+        response = llm.invoke([
+            SystemMessage(content=prompt),
+            HumanMessage(content="上記の指示に従ってメモリ更新差分をJSON形式で出力してください。"),
+        ])
         response_text = _extract_text(response.content).strip()
 
         diff = _coerce_memory_diff(response_text, memory_kind)
@@ -354,14 +357,14 @@ def _handle_agent_responses(
                 }
             )
 
-    life_response = responses.get("Life-Assistant")
+    life_response = responses.get("Life-Style")
     if isinstance(life_response, dict):
         needs_help = life_response.get("needs_help")
         question = life_response.get("question")
         if needs_help and isinstance(question, str) and question.strip():
             action_requests.append(
                 {
-                    "agent": "Life-Assistant",
+                    "agent": "Life-Style",
                     "kind": "lifestyle_query",
                     "description": question.strip(),
                 }
@@ -397,7 +400,7 @@ def _handle_agent_responses(
             if kind == "browser_task":
                 result = _call_browser_agent_chat(description)
                 summary = result.get("run_summary") if isinstance(result, dict) else None
-                message = summary or f"Browser Agentに依頼しました: {description}"
+                message = summary or f"ブラウザエージェントに依頼しました: {description}"
             elif kind == "iot_commands":
                 # Send a concise command to IoT agent chat; IoT agent will interpret.
                 prompt = f"以下のIoTアクションを実行してください: {description}"
@@ -413,7 +416,7 @@ def _handle_agent_responses(
                 )
                 message = result.get("answer") if isinstance(result, dict) else None
                 if not message:
-                    message = f"Life-Assistant Agentに問い合わせました: {description}"
+                    message = f"Life-Style Agentに問い合わせました: {description}"
             else:
                 continue
 
@@ -453,11 +456,11 @@ def _send_recent_history_to_agents(history: List[Dict[str, str]]) -> None:
             method="POST",
             payload=payload,
         )
-        responses["Life-Assistant"] = lifestyle_response if isinstance(lifestyle_response, dict) else {}
-        had_reply = _extract_reply("Life-Assistant", lifestyle_response) or had_reply
-        response_order.append("Life-Assistant")
+        responses["Life-Style"] = lifestyle_response if isinstance(lifestyle_response, dict) else {}
+        had_reply = _extract_reply("Life-Style", lifestyle_response) or had_reply
+        response_order.append("Life-Style")
     except LifestyleAPIError as e:
-        logging.warning("Error sending history to Life-Assistant: %s", e)
+        logging.warning("Error sending history to Life-Style: %s", e)
 
     global _browser_history_supported
     if _browser_history_supported:

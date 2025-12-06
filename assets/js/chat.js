@@ -10,7 +10,7 @@ import {
 import { ensureIotDashboardInitialized, iotAgentRequest, summarizeIotDevices } from "./iot.js";
 import { schedulerAgentRequest, ensureSchedulerAgentInitialized } from "./scheduler.js";
 
-/* ---------- Chat + Summarizer (Life-Assistant integration) ---------- */
+/* ---------- Chat + Summarizer (Life-Style integration) ---------- */
 
 const chatLog = $("#chatLog");
 const sidebarChatLog = $("#sidebarChatLog");
@@ -88,7 +88,7 @@ function clearOrchestratorBrowserMirrorMessages({ preserve } = {}) {
 let orchestratorBrowserTaskActive = false;
 
 const ORCHESTRATOR_AGENT_LABELS = {
-  lifestyle: "Life-Assistantエージェント",
+  lifestyle: "Life-Styleエージェント",
   browser: "ブラウザエージェント",
   iot: "IoT エージェント",
   scheduler: "Scheduler エージェント",
@@ -390,8 +390,8 @@ function createMessageElement(message, { compact = false } = {}) {
   
   // Normalize specific known names for cleaner display
   if (agentName.toLowerCase().includes("orchestrator")) agentName = "Orchestrator";
-  else if (agentName.toLowerCase().includes("life-assistant")) agentName = "Life-Assistant";
-  else if (agentName.toLowerCase().includes("browser")) agentName = "Browser Agent";
+  else if (agentName.toLowerCase().includes("life-style")) agentName = "Life-Style";
+  else if (agentName.toLowerCase().includes("browser")) agentName = "ブラウザエージェント";
   else if (agentName.toLowerCase().includes("iot")) agentName = "IoT Agent";
   else if (agentName.toLowerCase().includes("scheduler")) agentName = "Scheduler Agent";
 
@@ -440,13 +440,13 @@ function renderSidebarMessages(messages) {
 
 const ASSISTANT_AGENT_LABEL_SYNONYMS = {
   lifestyle: [
-    "life-assistantエージェント",
-    "life assistantエージェント",
-    "life-assistant agent",
-    "life assistant agent",
-    "life-assistant-agent",
-    "life assistant",
-    "life-assistant",
+    "life-styleエージェント",
+    "life styleエージェント",
+    "life-style agent",
+    "life style agent",
+    "life-style-agent",
+    "life style",
+    "life-style",
     "qa gemini",
     "qaエージェント",
     "qa エージェント",
