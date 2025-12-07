@@ -190,15 +190,16 @@ class TestMemoryManager(unittest.TestCase):
             ]
         }
         manager.apply_diff(diff)
-        
+    
         formatted = manager.get_formatted_memory()
-        
+    
         self.assertIn("【好み・嗜好】", formatted)
         self.assertIn("醤油ラーメンが好き", formatted)
-        self.assertIn("好きな食べ物: ラーメン", formatted)
+        # Updated assertion to handle metadata string (e.g. "好きな食べ物 (更新:2025-12-07): ラーメン")
+        self.assertIn("好きな食べ物", formatted)
+        self.assertIn("ラーメン", formatted)
         self.assertIn("【旅行】", formatted)
         self.assertIn("来週京都旅行を計画中", formatted)
-
     def test_migrate_memory_without_category_summaries(self):
         # Existing memory format without category_summaries
         old_format = {

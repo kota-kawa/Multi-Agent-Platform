@@ -156,9 +156,15 @@ def _coerce_memory_diff(response_text: str, memory_kind: str) -> dict[str, Any]:
     operations = parsed.get("operations")
     if not isinstance(operations, list):
         operations = []
+    
+    # Extract new top-level data fields
+    new_data = parsed.get("new_data")
+    if not isinstance(new_data, dict):
+        new_data = {}
 
     parsed["category_summaries"] = category_summaries
     parsed["operations"] = operations
+    parsed["new_data"] = new_data
     return parsed
 
 
@@ -184,8 +190,31 @@ def _build_memory_prompt(
     """Craft a prompt that reconciles existing memory with the latest chat, requesting JSON diffs."""
 
     history_text = _format_history_lines(recent_history)
-    # Serialize existing memory to JSON for the prompt, ensuring it's readable
     memory_json = json.dumps(current_memory, ensure_ascii=False, indent=2)
+
+    # Specific instructions based on memory type
+    if "短期" in kind_label:
+        schema_instruction = """
+#### 2. 短期記憶の構造化データ (new_data)
+以下のフィールドを必要に応じて更新してください:
+- `active_task` (Dict): 現在進行中のタスク情報（task_id, goal, status, started_at）
+- `pending_questions` (List[str]): ユーザーへの未回答の質問や確認事項
+- `recent_entities` (List[Dict]): 直近の会話で言及された固有名詞（人名, 場所, 日時, context）
+- `emotional_context` (str): ユーザーの現在の感情状態や緊急度（normal, urgent, frustrated, happy 等）
+- `expires_at` (str): このコンテキストの有効期限（YYYY-MM-DD HH:MM:SS）
+"""
+    else:
+        schema_instruction = """
+#### 2. 長期記憶の構造化データ (new_data)
+以下のフィールドを必要に応じて更新してください:
+- `user_profile` (Dict): ユーザーの基本属性（name, timezone, language, occupation, birthday）
+- `preferences` (Dict): 永続的な好み設定（communication_style, response_length, formality_level）
+- `recurring_patterns` (List[Dict]): 繰り返し観測されるパターン（例: "毎朝7時に起きる"）
+- `learned_corrections` (List[Dict]): ユーザーから指摘された訂正事項（original, corrected, learned_at）
+- `relationship_graph` (List[Dict]): 人間関係（name, relation, notes）
+- `topics_of_interest` (List[str]): ユーザーが強い関心を持つトピック
+- `do_not_mention` (List[str]): 触れるべきでないセンシティブなトピック
+"""
 
     return f"""
 現在の日時: {current_datetime_str}
@@ -204,85 +233,55 @@ def _build_memory_prompt(
 ### 指示
 
 #### 1. カテゴリ別サマリー (category_summaries) の更新
-各カテゴリに該当する情報を、そのカテゴリのサマリーとして更新してください。
-**重要**: 各カテゴリのサマリーは独立して更新されるため、他のカテゴリの情報が失われることはありません。
-更新が必要なカテゴリのみを`category_summaries`に含めてください。
+各カテゴリのサマリーテキストを更新してください。
+カテゴリ: profile, preference, health, work, hobby, plan, relationship, life, travel, food, schedule, general
 
-利用可能なカテゴリ:
-- `profile`: 基本情報（年齢、職業、居住地など）
-- `preference`: 好み・嗜好（食べ物、趣味など）
-- `health`: 健康情報
-- `work`: 仕事・学業
-- `hobby`: 趣味
-- `plan`: 予定・計画
-- `relationship`: 人間関係
-- `life`: 生活習慣・エリア
-- `travel`: 旅行
-- `food`: 食事
-- `schedule`: スケジュール
-- `general`: その他
+{schema_instruction}
 
-**具体例**:
-- 「ラーメンは醤油が好き」→ `"preference": "醤油ラーメンが好き"`
-- 「来週京都に旅行」→ `"travel": "来週京都への旅行を計画中"`
+#### 3. 記憶の更新（セマンティック・エピソード・プロジェクト）
+以下のオペレーションを使用して記憶を更新してください。
 
-#### 2. スロット (slots) の更新ルール
-会話からユーザーに関する「事実」を抽出してスロットに保存します。
+**A. スロット (`set_slot`) の更新ルール【重要】**
+- **重複排除と統合**:
+  - まず「現在の記憶データ」の `slots` を確認し、すでに類似の情報が存在しないかチェックしてください。
+  - 類似情報（例: `fav_food` と `favorite_food`）がある場合、新規作成ではなく、既存のスロットIDを使用して情報を統合・上書きしてください。
 
-- **相対日時の絶対化**:
-  - 「明日」「来週」などの表現は、現在日時 ({current_datetime_str}) を基準に絶対的な日付(YYYY-MM-DD)に変換して保存してください。
-  - 例: "来週の水曜日にジムに行く" (現在: 2025-10-20) → `2025-10-29` として保存。
+**B. エピソード (`add_episode`) の追加ルール**
+- **重要な出来事のみ**: 重要な決定、アクション、ライフイベントのみを記録してください。
 
-- **削除・訂正・無効化**:
-  - 以前の事実が否定されたり、無効になった場合（例: "もうタバコはやめた"）、`value` に `null` を設定してスロットを更新してください。
+**C. プロジェクト (`update_project`) の更新ルール**
+- 新しいプロジェクトの開始や状態変更時に使用してください。
 
-- **データの正規化と配列化**:
-  - 表記ゆれを防ぐため、一般的な名称に正規化してください（例: "マック" → "マクドナルド"）。
-  - 複数の値を持つ可能性がある項目（趣味、好きな食べ物など）は、JSON配列 `["A", "B"]` で保存してください。
+**D. 既存メモリの活用評価 (`record_usage`)【新規】**
+- 直近のAIの回答（`assistant`のメッセージ）を確認し、それが「現在の記憶データ」内のどのスロット情報を利用して生成されたか特定してください。
+- **活用された情報**: 回答の根拠となったスロットがあれば、その `slot_id` と `used: true` を出力してください。
+- **無視された/不正確な情報**: 会話の文脈に関連しているにもかかわらず、内容が古かったり不正確で回答に使用されなかった（無視された）スロットがある場合、`used: false` を出力してください。
+  - 例: ユーザーが「住所変わったよ」と言った時、古い住所スロットが提示されていた場合 → `used: false`
+- **注意**: 全てのスロットを評価する必要はありません。会話に明確に関連したものだけを抽出してください。
 
-- **プライバシー保護 (Security)**:
-  - **機密情報の除外**: パスワード、クレジットカード番号、APIキーなどの機密情報は**絶対にスロットに保存しないでください**。
-
-- **スロットIDの命名規則**:
-  - 英小文字とアンダースコアのみ使用 (`user_preference_food`, `user_profile_age` など)。
-  - `category_subcategory_item` の形式を推奨。
-
-- **カテゴリの限定**:
-  - 以下のいずれかを使用: `profile` (基本情報), `preference` (好み), `health` (健康), `work` (仕事), `hobby` (趣味), `plan` (計画), `relationship` (人間関係), `life` (生活), `travel` (旅行), `food` (食事), `schedule` (スケジュール), `general` (その他)。
-
-- **信頼度スコア (confidence) のガイドライン**:
-  - `1.0`: ユーザーが明言した事実（例: "私は30歳です"）。
-  - `0.8`: 文脈から強く推測される（例: "毎朝コーヒーを飲む" → コーヒーが好き）。
-  - `0.5`: 不確実または一時的（例: "たぶん来週行くかも"）。
-
-- **変更検知の基準 (log_change)**:
-  - **重要な変更 (`true`)**: 好みの逆転（好き→嫌い）、居住地の変更、転職、長期計画の決定。
-  - **些細な変更 (`false`)**: 詳細の微修正、言い回しの変化。
-
-- **会話のコンテキスト認識**:
-  - **事実と仮定の区別**: "もし犬を飼うなら柴犬がいい" は `preference_pet_potential` として保存し、`user_has_pet` ではありません。
-  - **質問の除外**: ユーザーの質問（"天気はどう？"）自体を事実として保存しないでください。
-
-#### 3. 出力形式
-- **JSON形式のみ**を出力してください。Markdownのコードブロック（```json ... ```）で囲んでください。
-- 以下のスキーマに従ってください:
-
+#### 出力スキーマ (JSON)
 ```json
 {{
-  "category_summaries": {{
-    "preference": "醤油ラーメンが好き。寿司も好む。",
-    "travel": "来週京都への旅行を計画中"
+  "new_data": {{
+    // 上記の構造化データフィールド
   }},
+  "category_summaries": {{ ... }},
   "operations": [
     {{
       "op": "set_slot",
       "slot_id": "preference_food_ramen",
       "value": "醤油ラーメン",
-      "log_change": true,
-      "reason": "以前は塩ラーメンが好きだったが、最近は醤油にはまっていると発言したため",
-      "label": "好きなラーメンの味",
-      "category": "preference",
-      "confidence": 0.9
+      "category": "preference"
+    }},
+    {{
+      "op": "record_usage",
+      "slot_id": "user_profile_name",
+      "used": true
+    }},
+    {{
+      "op": "record_usage",
+      "slot_id": "user_address_old",
+      "used": false
     }}
   ]
 }}
@@ -316,6 +315,11 @@ def _refresh_memory(memory_kind: str, recent_history: List[Dict[str, str]]) -> N
         label = "長期記憶"
 
     manager = MemoryManager(memory_path)
+    
+    # Apply time-based decay before processing updates (only for long-term memory or daily check)
+    if memory_kind != "short":
+        manager.apply_decay()
+        
     current_memory = manager.load_memory()
     
     current_datetime_str = _current_datetime_line()

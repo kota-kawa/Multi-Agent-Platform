@@ -11,7 +11,7 @@
 - `multi_agent_app/__init__.py`: application factory wiring templates/static paths and registering the blueprint from `routes.py`.
 - `multi_agent_app/routes.py`: Flask blueprint + HTTP routes (SPA shell, orchestrator SSE endpoint, Life-Assistant/Browser/IoT proxies, chat-history + memory APIs).
 - `multi_agent_app/orchestrator.py`: LangGraph-based planner/executor/reviewer plus supporting TypedDicts that define orchestrator state.
-- `multi_agent_app/browser.py`, `multi_agent_app/iot.py`, `multi_agent_app/lifestyle.py`, `multi_agent_app/history.py`, `multi_agent_app/config.py`: helper modules for upstream calls, env/config parsing, chat history propagation, and timeout constants.
+- `multi_agent_app/browser.py`, `multi_agent_app/iot.py`, `multi_agent_app/lifestyle.py`, `multi_agent_app/scheduler.py`, `multi_agent_app/history.py`, `multi_agent_app/config.py`: helper modules for upstream calls, env/config parsing, chat history propagation, and timeout constants.
 - `assets/app.js`: SPA logic (view switching, orchestrator SSE client, Browser Agent stream mirroring, IoT dashboard widgets, shared sidebar chat).
 - `assets/memory.js`: fetches/saves short- and long-term memories against `/api/memory`.
 - `assets/styles.css`: shared theme, responsive layout, per-view styling (sidebar, browser embed frame, IoT cards, orchestrator panel).
@@ -46,7 +46,7 @@
 
 ## Multi-Agent Orchestrator & APIs
 - `MultiAgentOrchestrator` (LangGraph) uses three nodes—`plan`, `execute`, `review`—to iterate through task lists, with SSE events emitted for `plan`, `before_execution`, `browser_init`, `execution_progress`, `after_execution`, and `complete`. Preserve event names/shape; the SPA assumes them.
-- `_AGENT_ALIASES` and `_AGENT_DISPLAY_NAMES` map friendly names to `lifestyle`, `browser`, `iot`. Update both when adding agents, and expand the front-end’s `AGENT_TO_VIEW_MAP`.
+- `_AGENT_ALIASES` and `_AGENT_DISPLAY_NAMES` map friendly names to `lifestyle`, `browser`, `iot`, `scheduler`. Update both when adding agents, and expand the front-end’s `AGENT_TO_VIEW_MAP`.
 - Planner prompt allows direct answers (zero tasks) if orchestrator can reply without agents. Review prompt enforces JSON responses driving retry logic (max two retries).
 - `/orchestrator/chat` streams responses via SSE. Client payload may include `browser_agent_base(s)` to override Browser Agent hosts for that request.
 - Life-Assistantエージェントプロキシ: `/rag_answer`, `/conversation_history`, `/conversation_summary`, `/reset_history`—all call `_call_lifestyle` with per-request logging/error handling. オーケストレーター（一般ビュー）は `/agent_rag_answer` を使ってリモート履歴へ書き込まずに回答を取得する。
