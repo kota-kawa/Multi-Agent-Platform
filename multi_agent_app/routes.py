@@ -319,7 +319,10 @@ def api_memory() -> Any:
             st_mgr.save_memory(st_mem)
             
             # Save settings
-            save_memory_settings({"enabled": data.get("enabled")})
+            save_memory_settings({
+                "enabled": data.get("enabled"),
+                "history_sync_enabled": data.get("history_sync_enabled"),
+            })
             
             return jsonify({"message": "Memory saved successfully."})
         except Exception as exc:
@@ -353,6 +356,7 @@ def api_memory() -> Any:
         "long_term_categories": long_term_categories,
         "short_term_categories": short_term_categories,
         "enabled": settings.get("enabled", True),
+        "history_sync_enabled": settings.get("history_sync_enabled", True),
     })
 
 

@@ -47,15 +47,8 @@ def _expand_browser_agent_base(base: str) -> Iterable[str]:
     except ValueError:
         return
 
-    hostname = parsed.hostname or ""
+    hostname = (parsed.hostname or "").lower()
     if not hostname:
-        return
-
-    replacements: list[str] = []
-    if "_" in hostname:
-        replacements.append(hostname.replace("_", "-"))
-
-    if not replacements:
         return
 
     auth = ""
@@ -64,12 +57,29 @@ def _expand_browser_agent_base(base: str) -> Iterable[str]:
         if parsed.password:
             auth += f":{parsed.password}"
         auth += "@"
-    port = f":{parsed.port}" if parsed.port else ""
+    port = parsed.port
+    port_suffix = f":{port}" if port else ""
+
+    if hostname in {"localhost", "127.0.0.1"}:
+        alias_port = port or 5005
+        alias_netloc = f"{auth}browser-agent"
+        if alias_port:
+            alias_netloc += f":{alias_port}"
+        alias = urlunparse(parsed._replace(netloc=alias_netloc))
+        if alias:
+            yield alias
+
+    replacements: list[str] = []
+    if "_" in hostname:
+        replacements.append(hostname.replace("_", "-"))
+
+    if not replacements:
+        return
 
     for replacement in replacements:
         if replacement == hostname:
             continue
-        netloc = f"{auth}{replacement}{port}"
+        netloc = f"{auth}{replacement}{port_suffix}"
         alias = urlunparse(parsed._replace(netloc=netloc))
         if alias:
             yield alias
@@ -106,10 +116,8 @@ def _canonicalise_browser_agent_base(value: str) -> str:
         auth += "@"
 
     port = parsed.port
-    if host in {"localhost", "127.0.0.1"}:
-        host = "browser-agent"
-        if port is None:
-            port = 5005
+    if port is None and host in {"localhost", "127.0.0.1", "browser-agent"}:
+        port = 5005
 
     netloc = f"{auth}{host}"
     if port is not None:

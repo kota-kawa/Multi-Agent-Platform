@@ -17,7 +17,7 @@ from .errors import BrowserAgentError, LifestyleAPIError, IotAgentError, Schedul
 from .lifestyle import _call_lifestyle
 from .iot import _call_iot_agent_command, _call_iot_agent_conversation_review
 from .scheduler import _call_scheduler_agent_conversation_review
-from .settings import resolve_llm_config
+from .settings import load_memory_settings, resolve_llm_config
 from .memory_manager import MemoryManager
 
 _browser_history_supported = True
@@ -580,7 +580,9 @@ def _append_to_chat_history(
         return
 
     if broadcast and total_entries % 5 == 0:
-        threading.Thread(target=_send_recent_history_to_agents, args=(history,)).start()
+        memory_settings = load_memory_settings()
+        if memory_settings.get("history_sync_enabled", True):
+            threading.Thread(target=_send_recent_history_to_agents, args=(history,)).start()
     if total_entries % 10 == 0:
         threading.Thread(target=_refresh_memory, args=("short", history[-10:])).start()
     if total_entries % 30 == 0:

@@ -12,14 +12,19 @@ from multi_agent_app.history import _append_to_chat_history
 class TestHistory(unittest.TestCase):
     def setUp(self):
         self.chat_history_path = "chat_history.json"
+        self.memory_settings_path = "memory_settings.json"
         # テスト実行前に既存のchat_history.jsonをクリーンアップ
         if os.path.exists(self.chat_history_path):
             os.remove(self.chat_history_path)
+        if os.path.exists(self.memory_settings_path):
+            os.remove(self.memory_settings_path)
 
     def tearDown(self):
         # テスト実行後にchat_history.jsonをクリーンアップ
         if os.path.exists(self.chat_history_path):
             os.remove(self.chat_history_path)
+        if os.path.exists(self.memory_settings_path):
+            os.remove(self.memory_settings_path)
 
     def _read_chat_history(self):
         if not os.path.exists(self.chat_history_path):
@@ -83,6 +88,17 @@ class TestHistory(unittest.TestCase):
         self.assertEqual(history[0]["id"], 1)
         self.assertEqual(history[0]["role"], "user")
         self.assertEqual(history[0]["content"], "New message after bad JSON.")
+
+    @patch('multi_agent_app.history._send_recent_history_to_agents')
+    @patch('multi_agent_app.history._refresh_memory')
+    def test_history_sync_toggle_disables_sending(self, mock_refresh_memory, mock_send_recent_history_to_agents):
+        with open(self.memory_settings_path, "w", encoding="utf-8") as f:
+            json.dump({"history_sync_enabled": False}, f, ensure_ascii=False)
+
+        for idx in range(5):
+            _append_to_chat_history("user", f"message {idx}")
+
+        mock_send_recent_history_to_agents.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()

@@ -94,7 +94,7 @@ DEFAULT_BROWSER_AGENT_BASES = (
     "http://localhost:5005",
 )
 BROWSER_AGENT_CONNECT_TIMEOUT = float(
-    _parse_timeout_env("BROWSER_AGENT_CONNECT_TIMEOUT", 20.0) or 20.0
+    _parse_timeout_env("BROWSER_AGENT_CONNECT_TIMEOUT", 6.0) or 6.0
 )
 BROWSER_AGENT_TIMEOUT = float(_parse_timeout_env("BROWSER_AGENT_TIMEOUT", 120.0) or 120.0)
 BROWSER_AGENT_STREAM_TIMEOUT = _parse_timeout_env(

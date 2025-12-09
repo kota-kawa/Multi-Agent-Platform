@@ -27,6 +27,7 @@ DEFAULT_MODEL_SELECTIONS: Dict[str, Dict[str, str]] = {
 
 DEFAULT_MEMORY_SETTINGS: Dict[str, bool] = {
     "enabled": True,
+    "history_sync_enabled": True,
 }
 
 LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
@@ -261,14 +262,25 @@ def load_memory_settings() -> Dict[str, bool]:
         return dict(DEFAULT_MEMORY_SETTINGS)
     
     return {
-        "enabled": _coerce_bool(data.get("enabled"), DEFAULT_MEMORY_SETTINGS["enabled"])
+        "enabled": _coerce_bool(data.get("enabled"), DEFAULT_MEMORY_SETTINGS["enabled"]),
+        "history_sync_enabled": _coerce_bool(
+            data.get("history_sync_enabled"),
+            DEFAULT_MEMORY_SETTINGS["history_sync_enabled"],
+        ),
     }
 
 
 def save_memory_settings(payload: Dict[str, Any]) -> Dict[str, bool]:
     """Persist the memory usage settings."""
     enabled = _coerce_bool(payload.get("enabled"), DEFAULT_MEMORY_SETTINGS["enabled"])
-    settings = {"enabled": enabled}
+    history_sync_enabled = _coerce_bool(
+        payload.get("history_sync_enabled"),
+        DEFAULT_MEMORY_SETTINGS["history_sync_enabled"],
+    )
+    settings = {
+        "enabled": enabled,
+        "history_sync_enabled": history_sync_enabled,
+    }
     with open(_MEMORY_SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(settings, f, ensure_ascii=False, indent=2)
     return settings

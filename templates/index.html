@@ -376,6 +376,23 @@
               <p id="chatCountNote" class="settings-stat__note">読み込み待ち</p>
             </div>
           </div>
+          <div class="settings-switches" role="group" aria-label="会話履歴の送信設定">
+            <label class="settings-switch" for="settingsHistorySyncToggle">
+              <div class="settings-switch__text">
+                <span class="settings-switch__name">5回ごとの履歴送信</span>
+                <span class="settings-switch__desc">オンなら共通チャットの直近 5 メッセージを各エージェントに送信します。</span>
+              </div>
+              <span class="settings-switch__control">
+                <input
+                  id="settingsHistorySyncToggle"
+                  type="checkbox"
+                  role="switch"
+                  aria-label="5回ごとの会話履歴の送信を有効化"
+                  checked
+                />
+              </span>
+            </label>
+          </div>
         </div>
 
         <div class="settings-section">

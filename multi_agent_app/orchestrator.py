@@ -31,7 +31,6 @@ from .config import (
     BROWSER_AGENT_FINAL_MARKER,
     BROWSER_AGENT_FINAL_NOTICE,
     BROWSER_AGENT_STREAM_TIMEOUT,
-    BROWSER_AGENT_TIMEOUT,
     ORCHESTRATOR_MAX_TASKS,
     _current_datetime_line,
 )
@@ -906,28 +905,6 @@ class MultiAgentOrchestrator:
         base: str,
         command: str,
     ) -> Iterator[Dict[str, Any]]:
-        history_url = _build_browser_agent_url(base, "/api/history")
-        try:
-            history_response = requests.get(
-                history_url, timeout=_browser_agent_timeout(BROWSER_AGENT_TIMEOUT)
-            )
-        except requests.exceptions.RequestException as exc:
-            raise BrowserAgentError(f"ブラウザエージェントの履歴取得に失敗しました: {exc}") from exc
-
-        if not history_response.ok:
-            message = _extract_browser_error_message(
-                history_response,
-                "ブラウザエージェントの履歴取得に失敗しました。",
-            )
-            raise BrowserAgentError(message, status_code=history_response.status_code)
-
-        try:
-            history_data = history_response.json()
-        except ValueError as exc:
-            raise BrowserAgentError("ブラウザエージェントの履歴レスポンスを解析できませんでした。") from exc
-
-        messages = history_data.get("messages") if isinstance(history_data, dict) else []
-
         event_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         stop_event = threading.Event()
         stream_ready = threading.Event()
@@ -1068,33 +1045,32 @@ class MultiAgentOrchestrator:
             event_queue.put({"kind": "chat_result", "data": data})
             event_queue.put({"kind": "chat_complete"})
 
+        chat_thread = threading.Thread(target=_chat_worker, daemon=True)
         stream_thread = threading.Thread(target=_stream_worker, daemon=True)
         stream_thread.start()
+        chat_thread.start()
 
-        stream_init_timeout = BROWSER_AGENT_CONNECT_TIMEOUT or 10.0
+        # Wait briefly for the stream handshake, but never block chat execution.
+        stream_init_timeout = min(BROWSER_AGENT_CONNECT_TIMEOUT or 10.0, 6.0)
+        stream_pre_failed = False
         if not stream_ready.wait(timeout=stream_init_timeout):
+            stream_status["error"] = BrowserAgentError("ブラウザエージェントのイベントストリーム初期化がタイムアウトしました。")
+            stream_pre_failed = True
+        if stream_status.get("error"):
+            stream_pre_failed = True
+        if stream_pre_failed:
             stop_event.set()
             stored_response = response_holder.get("response")
             if stored_response is not None:
                 stored_response.close()
-            raise BrowserAgentError("ブラウザエージェントのイベントストリーム初期化がタイムアウトしました。")
-
-        if stream_status.get("error"):
-            error_obj = stream_status["error"]
-            if isinstance(error_obj, BrowserAgentError):
-                raise error_obj
-            raise BrowserAgentError(str(error_obj))
-
-        chat_thread = threading.Thread(target=_chat_worker, daemon=True)
-        chat_thread.start()
 
         progress_messages: Dict[Any, str] = {}
         anon_counter = 0
         latest_summary = ""
         chat_result: Dict[str, Any] | None = None
         chat_error: BrowserAgentError | None = None
-        stream_finished = False
-        stream_failed = False
+        stream_finished = stream_pre_failed
+        stream_failed = stream_pre_failed
         chat_finished = False
 
         def _stop_stream() -> None:
