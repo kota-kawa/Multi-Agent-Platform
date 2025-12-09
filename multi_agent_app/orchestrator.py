@@ -16,6 +16,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_anthropic import ChatAnthropic
 from langgraph.graph import END, StateGraph
 
+from multi_agent_app.config import BROWSER_AGENT_CONNECT_TIMEOUT
 from .browser import (
     _browser_agent_timeout,
     _build_browser_agent_url,
@@ -80,6 +81,7 @@ class OrchestratorState(TypedDict, total=False):
     current_index: int
     retry_counts: Dict[int, int]
     agent_connections: Dict[str, bool]
+    session_history: List[Dict[str, Any]]
 
 class MultiAgentOrchestrator:
     """LangGraph-based orchestrator that routes work to specialised agents."""
@@ -164,7 +166,7 @@ class MultiAgentOrchestrator:
     - **役割**: ユーザーのスケジュール管理、タスク管理、日報（日記・メモ）の記録・更新・参照を担当します。「予定を入れて」「タスクに追加して」「日報を書いて」「今日の予定は？」などの依頼は必ずこのエージェントを選択します。
     - **仕様**:
       - **日付省略時**: 日付が明示されていない場合は**「今日」**を対象としてコマンドを作成してください。
-      - **保存先**: 外部カレンダー（Google Calendar等）ではなく、エージェント内部のデータベースで管理します。
+      - **保存先**: **外部カレンダー（Google Calendar等）や外部メモアプリ（Notion等）との連携機能はありません。** ユーザーが「Googleカレンダーに入れて」と指示しても、外部連携はできないため、自動的に**エージェント内部のデータベース**に登録するコマンドを作成してください。その際、ユーザーに「Googleカレンダーは使えませんがよろしいですか？」と確認する必要はありません。
     - **重要**: **lifestyle エージェントは記録機能を持たないため、記録・保存・スケジュールに関する依頼は必ず scheduler に割り当ててください。**
 
 - 出力は JSON オブジェクトのみで、追加の説明やマークダウンを含めてはいけません。
@@ -177,10 +179,11 @@ class MultiAgentOrchestrator:
         - エージェントで対応できない内容の場合もタスクを生成せず、plan_summary でその旨やユーザーへ伝えるべき情報を説明してください。
 - plan_summary やタスク説明では、ユーザーが求める具体的な内容を必ず書き切り、件数を指定された場合はその数ちょうどの候補を詳細（例: 献立名や理由）付きで提示してください。「〜を提案します」「〜を確認します」などの宣言だけで回答を終わらせてはいけません。
 - 実行予定の宣言だけで終わらないでください。「〜を実行します」「〜をします」「確認します」など未来形の宣言だけを書かず、必ず実際にタスクを作成して実行するか、タスクを作成しない場合はその理由とユーザーへの具体的な回答や追加質問を plan_summary に含めてください。
-- **最優先事項（曖昧さへの対応）:**
+- **最優先事項（曖昧さへの対応と質問の抑制）:**
+    - **ユーザーへの質問は極力避けてください。** ユーザーの入力は最初の1回で完結させることが理想です。
     - ユーザーの依頼が曖昧または情報不足であっても、可能な限りユーザーの意図や文脈を予測し、質問をせずにタスクを実行してください。「たぶんこういうことだろう」と合理的に推測できる場合は、その推測に基づいてエージェントへの命令を作成してください。
     - 例: 「電気を消して」と言われたが場所が不明な場合 → 文脈から推測するか、家中の主要な電気を消すコマンドを発行するなど、気を利かせた対応をする。
-    - 例: 「いい感じのレストランを探して」 → 一般的な良店条件で検索を実行する。
+    - 例: 「日報を書いて」と言われたが保存先アプリが不明な場合 → デフォルトの Scheduler エージェント内部DBを使用し、保存先についての質問はしない。
     - **例外（質問すべきケース）:**
         - 物理的な配送や金銭的な取引など、取り返しがつかない操作において、住所や決済情報など**不可欠かつ推測不可能な重要情報**が欠落している場合に限り、`plan_summary` でユーザーに質問してください。
         - 質問する場合も、必要最小限の項目（最大3つまで）に絞り、ユーザーの負担を減らしてください。
@@ -203,7 +206,7 @@ class MultiAgentOrchestrator:
 - agent別ヒント:
   - browser: 目的のページ/検索キーワード/取得項目/件数を含める。結果の条件（例: 最新、公式、上位3件）を指示。
   - iot: device_id を明示（1台のみならそのIDをセット）、実行コマンド名と引数（例: duration=5.0, pattern='notify'）を具体的に書く。
-  - scheduler: 日付・時刻・タイムゾーン前提（未指定なら今日/現在のTZ）を埋め、予定タイトル/日報タイトルと状態変更を明記。日報やタスクの登録・更新・完了は必ず scheduler に発行する。
+  - scheduler: 日付・時刻・タイムゾーン前提（未指定なら今日/現在のTZ）を埋め、予定タイトル/日報タイトルと状態変更を明記。日報やタスクの登録・更新・完了は必ず scheduler に発行する。外部サービス（Google等）への言及はコマンドに含めず、「予定を登録して」のようにシンプルにする。
   - lifestyle: 質問内容や制約（人数・予算・時間帯など）を含め、要望の粒度を指定。日報や予定管理は担当しない。
 """
 
@@ -444,14 +447,11 @@ class MultiAgentOrchestrator:
                 logging.warning("Failed to load short-term memory: %s", exc)
                 short_term_memory = ""
 
-        try:
-            with open("chat_history.json", "r", encoding="utf-8") as f:
-                history = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            history = []
-
-        recent_history = history[-10:]
-        history_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_history])
+        history_for_prompt = state.get("session_history") or []
+        if not history_for_prompt:
+            history_for_prompt = self._history_from_last_user_turn(self._load_recent_chat_history(limit=200))
+        history_entries = self._normalise_history_entries(history_for_prompt)
+        history_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history_entries])
 
         prompt = self._planner_prompt(enabled_agents, disabled_agents, device_context)
         if incremental:
@@ -1018,7 +1018,7 @@ class MultiAgentOrchestrator:
             try:
                 response = requests.post(
                     chat_url,
-                    json={"prompt": command, "new_task": True},
+                    json={"prompt": command, "new_task": True, "skip_conversation_review": True},
                     timeout=_browser_agent_timeout(BROWSER_AGENT_CHAT_TIMEOUT),
                 )
             except requests.exceptions.RequestException as exc:
@@ -1071,7 +1071,8 @@ class MultiAgentOrchestrator:
         stream_thread = threading.Thread(target=_stream_worker, daemon=True)
         stream_thread.start()
 
-        if not stream_ready.wait(timeout=5):
+        stream_init_timeout = BROWSER_AGENT_CONNECT_TIMEOUT or 10.0
+        if not stream_ready.wait(timeout=stream_init_timeout):
             stop_event.set()
             stored_response = response_holder.get("response")
             if stored_response is not None:
@@ -1227,15 +1228,26 @@ class MultiAgentOrchestrator:
         if BROWSER_AGENT_FINAL_NOTICE in cleaned:
             cleaned = cleaned.replace(BROWSER_AGENT_FINAL_NOTICE, "").strip()
 
+        # Try to extract content between "最終報告:" and "最終URL:"
+        start_marker = "最終報告:"
+        end_marker = "最終URL:"
+
+        start_index = cleaned.find(start_marker)
+        if start_index != -1:
+            end_index = cleaned.find(end_marker, start_index)
+            if end_index != -1:
+                report_part = cleaned[start_index:end_index]
+            else:
+                report_part = cleaned[start_index:]
+
+            # Remove the "最終報告:" prefix itself
+            report_content = report_part[len(start_marker) :].strip()
+            if report_content:
+                return report_content
+
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
         if not lines:
             return cleaned
-
-        for line in lines:
-            if line.startswith("最終報告:"):
-                report = line.split(":", 1)[1].strip()
-                if report:
-                    return report
 
         for line in lines:
             if "ステップでエージェントが実行されました" in line:
@@ -1271,6 +1283,48 @@ class MultiAgentOrchestrator:
             body = result.get("error") or "タスクの実行に失敗しました。"
         return f"[{agent_label}] {body}"
 
+    @staticmethod
+    def _normalise_history_entries(history: Iterable[Dict[str, Any]]) -> List[Dict[str, str]]:
+        """Filter history entries down to role/content pairs."""
+
+        entries: List[Dict[str, str]] = []
+        for entry in history or []:
+            if not isinstance(entry, dict):
+                continue
+            role = entry.get("role")
+            content = entry.get("content")
+            if isinstance(role, str) and isinstance(content, str):
+                entries.append({"role": role, "content": content})
+        return entries
+
+    def _history_from_last_user_turn(self, history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        """Return history entries starting from the latest user turn."""
+
+        entries = self._normalise_history_entries(history)
+        if not entries:
+            return []
+
+        last_user_idx = None
+        for idx in range(len(entries) - 1, -1, -1):
+            if entries[idx].get("role") == "user":
+                last_user_idx = idx
+                break
+
+        if last_user_idx is None:
+            return entries
+        return entries[last_user_idx:]
+
+    @staticmethod
+    def _append_session_history_entry(state: OrchestratorState, role: str, content: str) -> None:
+        """Append a message to the in-memory session history."""
+
+        if not content:
+            return
+        history = state.get("session_history") or []
+        entry = {"role": role, "content": content}
+        history.append(entry)
+        state["session_history"] = history
+
     def _load_recent_chat_history(self, limit: int = 30) -> List[Dict[str, Any]]:
         """Return the most recent chat history entries (best-effort)."""
 
@@ -1283,6 +1337,19 @@ class MultiAgentOrchestrator:
         if not isinstance(history, list):
             return []
         return history[-limit:]
+
+    def _initial_session_history(self, user_input: str, log_history: bool) -> List[Dict[str, Any]]:
+        """Seed per-run history so the planner sees the full conversation for this run."""
+
+        if log_history:
+            _append_to_chat_history("user", user_input, broadcast=True)
+            loaded_history = self._load_recent_chat_history(limit=200)
+            session_history = self._history_from_last_user_turn(loaded_history)
+            if not session_history or session_history[-1].get("content") != user_input:
+                session_history.append({"role": "user", "content": user_input})
+            return session_history
+
+        return [{"role": "user", "content": user_input}]
 
     def _ensure_previous_result_logged(self, expected_text: str | None) -> List[Dict[str, Any]]:
         """Make sure the previous task result exists in chat history before continuing."""
@@ -1299,14 +1366,14 @@ class MultiAgentOrchestrator:
         if found:
             return history
 
-        _append_to_chat_history("assistant", expected_text, broadcast=False)
+        _append_to_chat_history("assistant", expected_text, broadcast=True)
         return self._load_recent_chat_history()
 
     def _log_execution_result_to_history(self, result: ExecutionResult) -> str:
         """Append a formatted execution result to chat history."""
 
         text = self._execution_result_text(result)
-        _append_to_chat_history("assistant", text, broadcast=False)
+        _append_to_chat_history("assistant", text, broadcast=True)
         return text
 
     def _format_assistant_messages(
@@ -1396,9 +1463,7 @@ class MultiAgentOrchestrator:
         return payload
 
     def run_stream(self, user_input: str, *, log_history: bool = False) -> Iterator[Dict[str, Any]]:
-        if log_history:
-            # Avoid broadcasting to agents here to prevent duplicate agent replies from auto-history sync.
-            _append_to_chat_history("user", user_input, broadcast=False)
+        session_history = self._initial_session_history(user_input, log_history)
         agent_connections = load_agent_connections()
         state: OrchestratorState = {
             "user_input": user_input,
@@ -1408,6 +1473,7 @@ class MultiAgentOrchestrator:
             "executions": [],
             "current_index": 0,
             "agent_connections": agent_connections,
+            "session_history": session_history,
         }
 
         plan_state = self._plan_node(state)
@@ -1417,10 +1483,11 @@ class MultiAgentOrchestrator:
         state["current_index"] = 0
 
         logged_history_texts: List[str] = []
-        if log_history:
-            plan_history_entry = self._plan_history_entry(state.get("plan_summary"), state["tasks"])
-            if plan_history_entry:
-                _append_to_chat_history("assistant", plan_history_entry, broadcast=False)
+        plan_history_entry = self._plan_history_entry(state.get("plan_summary"), state["tasks"])
+        if plan_history_entry:
+            self._append_session_history_entry(state, "assistant", plan_history_entry)
+            if log_history:
+                _append_to_chat_history("assistant", plan_history_entry, broadcast=True)
                 logged_history_texts.append(plan_history_entry)
 
         yield self._event_payload("plan", state)
@@ -1489,9 +1556,11 @@ class MultiAgentOrchestrator:
             state["executions"] = executions
             state["current_index"] = len(executions)
 
+            execution_text = self._execution_result_text(result)
             if log_history:
-                recorded = self._log_execution_result_to_history(result)
-                logged_history_texts.append(recorded)
+                execution_text = self._log_execution_result_to_history(result)
+                logged_history_texts.append(execution_text)
+            self._append_session_history_entry(state, "assistant", execution_text)
 
             yield self._event_payload(
                 "after_execution",
@@ -1512,9 +1581,10 @@ class MultiAgentOrchestrator:
                 state["plan_summary"] = request_text
                 state["tasks"] = []
                 state["current_index"] = len(executions)
+                orchestrator_text = self._prepend_orchestrator_label(request_text)
+                self._append_session_history_entry(state, "assistant", orchestrator_text)
                 if log_history:
-                    orchestrator_text = self._prepend_orchestrator_label(request_text)
-                    _append_to_chat_history("assistant", orchestrator_text, broadcast=False)
+                    _append_to_chat_history("assistant", orchestrator_text, broadcast=True)
                     logged_history_texts.append(orchestrator_text)
                 yield self._event_payload("plan", state, incremental=True)
                 break
@@ -1529,6 +1599,7 @@ class MultiAgentOrchestrator:
                 "current_index": len(executions),
                 "retry_counts": state.get("retry_counts") or {},
                 "agent_connections": agent_connections,
+                "session_history": state.get("session_history") or [],
             }
             replan_state = self._plan_node(replan_input, incremental=True)
             state.update(replan_state)
@@ -1548,10 +1619,20 @@ class MultiAgentOrchestrator:
                 ]
             state["current_index"] = 0
 
-            if log_history:
-                new_plan_history = self._plan_history_entry(state.get("plan_summary"), state.get("tasks") or [])
-                if new_plan_history and (not logged_history_texts or new_plan_history != logged_history_texts[-1]):
-                    _append_to_chat_history("assistant", new_plan_history, broadcast=False)
+            new_plan_history = self._plan_history_entry(state.get("plan_summary"), state.get("tasks") or [])
+            if new_plan_history:
+                session_history = state.get("session_history") or []
+                last_session_text = (
+                    session_history[-1].get("content") if session_history and isinstance(session_history[-1], dict) else None
+                )
+                already_logged = (
+                    bool(logged_history_texts and new_plan_history == logged_history_texts[-1])
+                    or new_plan_history == last_session_text
+                )
+                if not already_logged:
+                    self._append_session_history_entry(state, "assistant", new_plan_history)
+                if log_history and not already_logged:
+                    _append_to_chat_history("assistant", new_plan_history, broadcast=True)
                     logged_history_texts.append(new_plan_history)
 
             yield self._event_payload("plan", state, incremental=True)
@@ -1576,7 +1657,7 @@ class MultiAgentOrchestrator:
                     text = msg.get("text")
                     if not isinstance(text, str) or not text.strip():
                         continue
-                    _append_to_chat_history("assistant", text, broadcast=False)
+                    _append_to_chat_history("assistant", text, broadcast=True)
 
         yield self._event_payload(
             "complete",

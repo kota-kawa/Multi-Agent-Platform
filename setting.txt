@@ -1,0 +1,21 @@
+python3 -m venv venv
+source venv/bin/activate
+deactive
+
+find . -type f -name '*.Identifier' -delete
+
+
+pip install PyPDF2 python-docx llama-index== 0.12.30 langchain==0.3.23 langchain_google_genai==2.1.2 langchain-community== 0.3.21 llama-index-embeddings-huggingface==0.5.3 llama-index-embeddings-google-genai
+
+
+
+
+
+
+
+pip install openai python-dotenv python-docx tenacity tqdm sentencepiece faiss-cpu
+
+
+
+
+

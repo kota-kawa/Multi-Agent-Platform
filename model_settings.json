@@ -1,13 +1,13 @@
 {
   "orchestrator": {
-    "provider": "openai",
-    "model": "gpt-5.1",
-    "base_url": "https://api.groq.com/openai/v1"
-  },
-  "browser": {
     "provider": "gemini",
     "model": "gemini-2.5-flash-lite",
-    "base_url": "https://generativelanguage.googleapis.com/v1beta"
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai"
+  },
+  "browser": {
+    "provider": "claude",
+    "model": "claude-haiku-4-5",
+    "base_url": ""
   },
   "lifestyle": {
     "provider": "claude",
@@ -20,8 +20,8 @@
     "base_url": "https://api.groq.com/openai/v1"
   },
   "scheduler": {
-    "provider": "claude",
-    "model": "claude-haiku-4-5",
-    "base_url": ""
+    "provider": "groq",
+    "model": "llama-3.3-70b-versatile",
+    "base_url": "https://api.groq.com/openai/v1"
   }
 }

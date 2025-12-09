@@ -220,5 +220,111 @@ class TestMemoryManager(unittest.TestCase):
         self.assertEqual(memory["category_summaries"]["general"], "User likes coffee")
         self.assertEqual(memory["summary_text"], "User likes coffee")
 
+    def test_apply_diff_deep_merge(self):
+        """Test that dictionary fields are deep merged, not overwritten."""
+        manager = MemoryManager(self.file_path)
+        
+        # Initial state
+        initial_data = {
+            "user_profile": {
+                "name": "Taro",
+                "age": 30,
+                "location": {
+                    "city": "Tokyo",
+                    "country": "Japan"
+                }
+            }
+        }
+        
+        # Manually inject initial state
+        memory = manager.load_memory()
+        memory["user_profile"] = initial_data["user_profile"]
+        manager.save_memory(memory)
+        
+        # Apply diff with partial update
+        diff = {
+            "new_data": {
+                "user_profile": {
+                    "age": 31,  # Update existing field
+                    "occupation": "Engineer",  # Add new field
+                    "location": {
+                        "city": "Yokohama"  # Update nested field, country should remain
+                    }
+                }
+            }
+        }
+        
+        updated_memory = manager.apply_diff(diff)
+        profile = updated_memory["user_profile"]
+        
+        # Verify updates
+        self.assertEqual(profile["name"], "Taro")  # Should persist
+        self.assertEqual(profile["age"], 31)  # Should update
+        self.assertEqual(profile["occupation"], "Engineer")  # Should add
+        
+        # Verify nested merge
+        self.assertEqual(profile["location"]["city"], "Yokohama")  # Should update
+        self.assertEqual(profile["location"]["country"], "Japan")  # Should persist
+
+    def test_apply_diff_fuzzy_match_slot(self):
+        """Test that similar slot IDs are merged."""
+        manager = MemoryManager(self.file_path)
+        
+        # 1. Create initial slot
+        diff1 = {
+            "operations": [
+                {
+                    "op": "set_slot",
+                    "slot_id": "user_hobby",
+                    "value": "Soccer"
+                }
+            ]
+        }
+        manager.apply_diff(diff1)
+        
+        # 2. Try to add similar slot "user_hobbies"
+        diff2 = {
+            "operations": [
+                {
+                    "op": "set_slot",
+                    "slot_id": "user_hobbies", # Similar ID
+                    "value": "Soccer, Tennis",
+                    "log_change": True
+                }
+            ]
+        }
+        memory = manager.apply_diff(diff2)
+        
+        # Should have merged into "user_hobby"
+        self.assertEqual(len(memory["slots"]), 1)
+        slot = memory["slots"][0]
+        self.assertEqual(slot["id"], "user_hobby")
+        self.assertEqual(slot["current_value"], "Soccer, Tennis")
+
+    def test_apply_diff_id_normalization(self):
+        """Test that slot IDs are normalized."""
+        manager = MemoryManager(self.file_path)
+        
+        diff = {
+            "operations": [
+                {
+                    "op": "set_slot",
+                    "slot_id": "User Name", # Should become user_name
+                    "value": "Taro"
+                },
+                 {
+                    "op": "set_slot",
+                    "slot_id": "my___VARIABLE", # Should become my_variable
+                    "value": "X"
+                }
+            ]
+        }
+        memory = manager.apply_diff(diff)
+        
+        ids = [s["id"] for s in memory["slots"]]
+        self.assertIn("user_name", ids)
+        self.assertIn("my_variable", ids)
+        self.assertNotIn("User Name", ids)
+
 if __name__ == "__main__":
     unittest.main()

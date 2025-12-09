@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import difflib
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TypedDict, cast
 
@@ -223,6 +225,16 @@ class MemoryManager:
         except OSError as e:
             logging.error(f"Failed to save memory to {self.file_path}: {e}")
 
+    @staticmethod
+    def _deep_merge(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
+        """Recursive merge for dictionaries."""
+        for key, value in source.items():
+            if isinstance(value, dict) and key in target and isinstance(target[key], dict):
+                MemoryManager._deep_merge(target[key], value)
+            else:
+                target[key] = value
+        return target
+
     def apply_diff(self, diff: MemoryDiff) -> MemoryStore:
         """Apply a semantic diff (operations) to the current memory."""
         memory = self.load_memory()
@@ -232,7 +244,11 @@ class MemoryManager:
         if isinstance(new_data, dict):
             for key, value in new_data.items():
                 if value is not None:
-                     memory[key] = value
+                    # Deep merge if both are dicts
+                    if key in memory and isinstance(memory[key], dict) and isinstance(value, dict):
+                        self._deep_merge(memory[key], value)
+                    else:
+                        memory[key] = value
 
         # 2. Update category summaries
         new_category_summaries = diff.get("category_summaries")
@@ -627,10 +643,40 @@ class MemoryManager:
         }
         return labels.get(category, category)
 
+    def _normalize_id(self, slot_id: str) -> str:
+        """Normalize slot ID to snake_case and lower case to reduce ambiguity."""
+        # Convert to lower case
+        s = slot_id.lower()
+        # Replace non-alphanumeric chars (except underscore) with underscore
+        s = re.sub(r'[^a-z0-9_]+', '_', s)
+        # Collapse multiple underscores
+        s = re.sub(r'_+', '_', s)
+        # Strip leading/trailing underscores
+        s = s.strip('_')
+        return s
+
+    def _find_similar_slot(self, slot_id: str, label: str, slots: List[MemorySlot]) -> Optional[str]:
+        """Find a similar existing slot ID using fuzzy matching."""
+        # Check for ID similarity
+        existing_ids = [slot["id"] for slot in slots]
+        # Use cutoff 0.80 for high similarity requirement
+        matches = difflib.get_close_matches(slot_id, existing_ids, n=1, cutoff=0.80)
+        if matches:
+            return matches[0]
+            
+        # Check for label similarity if label provided
+        # This is riskier, so require higher cutoff or exact match logic if needed.
+        # For now, let's stick to ID similarity primarily.
+        
+        return None
+
     def _apply_set_slot(self, memory: MemoryStore, op: MemoryOperation) -> None:
-        slot_id = op.get("slot_id")
-        if not slot_id:
+        raw_slot_id = op.get("slot_id")
+        if not raw_slot_id:
             return
+            
+        # 1. Normalize ID
+        slot_id = self._normalize_id(raw_slot_id)
             
         new_value = op.get("value")
         log_change = op.get("log_change", False)
@@ -661,12 +707,23 @@ class MemoryManager:
                 }
             target_slots_list = memory["projects"][project_id]["semantic_memory"]
         
-        # Find existing slot
+        # Find existing slot (Exact Match)
         target_slot: Optional[MemorySlot] = None
         for slot in target_slots_list:
             if slot["id"] == slot_id:
                 target_slot = slot
                 break
+        
+        # If not found, try fuzzy matching / duplicate detection
+        if not target_slot:
+            similar_id = self._find_similar_slot(slot_id, op.get("label", ""), target_slots_list)
+            if similar_id:
+                logging.info(f"Fuzzy match found for slot '{slot_id}' -> '{similar_id}'. Merging.")
+                slot_id = similar_id
+                for slot in target_slots_list:
+                    if slot["id"] == slot_id:
+                        target_slot = slot
+                        break
         
         if target_slot:
             # Update existing
