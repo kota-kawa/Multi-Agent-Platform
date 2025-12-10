@@ -597,18 +597,8 @@ def serve_index() -> Any:
     scheduler_today = today
     scheduler_error = None
 
-    try:
-        scheduler_data = _fetch_calendar_data(scheduler_year, scheduler_month)
-        for week in scheduler_data.get("calendar_data", []):
-            for day_data in week:
-                day_data["date"] = datetime.date.fromisoformat(day_data["date"])
-        scheduler_today = datetime.date.fromisoformat(scheduler_data.get("today", today.isoformat()))
-        scheduler_year = scheduler_data.get("year", scheduler_year)
-        scheduler_month = scheduler_data.get("month", scheduler_month)
-        scheduler_calendar_data = scheduler_data.get("calendar_data")
-    except Exception as exc:  # noqa: BLE001
-        logging.warning("Scheduler calendar preload skipped: %s", exc)
-        scheduler_error = str(exc)
+    # NOTE: Server-side preloading is disabled to prevent blocking if Scheduler Agent is down.
+    # The frontend (scheduler.js) will fetch data asynchronously.
 
     return render_template(
         "index.html",

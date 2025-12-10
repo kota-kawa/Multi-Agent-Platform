@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import queue
@@ -146,7 +147,10 @@ class MultiAgentOrchestrator:
     _PLANNER_PROMPT = """
 現在の日時ー{current_datetime}
 
-あなたはマルチエージェントシステムのオーケストレーターです。与えられたユーザーの依頼を読み、実行すべきタスクを分析して下さい。
+あなたはマルチエージェントシステムのオーケストレーターです。ユーザーの依頼を読み、まず次の二択を厳密に判定してください。
+1) **直接回答モード**: エージェントを使わなくても十分に答えられる場合は、計画もタスクも作らず `plan_summary` にユーザーへの最終回答をそのまま書く（挨拶や前置きだけにしない）。`tasks` は必ず空配列にする。
+2) **計画・割当モード**: 外部操作・最新情報・デバイス制御・記録など、エージェントを使うことが不可欠または明確に有利な場合に限りタスクを設計して割り当てる。
+この判定結果を JSON に正確に反映し、Markdown や余計な文章は出力しないでください。
 
 - 利用可能なエージェント:
   - "lifestyle"（Life-Styleエージェント）:
@@ -170,12 +174,13 @@ class MultiAgentOrchestrator:
 
 - 出力は JSON オブジェクトのみで、追加の説明やマークダウンを含めてはいけません。
 - JSON には必ず次のキーを含めてください:
-  - "plan_summary": 実行方針を 1 文でまとめた文字列。
+  - "plan_summary": 実行方針または直接回答を 1 文でまとめた文字列。
   - "tasks": タスクの配列。各要素は {{"agent": <上記のいずれか>, "command": <エージェントに渡す命令>}} です。
 - タスク数は 0〜{max_tasks} 件の範囲に収めてください。不要なタスクは作成しないでください。
-        - エージェントを使わずに回答できる場合（一般的な知識質問や現在日時のような確認など）は、タスクを生成せずに plan_summary へ直接回答を書いてください。その際は「一般的な知識として回答します」のようなメタ文のみを書かず、ユーザーへ伝えるべき具体的な回答や説明まで含めてください。
-        - ただし、少しでもエージェントを活用する余地がある場合は、自分で回答するよりもエージェントのタスク実行を優先し、得られた結果を plan_summary で伝えてください。
-        - エージェントで対応できない内容の場合もタスクを生成せず、plan_summary でその旨やユーザーへ伝えるべき情報を説明してください。
+  - 直接回答モードの場合は `tasks` を空にし、plan_summary にはユーザーへの最終回答本文を入れてください（「回答します」だけで終わらせない）。
+  - エージェントを使わずに回答できる場合（一般的な知識質問や現在日時のような確認など）は、このモードを選びます。
+  - エージェントタスクは「外部操作や最新データ取得が必要・明確に有利」なケースだけに限定し、迷ったら直接回答モードを選択してください。
+  - エージェントで対応できない内容の場合もタスクを生成せず、plan_summary でその旨やユーザーへ伝えるべき情報を説明してください。
 - plan_summary やタスク説明では、ユーザーが求める具体的な内容を必ず書き切り、件数を指定された場合はその数ちょうどの候補を詳細（例: 献立名や理由）付きで提示してください。「〜を提案します」「〜を確認します」などの宣言だけで回答を終わらせてはいけません。
 - 実行予定の宣言だけで終わらないでください。「〜を実行します」「〜をします」「確認します」など未来形の宣言だけを書かず、必ず実際にタスクを作成して実行するか、タスクを作成しない場合はその理由とユーザーへの具体的な回答や追加質問を plan_summary に含めてください。
 - **最優先事項（曖昧さへの対応と質問の抑制）:**
@@ -448,7 +453,7 @@ class MultiAgentOrchestrator:
 
         history_for_prompt = state.get("session_history") or []
         if not history_for_prompt:
-            history_for_prompt = self._history_from_last_user_turn(self._load_recent_chat_history(limit=200))
+            history_for_prompt = self._history_from_last_user_turn(self._load_recent_chat_history(limit=10))
         history_entries = self._normalise_history_entries(history_for_prompt)
         history_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history_entries])
 
@@ -474,17 +479,24 @@ class MultiAgentOrchestrator:
         prompt += "\n\n以下は直近の会話履歴です:\n" + history_prompt
         messages = [SystemMessage(content=prompt), HumanMessage(content=user_input)]
 
-        plan_data = None
+        plan_data: Dict[str, Any] | None = None
+        last_plan_text: str | None = None
         for attempt in range(3):
             try:
                 response = self._llm.invoke(messages)
                 raw_content = response.content
                 plan_text = self._extract_text(raw_content)
+                last_plan_text = plan_text
                 plan_data = self._parse_plan(plan_text)
                 break
             except Exception as exc:  # noqa: BLE001
                 logging.warning("Plan generation attempt %d failed: %s", attempt + 1, exc)
                 if attempt == 2:
+                    # Final fallback: treat the raw text as a direct answer with no tasks
+                    if last_plan_text:
+                        logging.error("Planner JSON parse failed; falling back to direct answer text.")
+                        plan_data = {"plan_summary": last_plan_text.strip(), "tasks": []}
+                        break
                     if isinstance(exc, OrchestratorError):
                         raise exc
                     raise OrchestratorError(f"プラン生成に失敗しました: {exc}") from exc
@@ -542,10 +554,20 @@ class MultiAgentOrchestrator:
                     if isinstance(text, str):
                         pieces.append(text)
             return "".join(pieces)
+        if isinstance(content, dict):
+            # Avoid Python repr (single quotes) which breaks JSON parsing
+            if isinstance(content.get("content"), str):
+                return content["content"]
+            try:
+                return json.dumps(content, ensure_ascii=False)
+            except Exception:  # noqa: BLE001
+                return str(content)
         return str(content)
 
-    def _parse_plan(self, raw: str) -> Dict[str, Any]:
+    def _parse_plan(self, raw: Any) -> Dict[str, Any]:
         def try_parse(text: str) -> Dict[str, Any] | None:
+            if not isinstance(text, str) or not text.strip():
+                return None
             try:
                 return json.loads(text)
             except json.JSONDecodeError:
@@ -556,16 +578,28 @@ class MultiAgentOrchestrator:
                 return json.loads(sanitized)
             except json.JSONDecodeError:
                 pass
+            # Handle Python-style dicts with single quotes
+            try:
+                literal = ast.literal_eval(text)
+                if isinstance(literal, dict):
+                    return literal
+            except Exception:  # noqa: BLE001
+                pass
             return None
 
+        if isinstance(raw, dict):
+            return raw
+
+        raw_str = raw if isinstance(raw, str) else str(raw)
+
         # Attempt 1: Direct parsing
-        parsed = try_parse(raw)
+        parsed = try_parse(raw_str)
         if isinstance(parsed, dict):
             return parsed
 
         # Attempt 2: Extract from Markdown code blocks
         code_block_pattern = r"```(?:json)?\s*(.*?)\s*```"
-        match = re.search(code_block_pattern, raw, re.DOTALL)
+        match = re.search(code_block_pattern, raw_str, re.DOTALL)
         if match:
             block_content = match.group(1)
             parsed = try_parse(block_content)
@@ -582,14 +616,14 @@ class MultiAgentOrchestrator:
 
         # Attempt 3: Extract from first '{' to last '}' in the whole text
         brace_pattern = r"(\{.*\})"
-        match = re.search(brace_pattern, raw, re.DOTALL)
+        match = re.search(brace_pattern, raw_str, re.DOTALL)
         if match:
             parsed = try_parse(match.group(1))
             if isinstance(parsed, dict):
                 return parsed
 
         # If all attempts fail
-        logging.error(f"JSON Parse Failed. Raw output:\n{raw}")
+        logging.error(f"JSON Parse Failed. Raw output:\n{raw_str}")
         raise OrchestratorError("プラン応答の JSON 解析に失敗しました。")
 
     def _planner_prompt(self, enabled_agents: List[str], disabled_agents: List[str], device_context: str | None) -> str:
@@ -1319,7 +1353,7 @@ class MultiAgentOrchestrator:
 
         if log_history:
             _append_to_chat_history("user", user_input, broadcast=True)
-            loaded_history = self._load_recent_chat_history(limit=200)
+            loaded_history = self._load_recent_chat_history(limit=10)
             session_history = self._history_from_last_user_turn(loaded_history)
             if not session_history or session_history[-1].get("content") != user_input:
                 session_history.append({"role": "user", "content": user_input})
@@ -1386,7 +1420,11 @@ class MultiAgentOrchestrator:
         lines: list[str] = []
         summary = (plan_summary or "").strip()
         if summary:
-            lines.append(f"計画: {summary}")
+            if tasks:
+                lines.append(f"計画: {summary}")
+            else:
+                # When no tasks are scheduled, treat the summary as the final answer without prepending 「計画」
+                lines.append(summary)
         if tasks:
             lines.append("タスク一覧:")
             for idx, task in enumerate(tasks, start=1):
