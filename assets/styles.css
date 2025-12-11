@@ -1195,7 +1195,7 @@ body{
   background:radial-gradient(circle at 30% 30%, #9ae5ff, #3a83ff 65%, #1c3d88 100%);
   box-shadow:0 0 22px rgba(75,167,255,.85);
   flex-shrink:0;
-  animation:thinkingFloat 3.6s ease-in-out infinite;
+  animation:thinkingFloat 3.6s ease-in-out infinite, thinkingShadowPulse 2s infinite ease-in-out;
 }
 .thinking-icon::after{
   content:"";
@@ -1487,9 +1487,9 @@ body{
 }
 
 @keyframes thinkingWave{
-  0%{background-position:0% 50%;}
-  50%{background-position:100% 50%;}
-  100%{background-position:0% 50%;}
+  0%{background-position:0% 50%; background-size:220% 220%;}
+  50%{background-position:100% 50%; background-size:240% 240%;}
+  100%{background-position:0% 50%; background-size:220% 220%;}
 }
 
 @keyframes thinkingPulse{
@@ -1504,8 +1504,14 @@ body{
 }
 
 @keyframes thinkingPulseDot{
-  0%,100%{transform:scale(1); box-shadow:0 0 14px rgba(255,255,255,.6);}
-  50%{transform:scale(1.18); box-shadow:0 0 22px rgba(255,255,255,.75);}
+  0%, 100%{transform:scale(0.8); opacity:0.6; box-shadow:0 0 10px rgba(255,255,255,.4);}
+  30%{transform:scale(1.1); opacity:1; box-shadow:0 0 20px rgba(255,255,255,.8);}
+  60%{transform:scale(0.9); opacity:0.7; box-shadow:0 0 12px rgba(255,255,255,.5);}
+}
+
+@keyframes thinkingShadowPulse {
+  0%, 100% { box-shadow: 0 0 22px rgba(75,167,255,.85); }
+  50% { box-shadow: 0 0 30px rgba(75,167,255,1); }
 }
 
 @media (max-width: 520px){
