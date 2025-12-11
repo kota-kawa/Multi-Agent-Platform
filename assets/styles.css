@@ -1487,31 +1487,31 @@ body{
 }
 
 @keyframes thinkingWave{
-  0%{background-position:0% 50%; background-size:220% 220%;}
-  50%{background-position:100% 50%; background-size:240% 240%;}
-  100%{background-position:0% 50%; background-size:220% 220%;}
+  0%{background-position:0% 50%; background-size:200% 200%;}
+  50%{background-position:100% 50%; background-size:280% 280%;}
+  100%{background-position:0% 50%; background-size:200% 200%;}
 }
 
 @keyframes thinkingPulse{
-  0%,100%{transform:scale(.95); opacity:.5;}
-  40%{transform:scale(1); opacity:.7;}
-  70%{transform:scale(1.08); opacity:.6;}
+  0%,100%{transform:scale(.9); opacity:.4;}
+  40%{transform:scale(1.1); opacity:.8;}
+  70%{transform:scale(1.2); opacity:.7;}
 }
 
 @keyframes thinkingFloat{
   0%,100%{transform:translateY(0);}
-  50%{transform:translateY(-4px);}
+  50%{transform:translateY(-8px);}
 }
 
 @keyframes thinkingPulseDot{
-  0%, 100%{transform:scale(0.8); opacity:0.6; box-shadow:0 0 10px rgba(255,255,255,.4);}
-  30%{transform:scale(1.1); opacity:1; box-shadow:0 0 20px rgba(255,255,255,.8);}
-  60%{transform:scale(0.9); opacity:0.7; box-shadow:0 0 12px rgba(255,255,255,.5);}
+  0%, 100%{transform:scale(0.7); opacity:0.5; box-shadow:0 0 12px rgba(255,255,255,.5), 0 0 4px rgba(255,255,255,.8);}
+  30%{transform:scale(1.2); opacity:1; box-shadow:0 0 28px rgba(255,255,255,.9), 0 0 8px rgba(255,255,255,1);}
+  60%{transform:scale(0.85); opacity:0.6; box-shadow:0 0 16px rgba(255,255,255,.6), 0 0 6px rgba(255,255,255,.9);}
 }
 
 @keyframes thinkingShadowPulse {
-  0%, 100% { box-shadow: 0 0 22px rgba(75,167,255,.85); }
-  50% { box-shadow: 0 0 30px rgba(75,167,255,1); }
+  0%, 100% { box-shadow: 0 0 28px rgba(75,167,255,.95); }
+  50% { box-shadow: 0 0 40px rgba(75,167,255,1.2); }
 }
 
 @media (max-width: 520px){
