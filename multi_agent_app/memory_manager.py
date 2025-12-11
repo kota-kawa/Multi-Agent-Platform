@@ -142,12 +142,10 @@ MEMORY_CATEGORIES = [
     "health",        # 健康情報
     "work",          # 仕事・学業
     "hobby",         # 趣味
-    "plan",          # 予定・計画
     "relationship",  # 人間関係
     "life",          # 生活習慣・エリア
     "travel",        # 旅行
     "food",          # 食事
-    "schedule",      # スケジュール
     "general",       # その他
 ]
 
@@ -204,15 +202,42 @@ class MemoryManager:
         for dict_field in ["category_summaries", "active_task", "user_profile", "preferences", "projects"]:
             if dict_field not in data or data[dict_field] is None:
                 data[dict_field] = {}
-        
+
+        # Normalize deprecated categories (e.g., schedule/plan -> general)
+        schedule_summary = data["category_summaries"].pop("schedule", None)
+        if schedule_summary:
+            existing_general = data["category_summaries"].get("general")
+            merged = f"{existing_general} {schedule_summary}".strip() if existing_general else schedule_summary
+            data["category_summaries"]["general"] = merged
+
+        plan_summary = data["category_summaries"].pop("plan", None)
+        if plan_summary:
+            existing_general = data["category_summaries"].get("general")
+            merged = f"{existing_general} {plan_summary}".strip() if existing_general else plan_summary
+            data["category_summaries"]["general"] = merged
+
+        # Remove task-tracking fields and artifacts
+        self._purge_tasks(data)
+
         # Backfill new slot fields if missing
         for slot in data.get("slots", []):
+            slot["category"] = self._normalize_category(slot.get("category", ""))
             if "source" not in slot: slot["source"] = "unknown"
             if "verified" not in slot: slot["verified"] = False
             if "access_count" not in slot: slot["access_count"] = 0
             if "last_accessed" not in slot: slot["last_accessed"] = slot.get("last_updated", "")
             if "priority" not in slot: slot["priority"] = "medium"
             if "score" not in slot: slot["score"] = 0
+
+        # Normalize categories within project memories as well
+        for project in data.get("projects", {}).values():
+            for slot in project.get("semantic_memory", []):
+                slot["category"] = self._normalize_category(slot.get("category", ""))
+
+        # Normalize operation categories
+        for op in data.get("operations", []):
+            if isinstance(op, dict) and "category" in op:
+                op["category"] = self._normalize_category(op.get("category", ""))
             
         return cast(MemoryStore, data)
 
@@ -255,8 +280,9 @@ class MemoryManager:
         if isinstance(new_category_summaries, dict):
             for category, summary in new_category_summaries.items():
                 if isinstance(summary, str) and summary.strip():
-                    memory["category_summaries"][category] = summary.strip()
-        
+                    normalized_category = self._normalize_category(category)
+                    memory["category_summaries"][normalized_category] = summary.strip()
+
         # 3. Update legacy summary_text
         new_summary = diff.get("summary_text")
         if new_summary and isinstance(new_summary, str):
@@ -283,6 +309,9 @@ class MemoryManager:
 
         # 5. Regenerate summary_text from category summaries
         self._sync_summary_text(memory)
+
+        # 6. Final guard: drop any task artifacts before persisting
+        self._purge_tasks(memory)
 
         self.save_memory(memory)
         return memory
@@ -479,6 +508,30 @@ class MemoryManager:
         if parts:
             memory["summary_text"] = " ".join(parts)
 
+    def _purge_tasks(self, memory: Dict[str, Any]) -> None:
+        """Strip ongoing/completed task tracking from memory store."""
+
+        task_keys = ["active_task", "completed_tasks", "tasks", "task_history"]
+        for key in task_keys:
+            if key in memory:
+                memory[key] = {} if isinstance(memory[key], dict) else []
+
+        # Remove task-like slots (id starting with task_)
+        slots = memory.get("slots", [])
+        if isinstance(slots, list):
+            memory["slots"] = [s for s in slots if not (isinstance(s, dict) and str(s.get("id", "")).startswith("task_"))]
+
+        # Remove task-like projects
+        projects = memory.get("projects", {})
+        if isinstance(projects, dict):
+            for pid in list(projects.keys()):
+                if str(pid).startswith("task_"):
+                    projects.pop(pid, None)
+
+        # Ensure category summaries don't include task-only categories (not used now)
+        for legacy_key in ["task", "tasks"]:
+            memory.get("category_summaries", {}).pop(legacy_key, None)
+
     def _create_empty_memory(self) -> MemoryStore:
         return {
             "type": self.TYPE,
@@ -633,15 +686,27 @@ class MemoryManager:
             "health": "健康",
             "work": "仕事・学業",
             "hobby": "趣味",
-            "plan": "予定・計画",
             "relationship": "人間関係",
             "life": "生活",
             "travel": "旅行",
             "food": "食事",
-            "schedule": "スケジュール",
             "general": "その他",
         }
         return labels.get(category, category)
+
+    def _normalize_category(self, category: str) -> str:
+        """Normalize legacy category names.
+
+        Currently folds the deprecated "schedule" and "plan" categories into
+        "general" and defaults empty values to "general".
+        """
+
+        normalized = (category or "").strip().lower()
+        if normalized in {"schedule", "plan"}:
+            return "general"
+        if not normalized:
+            return "general"
+        return normalized
 
     def _normalize_id(self, slot_id: str) -> str:
         """Normalize slot ID to snake_case and lower case to reduce ambiguity."""

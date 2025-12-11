@@ -36,10 +36,24 @@ def test_parse_plan_brace_fallback():
     assert parsed["plan_summary"] == "x"
 
 
+def test_parse_plan_plain_text_direct_answer():
+    orch = _make_orchestrator_stub()
+    raw = "そのまま返すテキスト回答"
+    parsed = orch._parse_plan(raw)
+    assert parsed == {"plan_summary": raw, "tasks": []}
+
+
+def test_parse_plan_missing_outer_braces():
+    orch = _make_orchestrator_stub()
+    raw = '"plan_summary":"foo","tasks":[]'
+    parsed = orch._parse_plan(raw)
+    assert parsed["plan_summary"] == "foo"
+
+
 def test_parse_plan_raises_on_invalid():
     orch = _make_orchestrator_stub()
-    with pytest.raises(OrchestratorError):
-        orch._parse_plan("no json here")
+    parsed = orch._parse_plan("no json here")
+    assert parsed == {"plan_summary": "no json here", "tasks": []}
 
 
 def test_extract_text_prefers_content_key_for_dict():

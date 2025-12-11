@@ -151,6 +151,7 @@ class MultiAgentOrchestrator:
 - 提供される「ユーザーの特性（長期記憶）」や「ユーザーの最近の動向（短期記憶）」は、あくまで**参考情報**です。
 - これら過去の記憶情報だけに基づいて、ユーザーから明示的な指示がないタスクを勝手に開始してはいけません。
 - 最優先すべきは**直近のユーザー入力**です。記憶情報は、直近のユーザー入力を理解し補助するためだけに使用してください。
+-エージェントのみが使用でき、googleカレンダーやnotionなどの外部サービスは使うことができません。
 
 あなたはマルチエージェントシステムのオーケストレーターです。ユーザーの依頼を読み、まず次の二択を厳密に判定してください。
 1) **直接回答モード**: エージェントを使わなくても十分に答えられる場合は、計画もタスクも作らず `plan_summary` にユーザーへの最終回答をそのまま書く（挨拶や前置きだけにしない）。`tasks` は必ず空配列にする。
@@ -159,8 +160,8 @@ class MultiAgentOrchestrator:
 
 - 利用可能なエージェント:
   - "lifestyle"（Life-Styleエージェント）:
-    - **役割**: 生活全般の知識（料理、掃除、法律、家電、メンタルヘルスなど）に関する質問回答、相談、雑談を担当します。RAG（検索拡張生成）を用いて内部知識ベースから回答を生成します。
-    - **非対応**: ユーザーの個別の予定管理、日報の記録、外部サイトの操作、IoT機器の制御は**行いません**。「覚えておいて」などの記憶依頼も、記録としての側面が強い場合はSchedulerへ、事実としての記憶なら長期記憶へ（ここではタスク化しない）となります。
+    - **役割**: 家庭内の生活全般の知識（料理、掃除、家電、メンタルヘルスなど）に関する質問回答、相談、雑談を担当します。RAG（検索拡張生成）を用いて内部知識ベースから回答を生成します。
+    - **非対応**: ユーザーの個別の予定管理、日報の記録、外部サイトの操作、IoT機器の制御は**行いません**。「覚えておいて」などの記憶依頼も、予定や記録としての側面が強い場合はSchedulerへ、事実としての記憶なら長期記憶へ（ここではタスク化しない）となります。
   - "browser"（Browserエージェント）:
     - **役割**: Webブラウザを自動操作して、最新情報の検索、Webサイトの閲覧、フォーム入力などを行います。
     - **使い分け**: 内部知識（過去の学習データ）で完結する質問には lifestyle を使用し、天気、ニュース、最新価格、特定店舗の予約など**リアルタイム情報**や**外部サイト操作**が必要な場合にこちらを使用します。
@@ -170,6 +171,7 @@ class MultiAgentOrchestrator:
     - **方針**: ユーザーの意図が推測可能な場合は、**確認質問をせずに**積極的に実行コマンドを発行してください。
       - デバイスが特定できないが1台しかない場合 → そのデバイスIDを対象とする。
       - パラメータ（時間や強度）が不明 → 一般的なデフォルト値（例: 5秒）を設定する。
+      - 周囲の状況を確認したいと言われたら、raspi4のカメラを使います。
   - "scheduler"（Schedulerエージェント）:
     - **役割**: ユーザーのスケジュール管理、タスク管理、日報（日記・メモ）の記録・更新・参照を担当します。「予定を入れて」「タスクに追加して」「日報を書いて」「今日の予定は？」などの依頼は必ずこのエージェントを選択します。
     - **仕様**:
@@ -596,11 +598,50 @@ class MultiAgentOrchestrator:
             return raw
 
         raw_str = raw if isinstance(raw, str) else str(raw)
+        raw_str = raw_str.strip()
+
+        # Heuristic 0: 完全なプレーンテキストで波括弧が無く、plan_summary/tasks キーも含まない場合はそのまま直接回答として扱う
+        if "{" not in raw_str and "}" not in raw_str and "plan_summary" not in raw_str and "tasks" not in raw_str:
+            return {"plan_summary": raw_str, "tasks": []}
 
         # Attempt 1: Direct parsing
         parsed = try_parse(raw_str)
         if isinstance(parsed, dict):
             return parsed
+
+        # Heuristic 1: LLM が外側の `{` や `}` を落としたケースを補正
+        if '"plan_summary"' in raw_str and '"tasks"' in raw_str:
+            candidate = raw_str
+            if not candidate.lstrip().startswith("{"):
+                candidate = "{" + candidate
+            if not candidate.rstrip().endswith("}"):
+                candidate = candidate + "}"
+            parsed = try_parse(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+
+        # Heuristic 2: 先頭が { で始まらないが、どこかに { がある場合は最初の { から末尾 } まで切り出す
+        if '{' in raw_str and '}' in raw_str:
+            first = raw_str.find('{')
+            last = raw_str.rfind('}')
+            inner = raw_str[first : last + 1]
+            parsed = try_parse(inner)
+            if isinstance(parsed, dict):
+                return parsed
+
+        # Heuristic 3: plan_summary/tasks が含まれるが JSON でない場合は、キーと値を簡易抽出して補完
+        if "plan_summary" in raw_str and "tasks" in raw_str:
+            try:
+                ps_match = re.search(r'"plan_summary"\\s*:\\s*"([^"]+)"', raw_str)
+                plan_summary = ps_match.group(1).strip() if ps_match else raw_str
+                tasks_match = re.search(r'"tasks"\\s*:\\s*(\\[.*?\\])', raw_str)
+                tasks_str = tasks_match.group(1) if tasks_match else "[]"
+                tasks = try_parse(tasks_str) if tasks_str else []
+                if not isinstance(tasks, list):
+                    tasks = []
+                return {"plan_summary": plan_summary, "tasks": tasks}
+            except Exception:  # noqa: BLE001
+                pass
 
         # Attempt 2: Extract from Markdown code blocks
         code_block_pattern = r"```(?:json)?\s*(.*?)\s*```"
@@ -678,15 +719,42 @@ class MultiAgentOrchestrator:
         payload: Dict[str, Any],
         fallback_summary: str | None = None,
     ) -> ExecutionResult:
-        summary = str(payload.get("run_summary") or "").strip()
+        run_summary = str(payload.get("run_summary") or "").strip()
+        messages_summary = self._summarise_browser_messages(payload.get("messages"))
+        fallback = fallback_summary.strip() if fallback_summary else ""
+
+        def _has_final_marker(text: str) -> bool:
+            return bool(text) and (
+                BROWSER_AGENT_FINAL_MARKER in text or BROWSER_AGENT_FINAL_NOTICE in text
+            )
+
+        summary = run_summary
+
+        # Prefer the latest stream summary when the synchronous chat response is just an ACK.
+        if fallback and _has_final_marker(fallback) and not _has_final_marker(summary):
+            summary = fallback
+        elif not summary and fallback:
+            summary = fallback
+
         if not summary:
-            summary = self._summarise_browser_messages(payload.get("messages"))
-        if not summary and fallback_summary:
-            summary = fallback_summary.strip()
+            summary = messages_summary
+        elif not _has_final_marker(summary) and _has_final_marker(messages_summary):
+            summary = messages_summary
+
+        if not summary and fallback:
+            summary = fallback
+
         summary = self._condense_browser_summary(summary)
         if not summary:
             summary = "ブラウザエージェントからの応答を取得できませんでした。"
-        finalized = BROWSER_AGENT_FINAL_MARKER in (payload.get("run_summary") or "")
+        finalized = any(
+            _has_final_marker(text)
+            for text in (
+                run_summary,
+                fallback,
+                messages_summary,
+            )
+        )
         labeled_summary = summary
         if labeled_summary and not labeled_summary.startswith("最終結果:"):
             labeled_summary = f"最終結果: {labeled_summary}"

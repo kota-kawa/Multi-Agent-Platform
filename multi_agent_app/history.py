@@ -234,7 +234,7 @@ def _build_memory_prompt(
 
 #### 1. カテゴリ別サマリー (category_summaries) の更新
 各カテゴリのサマリーテキストを更新してください。
-カテゴリ: profile, preference, health, work, hobby, plan, relationship, life, travel, food, schedule, general
+カテゴリ: profile, preference, health, work, hobby, relationship, life, travel, food, general
 
 {schema_instruction}
 

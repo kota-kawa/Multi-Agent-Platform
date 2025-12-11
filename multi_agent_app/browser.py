@@ -33,6 +33,19 @@ _BROWSER_AGENT_MCP_HISTORY_ARG_KEY = (
 )
 
 
+def _running_inside_container() -> bool:
+    """Best-effort detection to see if we're running inside a container."""
+
+    if os.path.exists("/.dockerenv"):
+        return True
+    try:
+        with open("/proc/1/cgroup", "rt", encoding="utf-8") as handle:
+            content = handle.read()
+        return any(marker in content for marker in ("docker", "containerd", "kubepods"))
+    except OSError:
+        return False
+
+
 def _browser_agent_timeout(read_timeout: float | None) -> tuple[float, float | None]:
     return (BROWSER_AGENT_CONNECT_TIMEOUT, read_timeout)
 
@@ -319,6 +332,14 @@ def _iter_browser_agent_bases() -> list[str]:
                 continue
             seen.add(candidate)
             deduped.append(candidate)
+
+    if deduped and _running_inside_container():
+        loopback_hosts = {"localhost", "127.0.0.1"}
+        container_first = [base for base in deduped if (urlparse(base).hostname or "").lower() not in loopback_hosts]
+        loopback_rest = [base for base in deduped if (urlparse(base).hostname or "").lower() in loopback_hosts]
+        if container_first:
+            deduped = container_first + loopback_rest
+
     return deduped
 
 
