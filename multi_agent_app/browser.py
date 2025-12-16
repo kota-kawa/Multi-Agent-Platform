@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import time
 from typing import Any, Dict, Iterable, List, Tuple
 from urllib.parse import urlparse, urlunparse
 
@@ -14,6 +16,8 @@ from flask import g, has_request_context
 from .config import (
     BROWSER_AGENT_CHAT_TIMEOUT,
     BROWSER_AGENT_CONNECT_TIMEOUT,
+    BROWSER_AGENT_FINAL_MARKER,
+    BROWSER_AGENT_FINAL_NOTICE,
     BROWSER_AGENT_TIMEOUT,
     DEFAULT_BROWSER_AGENT_BASES,
 )
@@ -517,8 +521,93 @@ def _call_browser_agent_history_check_via_mcp(
     return None, errors
 
 
+def _has_browser_final_marker(text: str) -> bool:
+    """Return True if the text contains an explicit final marker from the Browser Agent."""
+    cleaned = text or ""
+    return bool(cleaned) and (
+        BROWSER_AGENT_FINAL_MARKER in cleaned
+        or BROWSER_AGENT_FINAL_NOTICE in cleaned
+        or "最終報告:" in cleaned
+    )
+
+
+def _summarise_browser_messages(messages: Any) -> str:
+    """Extract the last assistant message from browser history."""
+    if not isinstance(messages, list):
+        return ""
+    for item in reversed(messages):
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").lower()
+        if role != "assistant":
+            continue
+        content = item.get("content") or item.get("text")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    return ""
+
+
+def _latest_message_id(messages: Any) -> int:
+    """Return the largest numeric message id from a Browser Agent history list."""
+    if not isinstance(messages, list):
+        return -1
+    latest = -1
+    for entry in messages:
+        if not isinstance(entry, dict):
+            continue
+        message_id = entry.get("id")
+        if isinstance(message_id, int) and message_id > latest:
+            latest = message_id
+    return latest
+
+
+def _poll_browser_history_for_completion(
+    base: str,
+    timeout: float = 900.0,
+    interval: float = 2.0,
+) -> str:
+    """Poll Browser Agent history until a final marker is found or timeout."""
+    deadline = time.monotonic() + timeout
+    history_url = _build_browser_agent_url(base, "/api/history")
+    latest_summary = ""
+    last_seen = -1
+
+    while time.monotonic() < deadline:
+        try:
+            response = requests.get(history_url, timeout=_browser_agent_timeout(10.0))
+            if not response.ok:
+                break
+            data = response.json()
+        except Exception as exc:
+            logging.debug("Browser history poll failed: %s", exc)
+            time.sleep(interval)
+            continue
+
+        messages = data.get("messages") if isinstance(data, dict) else None
+        summary = _summarise_browser_messages(messages)
+        latest_id = _latest_message_id(messages)
+
+        if summary:
+            if _has_browser_final_marker(summary):
+                return summary
+            if latest_id > last_seen or summary != latest_summary:
+                latest_summary = summary
+
+        if latest_id > last_seen:
+            last_seen = latest_id
+
+        time.sleep(interval)
+
+    return latest_summary
+
+
 def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
-    """Call the Browser Agent chat endpoint or MCP tool."""
+    """Call the Browser Agent agent-relay endpoint or MCP tool.
+
+    This uses /api/agent-relay which executes synchronously and returns
+    the final result, rather than /api/chat which returns immediately
+    with a 202 and streams results via SSE.
+    """
 
     mcp_result: Dict[str, Any] | None = None
     mcp_errors: list[str] = []
@@ -529,11 +618,38 @@ def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
             return mcp_result
 
     try:
-        return _post_browser_agent(
-            "/api/chat",
-            {"prompt": prompt, "new_task": True, "skip_conversation_review": True},
+        result = _post_browser_agent(
+            "/api/agent-relay",
+            {"prompt": prompt},
             timeout=_browser_agent_timeout(BROWSER_AGENT_CHAT_TIMEOUT),
         )
+        # Normalize the response to match what orchestrator expects
+        # agent-relay returns: summary, steps, success, final_result
+        # orchestrator expects: run_summary, messages
+        if isinstance(result, dict):
+            # Handle follow-up response (agent was already running)
+            if result.get("status") == "follow_up_enqueued" or result.get("agent_running"):
+                # Agent is still running, poll for results
+                bases = _iter_browser_agent_bases()
+                if bases:
+                    try:
+                        poll_summary = _poll_browser_history_for_completion(
+                            bases[0],
+                            timeout=900.0,  # 15 minutes
+                            interval=2.0,
+                        )
+                        if poll_summary:
+                            result["run_summary"] = poll_summary
+                            result["messages"] = [{"role": "assistant", "content": poll_summary}]
+                    except Exception:
+                        pass  # Fall through to use whatever we have
+
+            run_summary = result.get("run_summary") or result.get("summary") or result.get("final_result") or ""
+            if not result.get("run_summary"):
+                result["run_summary"] = run_summary
+            if not result.get("messages"):
+                result["messages"] = [{"role": "assistant", "content": run_summary}] if run_summary else []
+        return result
     except BrowserAgentError as exc:
         if mcp_errors:
             message_lines = [str(exc), "MCP 経由での呼び出しも失敗しました:"]

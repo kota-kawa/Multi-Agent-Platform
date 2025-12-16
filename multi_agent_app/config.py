@@ -42,7 +42,11 @@ def _load_env_file(path: str = "secrets.env") -> None:
 
 def _current_datetime_line() -> str:
     """Return the timestamp text embedded into system prompts."""
-    return datetime.now().strftime("現在の日時ー%Y年%m月%d日%H時%M分")
+    now = datetime.now()
+    # Use an explicit mapping so weekday text is stable regardless of locale settings.
+    weekday_names = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
+    weekday = weekday_names[now.weekday()]
+    return f"現在の日時ー{now:%Y年%m月%d日}{weekday}{now:%H時%M分}"
 
 
 def _parse_timeout_env(name: str, default: float | None, *, allow_none: bool = False) -> float | None:

@@ -22,6 +22,7 @@ const modelSelectBrowser = $("#modelSelectBrowser");
 const modelSelectLifestyle = $("#modelSelectLifestyle");
 const modelSelectIot = $("#modelSelectIot");
 const modelSelectScheduler = $("#modelSelectScheduler");
+const modelSelectMemory = $("#modelSelectMemory");
 
 const agentToggleInputs = {
   browser: agentToggleBrowser,
@@ -36,6 +37,7 @@ const modelSelectInputs = {
   lifestyle: modelSelectLifestyle,
   iot: modelSelectIot,
   scheduler: modelSelectScheduler,
+  memory: modelSelectMemory,
 };
 
 const DEFAULT_AGENT_CONNECTIONS = {
@@ -45,11 +47,215 @@ const DEFAULT_AGENT_CONNECTIONS = {
   scheduler: true,
 };
 
+const CATEGORY_LABELS = {
+  general: "全体メモ",
+  profile: "プロフィール",
+  preference: "好み・こだわり",
+  health: "健康",
+  work: "仕事/学習",
+  hobby: "趣味",
+  relationship: "人間関係",
+  life: "生活リズム",
+  travel: "旅行/移動",
+  food: "食事",
+};
+
+const CATEGORY_ALIASES = Object.entries(CATEGORY_LABELS).reduce((acc, [key, label]) => {
+  acc[key] = [
+    key,
+    label,
+    label.replace("・", ""),
+    label.replace("／", "/"),
+    label.replace(/[／・]/g, ""),
+    key.replace("_", " "),
+  ].map((name) => name.toLowerCase());
+  return acc;
+}, {});
+
 const state = {
   loading: false,
   saving: false,
   modelOptions: [],
 };
+
+function tryParseJSON(str) {
+  try {
+    const o = JSON.parse(str);
+    if (o && typeof o === "object") return o;
+  } catch (e) {}
+  return null;
+}
+
+function stripCodeFence(raw) {
+  if (typeof raw !== "string") return raw;
+  return raw.replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
+}
+
+function resolveCategoryAlias(name) {
+  if (!name) return null;
+  const normalized = name.trim().toLowerCase();
+  for (const [key, aliases] of Object.entries(CATEGORY_ALIASES)) {
+    if (aliases.includes(normalized)) return key;
+  }
+  return null;
+}
+
+function unwrapCategoryValue(value) {
+  if (value == null) return "";
+  if (typeof value !== "string") return value;
+  const stripped = stripCodeFence(value);
+  const parsed = tryParseJSON(stripped);
+
+  if (parsed && typeof parsed === "object") {
+    if (parsed.category_summaries && typeof parsed.category_summaries === "object") {
+      // Prefer the inner general summary when the value is a nested JSON dump
+      if (parsed.category_summaries.general) {
+        return unwrapCategoryValue(parsed.category_summaries.general);
+      }
+      return Object.fromEntries(
+        Object.entries(parsed.category_summaries).map(([k, v]) => [k, unwrapCategoryValue(v)])
+      );
+    }
+    return parsed;
+  }
+
+  return stripped.trim();
+}
+
+function extractCategoriesFromText(text, fallbackCategories) {
+  if (!text && fallbackCategories) {
+    return normalizeCategories(fallbackCategories);
+  }
+
+  const stripped = stripCodeFence(text || "");
+  const parsed = tryParseJSON(stripped);
+
+  if (parsed?.category_summaries && typeof parsed.category_summaries === "object") {
+    return normalizeCategories(parsed.category_summaries);
+  }
+
+  // If it's plain text, treat it as a general summary
+  return normalizeCategories(fallbackCategories, stripped);
+}
+
+function normalizeCategories(categories, generalFallback = "") {
+  const normalized = {};
+  const source = categories && typeof categories === "object" ? categories : {};
+
+  Object.entries(source).forEach(([key, rawVal]) => {
+    const unwrapped = unwrapCategoryValue(rawVal);
+    if (typeof unwrapped === "string") {
+      normalized[key] = unwrapped.trim();
+    } else if (unwrapped && typeof unwrapped === "object") {
+      normalized[key] = JSON.stringify(unwrapped, null, 2);
+    }
+  });
+
+  if (!Object.keys(normalized).length && generalFallback) {
+    normalized.general = generalFallback.trim();
+  }
+
+  return normalized;
+}
+
+function toBulletBlock(text) {
+  const cleaned = (text || "").trim();
+  if (!cleaned) return "・（内容なし）";
+
+  const lines = cleaned.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length > 1) {
+    return lines.map((line) => `・${line.replace(/^[・•-]\s*/, "")}`).join("\n");
+  }
+
+  // If it's a single paragraph, try to break by Japanese/English sentence delimiters for readability
+  const sentences = cleaned.split(/(?<=[。．！!？?])\s+/).filter(Boolean);
+  if (sentences.length > 1) {
+    return sentences.map((s) => `・${s}`).join("\n");
+  }
+
+  return `・${cleaned.replace(/^[・•-]\s*/, "")}`;
+}
+
+function renderReadableCategories(categories) {
+  const orderedKeys = Object.keys(CATEGORY_LABELS);
+  const result = [];
+
+  orderedKeys.forEach((key) => {
+    if (!categories[key]) return;
+    result.push(
+      `${CATEGORY_LABELS[key]}（${key}）\n${toBulletBlock(categories[key])}`
+    );
+  });
+
+  // Render any additional / unknown categories at the end
+  Object.entries(categories).forEach(([key, val]) => {
+    if (orderedKeys.includes(key) || !val) return;
+    result.push(`${key}\n${toBulletBlock(val)}`);
+  });
+
+  return result.join("\n\n").trim();
+}
+
+function formatMemoryData(text, categories) {
+  const normalized = extractCategoriesFromText(text, categories);
+  if (Object.keys(normalized).length) {
+    return renderReadableCategories(normalized);
+  }
+  return (text || "").trim();
+}
+
+function parseMemoryText(text) {
+  // 1) If the user pasted JSON, keep supporting it.
+  const raw = stripCodeFence(text || "");
+  const parsedJson = tryParseJSON(raw);
+  if (parsedJson?.category_summaries) {
+    return normalizeCategories(parsedJson.category_summaries);
+  }
+
+  const result = {};
+  let currentKey = null;
+  let buffer = [];
+
+  const flush = () => {
+    if (!buffer.length) return;
+    const value = buffer
+      .map((line) => line.replace(/^[・•-]\s*/, "").trim())
+      .filter(Boolean)
+      .join(" ");
+    if (!value) return;
+    const targetKey = currentKey || "general";
+    result[targetKey] = value;
+  };
+
+  (raw.split(/\r?\n/) || []).forEach((line) => {
+    const headingMatch =
+      line.match(/^【(.*?)】\s*$/) ||
+      line.match(/^(?:[-*•・#]+\s*)?(.+?)(?:（(.+?)）)?\s*[:：]\s*$/);
+
+    if (headingMatch) {
+      flush();
+      const primary = headingMatch[1] || "";
+      const secondary = headingMatch[2] || "";
+      currentKey =
+        resolveCategoryAlias(primary) ||
+        resolveCategoryAlias(secondary) ||
+        primary ||
+        secondary ||
+        "general";
+      buffer = [];
+    } else {
+      buffer.push(line);
+    }
+  });
+
+  flush();
+
+  if (!Object.keys(result).length && raw.trim()) {
+    result.general = raw.trim();
+  }
+
+  return result;
+}
 
 function setStatus(message, kind = "muted") {
   if (!statusMessage) return;
@@ -150,6 +356,8 @@ async function fetchMemory() {
   return {
     longTerm: data?.long_term_memory ?? "",
     shortTerm: data?.short_term_memory ?? "",
+    longTermCategories: data?.long_term_categories ?? {},
+    shortTermCategories: data?.short_term_categories ?? {},
     enabled: data?.enabled ?? true,
     historySyncEnabled: data?.history_sync_enabled ?? true,
   };
@@ -215,10 +423,16 @@ async function loadSettingsData() {
 
     if (memoryResult.status === "fulfilled") {
       if (longTermInput) {
-        longTermInput.value = memoryResult.value.longTerm;
+        longTermInput.value = formatMemoryData(
+          memoryResult.value.longTerm,
+          memoryResult.value.longTermCategories
+        );
       }
       if (shortTermInput) {
-        shortTermInput.value = memoryResult.value.shortTerm;
+        shortTermInput.value = formatMemoryData(
+          memoryResult.value.shortTerm,
+          memoryResult.value.shortTermCategories
+        );
       }
       if (memoryToggle) {
         memoryToggle.checked = memoryResult.value.enabled;
@@ -273,8 +487,8 @@ async function loadSettingsData() {
 
 async function saveMemory() {
   const payload = {
-    long_term_memory: longTermInput?.value ?? "",
-    short_term_memory: shortTermInput?.value ?? "",
+    long_term_memory: parseMemoryText(longTermInput?.value ?? ""),
+    short_term_memory: parseMemoryText(shortTermInput?.value ?? ""),
     enabled: memoryToggle?.checked ?? true,
     history_sync_enabled: historySyncToggle?.checked ?? true,
   };

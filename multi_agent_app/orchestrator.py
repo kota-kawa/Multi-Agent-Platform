@@ -8,6 +8,7 @@ import logging
 import queue
 import re
 import threading
+import time
 from typing import Any, Dict, Iterable, Iterator, List, Literal, TypedDict, cast
 
 import requests
@@ -43,11 +44,11 @@ from .errors import (
     SchedulerAgentError,
 )
 from .lifestyle import _call_lifestyle
-from .history import _append_to_chat_history
+from .history import _append_to_chat_history, _read_chat_history
 from .iot import _call_iot_agent_command, _count_iot_devices, _fetch_iot_device_context
 from .scheduler import _call_scheduler_agent_chat
 from .settings import load_agent_connections, resolve_llm_config, load_memory_settings
-from .memory_manager import MemoryManager
+from .memory_manager import MemoryManager, get_memory_llm
 
 
 class TaskSpec(TypedDict):
@@ -713,6 +714,78 @@ class MultiAgentOrchestrator:
                 break
         return tasks
 
+    @staticmethod
+    def _has_browser_final_marker(text: str) -> bool:
+        """Return True if the text contains an explicit final marker from the Browser Agent."""
+
+        cleaned = text or ""
+        return bool(cleaned) and (
+            BROWSER_AGENT_FINAL_MARKER in cleaned or BROWSER_AGENT_FINAL_NOTICE in cleaned or "最終報告:" in cleaned
+        )
+
+    @staticmethod
+    def _latest_message_id(messages: Any) -> int:
+        """Return the largest numeric message id from a Browser Agent history list."""
+
+        if not isinstance(messages, list):
+            return -1
+        latest = -1
+        for entry in messages:
+            if not isinstance(entry, dict):
+                continue
+            message_id = entry.get("id")
+            if isinstance(message_id, int) and message_id > latest:
+                latest = message_id
+        return latest
+
+    def _poll_browser_history_summary(
+        self,
+        base: str,
+        since_id: int | None = None,
+        timeout: float = 900.0,
+        interval: float = 1.0,
+    ) -> str:
+        """Best-effort polling of Browser Agent history when streaming is unavailable.
+
+        This fetches `/api/history` repeatedly until a new assistant message that
+        looks like a final report appears, or the timeout elapses.
+        """
+
+        deadline = time.monotonic() + timeout
+        history_url = _build_browser_agent_url(base, "/api/history")
+        last_seen = since_id if isinstance(since_id, int) else -1
+        latest_summary = ""
+
+        while time.monotonic() < deadline:
+            try:
+                response = requests.get(history_url, timeout=_browser_agent_timeout(10.0))
+                if not response.ok:
+                    break
+                data = response.json()
+            except Exception as exc:  # noqa: BLE001
+                logging.debug("Browser history poll failed: %s", exc)
+                time.sleep(interval)
+                continue
+
+            messages = data.get("messages") if isinstance(data, dict) else None
+            summary = self._summarise_browser_messages(messages)
+            latest_id = self._latest_message_id(messages)
+
+            if summary:
+                if self._has_browser_final_marker(summary):
+                    return summary
+                # Keep the newest non-final summary while polling for the final marker.
+                if latest_id > last_seen or summary != latest_summary:
+                    latest_summary = summary
+
+            if latest_id > last_seen:
+                last_seen = latest_id
+
+            time.sleep(interval)
+
+        # Timed out without a final marker; return the latest summary we observed (if any).
+        return latest_summary
+
     def _browser_result_from_payload(
         self,
         command: str,
@@ -723,32 +796,33 @@ class MultiAgentOrchestrator:
         messages_summary = self._summarise_browser_messages(payload.get("messages"))
         fallback = fallback_summary.strip() if fallback_summary else ""
 
-        def _has_final_marker(text: str) -> bool:
-            return bool(text) and (
-                BROWSER_AGENT_FINAL_MARKER in text or BROWSER_AGENT_FINAL_NOTICE in text
-            )
+        # Prioritize sources that contain the final report marker
+        summary = ""
 
-        summary = run_summary
-
-        # Prefer the latest stream summary when the synchronous chat response is just an ACK.
-        if fallback and _has_final_marker(fallback) and not _has_final_marker(summary):
+        # First priority: stream fallback with final report (most reliable when both containers run)
+        if fallback and self._has_browser_final_marker(fallback):
             summary = fallback
-        elif not summary and fallback:
-            summary = fallback
-
-        if not summary:
+        # Second priority: HTTP response run_summary with final report
+        elif run_summary and self._has_browser_final_marker(run_summary):
+            summary = run_summary
+        # Third priority: messages summary with final report
+        elif messages_summary and self._has_browser_final_marker(messages_summary):
             summary = messages_summary
-        elif not _has_final_marker(summary) and _has_final_marker(messages_summary):
-            summary = messages_summary
-
-        if not summary and fallback:
+        # Fourth priority: any non-empty run_summary from HTTP response
+        elif run_summary:
+            summary = run_summary
+        # Fifth priority: stream fallback
+        elif fallback:
             summary = fallback
+        # Last resort: messages summary
+        elif messages_summary:
+            summary = messages_summary
 
         summary = self._condense_browser_summary(summary)
         if not summary:
             summary = "ブラウザエージェントからの応答を取得できませんでした。"
         finalized = any(
-            _has_final_marker(text)
+            self._has_browser_final_marker(text)
             for text in (
                 run_summary,
                 fallback,
@@ -766,6 +840,24 @@ class MultiAgentOrchestrator:
             "error": None,
             "finalized": finalized,
         }
+
+    def _augment_browser_payload_with_history(self, payload: Dict[str, Any], *, timeout: float = 900.0) -> str:
+        """Fetch the latest history summary as a fallback when the payload lacks a final marker."""
+
+        try:
+            run_summary = str(payload.get("run_summary") or "").strip()
+            messages_summary = self._summarise_browser_messages(payload.get("messages"))
+            if self._has_browser_final_marker(run_summary) or self._has_browser_final_marker(messages_summary):
+                return ""
+        except Exception:  # noqa: BLE001 - defensive
+            pass
+
+        bases = _iter_browser_agent_bases()
+        if not bases:
+            return ""
+
+        # Use the first reachable base; polling already returns quickly when history is short.
+        return self._poll_browser_history_summary(bases[0], timeout=timeout, interval=1.0)
 
     def _browser_error_result(self, command: str, error: Exception) -> ExecutionResult:
         return {
@@ -897,7 +989,8 @@ class MultiAgentOrchestrator:
                 data = _call_browser_agent_chat(command)
             except BrowserAgentError as exc:
                 return self._browser_error_result(command, exc)
-            return self._browser_result_from_payload(command, data)
+            # agent-relay returns synchronous results, no need for additional polling
+            return self._browser_result_from_payload(command, data, fallback_summary="")
 
         if agent == "iot":
             try:
@@ -965,14 +1058,16 @@ class MultiAgentOrchestrator:
         if _USE_BROWSER_AGENT_MCP:
             mcp_result, mcp_errors = _call_browser_agent_chat_via_mcp(command)
             if mcp_result is not None:
+                fallback_summary = self._augment_browser_payload_with_history(mcp_result, timeout=60.0)
                 yield {
                     "type": "result",
-                    "result": self._browser_result_from_payload(command, mcp_result),
+                    "result": self._browser_result_from_payload(command, mcp_result, fallback_summary=fallback_summary),
                 }
                 return
             if mcp_errors:
                 logging.info("Browser Agent MCP execution failed, falling back to HTTP: %s", "; ".join(mcp_errors))
 
+        # Try streaming first, then fallback to synchronous agent-relay endpoint
         try:
             yield from self._iter_browser_agent_progress(command)
         except BrowserAgentError as exc:
@@ -984,12 +1079,13 @@ class MultiAgentOrchestrator:
                     "type": "result",
                     "result": self._browser_error_result(command, fallback_exc),
                 }
-                return
-
-            yield {
-                "type": "result",
-                "result": self._browser_result_from_payload(command, data),
-            }
+            else:
+                # agent-relay returns synchronously with full results
+                yield {
+                    "type": "result",
+                    "result": self._browser_result_from_payload(command, data, fallback_summary=""),
+                }
+            return
 
     def _iter_browser_agent_progress(self, command: str) -> Iterator[Dict[str, Any]]:
         last_error: BrowserAgentError | None = None
@@ -1071,7 +1167,7 @@ class MultiAgentOrchestrator:
                         event_type = raw_line[6:].strip() or "message"
                     elif raw_line.startswith("data:"):
                         data_lines.append(raw_line[5:].lstrip())
-            except (requests.exceptions.RequestException, AttributeError) as exc:
+            except requests.exceptions.RequestException as exc:
                 event_queue.put(
                     {
                         "kind": "stream_error",
@@ -1080,6 +1176,21 @@ class MultiAgentOrchestrator:
                         ),
                     }
                 )
+            except AttributeError as exc:
+                # requests may surface "'NoneType' object has no attribute 'read'" when the SSE
+                # connection is closed abruptly after the response object is cleaned up.
+                # Treat this as a graceful close instead of an error to avoid noisy warnings.
+                if "read" in str(exc):
+                    logging.debug("Browser agent stream ended due to closed underlying reader: %s", exc)
+                else:
+                    event_queue.put(
+                        {
+                            "kind": "stream_error",
+                            "error": BrowserAgentError(
+                                f"ブラウザエージェントのイベントストリームでエラーが発生しました: {exc}",
+                            ),
+                        }
+                    )
             except Exception as exc:  # noqa: BLE001
                 logging.exception("Unexpected error while consuming browser agent stream: %s", exc)
                 event_queue.put(
@@ -1179,6 +1290,8 @@ class MultiAgentOrchestrator:
         stream_finished = stream_pre_failed
         stream_failed = stream_pre_failed
         chat_finished = False
+        chat_finished_at: float | None = None
+        history_poll_summary = ""
 
         def _stop_stream() -> None:
             stop_event.set()
@@ -1196,6 +1309,17 @@ class MultiAgentOrchestrator:
                 except queue.Empty:
                     if chat_finished and (stream_finished or stream_failed):
                         break
+                    if chat_finished and not stream_finished and not stream_failed:
+                        if chat_finished_at is None:
+                            chat_finished_at = time.monotonic()
+                        elif time.monotonic() - chat_finished_at > 5.0:
+                            # Give the stream up to 5 seconds to receive the final status event
+                            logging.warning(
+                                "Browser agent stream did not terminate after chat completion; forcing shutdown."
+                            )
+                            stream_failed = True
+                            stream_finished = True
+                            _stop_stream()
                     continue
 
                 kind = item.get("kind")
@@ -1258,20 +1382,36 @@ class MultiAgentOrchestrator:
                 elif kind == "chat_result":
                     chat_result = item.get("data") or {}
                     chat_finished = True
-                    _stop_stream()
+                    chat_finished_at = chat_finished_at or time.monotonic()
+                    # Don't stop stream yet - wait for final status event with run_summary
                 elif kind == "chat_error":
                     error = item.get("error")
                     chat_error = error if isinstance(error, BrowserAgentError) else BrowserAgentError(str(error))
                     chat_finished = True
+                    chat_finished_at = chat_finished_at or time.monotonic()
                     _stop_stream()
                 elif kind == "chat_complete":
                     chat_finished = True
+                    chat_finished_at = chat_finished_at or time.monotonic()
+                    # Don't stop stream yet - wait for final status event with run_summary
 
                 if chat_error is not None:
                     break
                 if chat_finished and stream_finished:
                     break
         finally:
+            if chat_result is not None:
+                # If streaming failed or did not yield a definitive final marker, poll history as fallback.
+                need_poll = stream_failed or not self._has_browser_final_marker(latest_summary)
+                if need_poll:
+                    base_last_id = self._latest_message_id(chat_result.get("messages"))
+                    # Use longer timeout for polling since browser tasks can take several minutes
+                    history_poll_summary = self._poll_browser_history_summary(
+                        base,
+                        since_id=base_last_id,
+                        timeout=900.0,  # 15 minutes
+                        interval=2.0,
+                    )
             _stop_stream()
             stream_thread.join(timeout=1.0)
             chat_thread.join(timeout=1.0)
@@ -1282,9 +1422,21 @@ class MultiAgentOrchestrator:
         if chat_result is None or not isinstance(chat_result, dict):
             raise BrowserAgentError("ブラウザエージェントからの応答を取得できませんでした。")
 
+        # Log for debugging when final summary is missing
+        http_run_summary = str(chat_result.get("run_summary") or "").strip()
+        fallback_summary = history_poll_summary or latest_summary
+        if not http_run_summary and not latest_summary and not history_poll_summary:
+            logging.warning(
+                "Browser agent returned empty run_summary. HTTP: %r, Stream: %r, Poll: %r, Messages count: %d",
+                http_run_summary,
+                latest_summary,
+                history_poll_summary,
+                len(chat_result.get("messages") or []),
+            )
+
         yield {
             "type": "result",
-            "result": self._browser_result_from_payload(command, chat_result, fallback_summary=latest_summary),
+            "result": self._browser_result_from_payload(command, chat_result, fallback_summary=fallback_summary),
         }
 
     def _summarise_browser_messages(self, messages: Any) -> str:
@@ -1411,15 +1563,10 @@ class MultiAgentOrchestrator:
     def _load_recent_chat_history(self, limit: int = 30) -> List[Dict[str, Any]]:
         """Return the most recent chat history entries (best-effort)."""
 
-        try:
-            with open("chat_history.json", "r", encoding="utf-8") as f:
-                history = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return []
-
+        history = _read_chat_history(limit=limit)
         if not isinstance(history, list):
             return []
-        return history[-limit:]
+        return history
 
     def _initial_session_history(self, user_input: str, log_history: bool) -> List[Dict[str, Any]]:
         """Seed per-run history so the planner sees the full conversation for this run."""
@@ -1456,7 +1603,23 @@ class MultiAgentOrchestrator:
         """Append a formatted execution result to chat history."""
 
         text = self._execution_result_text(result)
-        _append_to_chat_history("assistant", text, broadcast=True)
+
+        # Best-effort de-duplication: avoid writing the same execution line twice,
+        # but guarantee the final Browser Agent summary is persisted to chat_history.json
+        # so the General view sidebar always shows it.
+        try:
+            history = self._load_recent_chat_history(limit=40)
+            already_logged = any(
+                isinstance(entry, dict)
+                and str(entry.get("content") or "").strip() == text
+                for entry in history
+            )
+        except Exception:  # noqa: BLE001 - fallback to always write
+            already_logged = False
+
+        if not already_logged:
+            _append_to_chat_history("assistant", text, broadcast=True)
+
         return text
 
     def _format_assistant_messages(
@@ -1548,6 +1711,56 @@ class MultiAgentOrchestrator:
         payload: Dict[str, Any] = {"event": event_type, "state": self._snapshot_state(state)}
         payload.update(extras)
         return payload
+
+    def _run_memory_consolidation(
+        self,
+        llm_client: Any,
+        short_history: List[Dict[str, str]],
+        long_history: List[Dict[str, str]],
+    ) -> None:
+        """Execute memory consolidation for short- and long-term stores."""
+
+        try:
+            if long_history:
+                MemoryManager("long_term_memory.json").consolidate_memory(
+                    long_history,
+                    memory_kind="long",
+                    llm=llm_client,
+                )
+            if short_history:
+                MemoryManager("short_term_memory.json").consolidate_memory(
+                    short_history,
+                    memory_kind="short",
+                    llm=llm_client,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Background memory consolidation failed: %s", exc)
+
+    def _trigger_memory_consolidation(self, session_history: List[Dict[str, Any]]) -> None:
+        """Kick off background memory consolidation without delaying the main response."""
+
+        memory_settings = load_memory_settings()
+        if not memory_settings.get("enabled", True):
+            return
+
+        normalized = self._normalise_history_entries(session_history)
+        if not normalized:
+            return
+
+        # Keep windows small to avoid token bloat and mirror existing cadence
+        short_history = normalized[-10:]
+        long_history = normalized[-30:]
+
+        llm_client = get_memory_llm()
+        if llm_client is None:
+            logging.debug("Skipping memory consolidation: LLM client not available.")
+            return
+
+        threading.Thread(
+            target=self._run_memory_consolidation,
+            args=(llm_client, short_history, long_history),
+            daemon=True,
+        ).start()
 
     def run_stream(self, user_input: str, *, log_history: bool = False) -> Iterator[Dict[str, Any]]:
         session_history = self._initial_session_history(user_input, log_history)
@@ -1745,6 +1958,11 @@ class MultiAgentOrchestrator:
                     if not isinstance(text, str) or not text.strip():
                         continue
                     _append_to_chat_history("assistant", text, broadcast=True)
+
+        # Kick off memory consolidation without blocking the SSE stream.
+        session_history_for_memory = state.get("session_history") or []
+        if session_history_for_memory:
+            self._trigger_memory_consolidation(session_history_for_memory)
 
         yield self._event_payload(
             "complete",

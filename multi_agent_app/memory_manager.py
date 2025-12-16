@@ -7,9 +7,18 @@ import logging
 import os
 import difflib
 import re
+import hashlib
+import threading
+import textwrap
 from datetime import datetime
-from typing import Any, Dict, List, Optional, TypedDict, cast
+from typing import Any, Dict, List, Optional, TypedDict, cast, Literal
 
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_anthropic import ChatAnthropic
+
+from .settings import resolve_llm_config
 from .config import _current_datetime_line
 
 # Type Definitions
@@ -149,6 +158,230 @@ MEMORY_CATEGORIES = [
     "general",       # その他
 ]
 
+_memory_llm_instance = None
+_memory_llm_lock = threading.Lock()
+_memory_llm_signature: tuple[str, str, str, str] | None = None
+
+
+def _normalise_history(conversation: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Return a sanitised list of {role, content} lines for prompts."""
+
+    cleaned: List[Dict[str, str]] = []
+    for entry in conversation:
+        role = entry.get("role") if isinstance(entry, dict) else None
+        content = entry.get("content") if isinstance(entry, dict) else None
+        if not isinstance(role, str) or not isinstance(content, str):
+            continue
+        trimmed = content.strip()
+        if not trimmed:
+            continue
+        cleaned.append({"role": role.strip(), "content": trimmed})
+    return cleaned
+
+
+def _extract_text(content: Any) -> str:
+    """Normalise LangChain response content to plain text."""
+
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        pieces: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text")
+                if isinstance(text, str):
+                    pieces.append(text)
+        return "".join(pieces)
+    if isinstance(content, dict) and isinstance(content.get("content"), str):
+        return content["content"]
+    return str(content)
+
+
+def _extract_json_payload(response_text: str) -> str:
+    """Pull the JSON object out of a response, tolerating code fences."""
+
+    match = re.search(r"```(?:json)?\\s*(.*?)\\s*```", response_text, re.DOTALL)
+    if match:
+        return match.group(1)
+    return response_text
+
+
+def _coerce_memory_diff(response_text: str) -> MemoryDiff:
+    """Best-effort coercion of the LLM output into MemoryDiff."""
+
+    json_str = _extract_json_payload(response_text)
+    try:
+        parsed = json.loads(json_str)
+    except json.JSONDecodeError:
+        logging.warning("Memory consolidation returned non-JSON; wrapping raw text.")
+        return {"category_summaries": {"general": response_text}, "operations": []}
+
+    if not isinstance(parsed, dict):
+        summary_text = (
+            parsed if isinstance(parsed, (str, int, float, bool)) else json.dumps(parsed, ensure_ascii=False)
+        )
+        return {"category_summaries": {"general": str(summary_text)}, "operations": []}
+
+    category_summaries = parsed.get("category_summaries")
+    if not isinstance(category_summaries, dict):
+        category_summaries = {}
+
+    summary_text = parsed.get("summary_text")
+    if isinstance(summary_text, str) and summary_text.strip() and not category_summaries:
+        category_summaries["general"] = summary_text.strip()
+
+    operations = parsed.get("operations")
+    if not isinstance(operations, list):
+        operations = []
+
+    new_data = parsed.get("new_data")
+    if not isinstance(new_data, dict):
+        new_data = {}
+
+    return {
+        "summary_text": parsed.get("summary_text") if isinstance(parsed.get("summary_text"), str) else None,  # type: ignore[dict-item]
+        "category_summaries": category_summaries,
+        "operations": operations,
+        "new_data": new_data,
+    }
+
+
+def get_memory_llm():
+    """Initialise or reuse an LLM client dedicated to memory consolidation."""
+
+    global _memory_llm_instance, _memory_llm_signature
+
+    with _memory_llm_lock:
+        try:
+            config = resolve_llm_config("memory")
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Failed to resolve memory LLM config: %s", exc)
+            _memory_llm_instance = None
+            _memory_llm_signature = None
+            return None
+
+        signature = (
+            str(config.get("provider") or ""),
+            str(config.get("model") or ""),
+            str(config.get("base_url") or ""),
+            hashlib.sha256(str(config.get("api_key") or "").encode("utf-8")).hexdigest()[:12],
+        )
+
+        if _memory_llm_instance is not None and _memory_llm_signature == signature:
+            return _memory_llm_instance
+
+        try:
+            provider = config.get("provider", "openai")
+            api_key = config.get("api_key")
+            model_name = config.get("model")
+            base_url = config.get("base_url") or None
+            temperature = 0.15
+
+            if provider == "gemini":
+                client = ChatGoogleGenerativeAI(
+                    model=model_name,
+                    temperature=temperature,
+                    google_api_key=api_key,
+                )
+            elif provider == "claude":
+                client = ChatAnthropic(
+                    model=model_name,
+                    temperature=temperature,
+                    api_key=api_key,
+                    base_url=base_url,
+                )
+            else:
+                client = ChatOpenAI(
+                    model=model_name,
+                    temperature=temperature,
+                    api_key=api_key,
+                    base_url=base_url,
+                )
+
+            _memory_llm_instance = client
+            _memory_llm_signature = signature
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Failed to initialise memory LLM: %s", exc)
+            _memory_llm_instance = None
+            _memory_llm_signature = None
+
+    return _memory_llm_instance
+
+
+def _build_consolidation_prompt(
+    memory_kind: Literal["short", "long"],
+    current_memory: Dict[str, Any],
+    recent_conversation: List[Dict[str, str]],
+) -> str:
+    """Construct a constrained prompt that asks the LLM for a MemoryDiff JSON."""
+
+    datetime_line = _current_datetime_line()
+    memory_json = json.dumps(current_memory, ensure_ascii=False, indent=2)
+
+    conversation_lines = []
+    for idx, item in enumerate(recent_conversation, start=1):
+        role = item.get("role")
+        content = item.get("content")
+        if isinstance(role, str) and isinstance(content, str):
+            conversation_lines.append(f"{idx}. {role}: {content}")
+    conversation_text = "\n".join(conversation_lines) if conversation_lines else "会話ログはありません。"
+
+    if memory_kind == "short":
+        new_data_block = """
+#### 2. 短期記憶 new_data のガイド
+- `active_task` (Dict): task_id, goal, status, started_at。
+- `pending_questions` (List[str]): ユーザーへの未回答の確認事項。
+- `recent_entities` (List[Dict]): 直近で出た固有名詞（name, type, context, when）。
+- `emotional_context` (str): 現在のムードや緊急度（例: normal, urgent, happy）。
+- `expires_at` (str): コンテキストの失効予定（ISO 8601）。
+"""
+    else:
+        new_data_block = """
+#### 2. 長期記憶 new_data のガイド
+- `user_profile` (Dict): name, timezone, language, occupation, birthday など永続情報。
+- `preferences` (Dict): communication_style, response_length, formality_level など。
+- `recurring_patterns` (List[Dict]): 繰り返しの行動・習慣。
+- `learned_corrections` (List[Dict]): ユーザーが訂正した内容（original, corrected, learned_at）。
+- `relationship_graph` (List[Dict]): 人物と関係性。
+- `topics_of_interest` (List[str]): 関心の強いトピック。
+- `do_not_mention` (List[str]): 触れない方がよい話題。
+"""
+
+    return textwrap.dedent(
+        f"""
+        現在の日時: {datetime_line}
+
+        あなたはユーザーの記憶を統合するエージェントです。以下の入力を基に、MemoryDiff 形式の JSON **のみ** を返してください。
+
+        ### 直近の会話ログ
+        {conversation_text}
+
+        ### 現在の記憶データ
+        ```json
+        {memory_json}
+        ```
+
+        ### 指示
+        1. 会話全体を反映して、各カテゴリの要約 (category_summaries) を更新してください。
+           - 対応カテゴリ: profile, preference, health, work, hobby, relationship, life, travel, food, general
+        2. ユーザーの新しい事実（趣味、計画、ガジェット、住所変更など）があれば `set_slot` オペレーションとして抽出してください。
+           - 既存スロットと重複しないか確認し、あれば同じ slot_id を再利用してください。
+           - slot_id は snake_case で、意味が分かる短い名前にしてください。
+{new_data_block.strip()}
+        3. 必要に応じて `add_episode`, `update_project`, `record_usage` も利用できます。
+        4. 出力スキーマは MemoryDiff TypedDict と一致させてください:
+           {{
+             "category_summaries": {{}},
+             "operations": [
+               {{"op": "set_slot", "slot_id": "...", "value": "...", "category": "hobby", "reason": "会話から推定"}}
+             ],
+             "new_data": {{}}
+           }}
+        5. Markdown や文章の説明は書かず、**有効な JSON オブジェクトのみ** を返してください。
+        """
+    ).strip()
+
+
 
 class MemoryManager:
     """Manages reading, writing, and updating structured memory files."""
@@ -238,6 +471,23 @@ class MemoryManager:
         for op in data.get("operations", []):
             if isinstance(op, dict) and "category" in op:
                 op["category"] = self._normalize_category(op.get("category", ""))
+
+        # Clean existing summaries to keep them human-readable
+        summary = data.get("summary_text")
+        if isinstance(summary, str):
+            data["summary_text"] = self._clean_human_summary(summary, fallback="")
+
+        summaries = data.get("category_summaries", {})
+        if isinstance(summaries, dict):
+            for cat, text in list(summaries.items()):
+                if not isinstance(text, str):
+                    summaries.pop(cat, None)
+                    continue
+                cleaned = self._clean_human_summary(text, fallback="")
+                if cleaned:
+                    summaries[cat] = cleaned
+                else:
+                    summaries.pop(cat, None)
             
         return cast(MemoryStore, data)
 
@@ -249,6 +499,73 @@ class MemoryManager:
                 json.dump(memory, f, ensure_ascii=False, indent=2)
         except OSError as e:
             logging.error(f"Failed to save memory to {self.file_path}: {e}")
+
+    def consolidate_memory(
+        self,
+        recent_conversation: List[Dict[str, Any]],
+        memory_kind: Literal["short", "long"] = "long",
+        llm: Any | None = None,
+    ) -> MemoryStore:
+        """Use an LLM to produce and apply a MemoryDiff based on recent conversation."""
+
+        normalized_history = _normalise_history(recent_conversation)
+        if not normalized_history:
+            logging.info("Memory consolidation skipped: no recent conversation provided.")
+            return self.load_memory()
+
+        client = llm or get_memory_llm()
+        if client is None:
+            logging.warning("Memory consolidation skipped: memory LLM is not configured.")
+            return self.load_memory()
+
+        # Apply decay for long-term memory before reasoning so confidence values stay fresh.
+        if memory_kind != "short":
+            try:
+                self.apply_decay()
+            except Exception as exc:  # noqa: BLE001
+                logging.debug("Memory decay skipped during consolidation: %s", exc)
+
+        current_memory = self.load_memory()
+        prompt = _build_consolidation_prompt(memory_kind, current_memory, normalized_history)
+
+        try:
+            response = client.invoke(
+                [
+                    SystemMessage(content=prompt),
+                    HumanMessage(content="上記の指示に従い、MemoryDiff JSON だけを返してください。"),
+                ]
+            )
+            response_text = _extract_text(response.content).strip()
+            diff = _coerce_memory_diff(response_text)
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Memory consolidation failed to parse LLM output: %s", exc)
+            return current_memory
+
+        # Guardrail: keep only recognised new_data fields per memory kind
+        if "new_data" in diff and isinstance(diff["new_data"], dict):
+            allowed_fields = {
+                "short": {"active_task", "pending_questions", "recent_entities", "emotional_context", "expires_at"},
+                "long": {
+                    "user_profile",
+                    "preferences",
+                    "recurring_patterns",
+                    "learned_corrections",
+                    "relationship_graph",
+                    "topics_of_interest",
+                    "do_not_mention",
+                },
+            }.get(memory_kind, set())
+            diff["new_data"] = {k: v for k, v in diff["new_data"].items() if k in allowed_fields}
+
+        # Guardrail: drop category summaries outside the known set
+        if "category_summaries" in diff and isinstance(diff["category_summaries"], dict):
+            diff["category_summaries"] = {
+                self._normalize_category(cat): val
+                for cat, val in diff["category_summaries"].items()
+                if isinstance(val, str) and self._normalize_category(cat) in MEMORY_CATEGORIES
+            }
+
+        return self.apply_diff(diff)
 
     @staticmethod
     def _deep_merge(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
@@ -279,16 +596,21 @@ class MemoryManager:
         new_category_summaries = diff.get("category_summaries")
         if isinstance(new_category_summaries, dict):
             for category, summary in new_category_summaries.items():
-                if isinstance(summary, str) and summary.strip():
+                if isinstance(summary, str):
                     normalized_category = self._normalize_category(category)
-                    memory["category_summaries"][normalized_category] = summary.strip()
+                    fallback = memory["category_summaries"].get(normalized_category, "")
+                    cleaned = self._clean_human_summary(summary, fallback=fallback)
+                    if cleaned:
+                        memory["category_summaries"][normalized_category] = cleaned
 
         # 3. Update legacy summary_text
         new_summary = diff.get("summary_text")
         if new_summary and isinstance(new_summary, str):
-            memory["summary_text"] = new_summary
+            cleaned_summary = self._clean_human_summary(new_summary, fallback=memory.get("summary_text", ""))
+            if cleaned_summary:
+                memory["summary_text"] = cleaned_summary
             if not new_category_summaries:
-                memory["category_summaries"]["general"] = new_summary
+                memory["category_summaries"]["general"] = memory["summary_text"]
 
         # 4. Apply operations
         operations = diff.get("operations") or []
@@ -402,8 +724,11 @@ class MemoryManager:
         """Apply a category summary update operation."""
         category = op.get("category")
         value = op.get("value")
-        if category and isinstance(value, str) and value.strip():
-            memory["category_summaries"][category] = value.strip()
+        if category and isinstance(value, str):
+            fallback = memory["category_summaries"].get(category, "")
+            cleaned = self._clean_human_summary(value, fallback=fallback)
+            if cleaned:
+                memory["category_summaries"][category] = cleaned
     
     def _apply_add_episode(self, memory: MemoryStore, op: MemoryOperation) -> None:
         """Add an episodic memory item to global or project scope."""
@@ -531,6 +856,34 @@ class MemoryManager:
         # Ensure category summaries don't include task-only categories (not used now)
         for legacy_key in ["task", "tasks"]:
             memory.get("category_summaries", {}).pop(legacy_key, None)
+
+    def _clean_human_summary(self, text: str, fallback: str | None = None) -> str:
+        """Keep summaries human-friendly: strip code fences/JSON-like payloads."""
+
+        if not isinstance(text, str):
+            return fallback or ""
+
+        cleaned = text.strip()
+        cleaned = re.sub(r"^```(?:json|text)?\\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\\s*```$", "", cleaned)
+        cleaned = re.sub(r"\\s+", " ", cleaned).strip()
+
+        if not cleaned:
+            return fallback or ""
+
+        # Reject obvious JSON/object payloads
+        looks_like_json = cleaned.startswith("{") or cleaned.startswith("[") or cleaned.lower().startswith("json")
+        if looks_like_json:
+            try:
+                parsed = json.loads(cleaned)
+                if isinstance(parsed, str):
+                    cleaned = parsed.strip()
+                else:
+                    return fallback or ""
+            except Exception:
+                return fallback or ""
+
+        return cleaned
 
     def _create_empty_memory(self) -> MemoryStore:
         return {

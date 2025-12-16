@@ -23,6 +23,7 @@ DEFAULT_MODEL_SELECTIONS: Dict[str, Dict[str, str]] = {
     "lifestyle": {"provider": "openai", "model": "gpt-5.1", "base_url": ""},
     "iot": {"provider": "openai", "model": "gpt-5.1", "base_url": ""},
     "scheduler": {"provider": "openai", "model": "gpt-5.1", "base_url": ""},
+    "memory": {"provider": "openai", "model": ORCHESTRATOR_MODEL, "base_url": ""},
 }
 
 DEFAULT_MEMORY_SETTINGS: Dict[str, bool] = {
@@ -86,6 +87,7 @@ _AGENT_ENV_PATHS: Dict[str, Path] = {
     "lifestyle": _REPO_ROOT / "Life-Style-Agent" / "secrets.env",
     "iot": _REPO_ROOT / "IoT-Agent" / "secrets.env",
     "scheduler": _REPO_ROOT / "Scheduler-Agent" / "secrets.env",
+    "memory": _REPO_ROOT / "Multi-Agent-Platform" / "secrets.env",
 }
 
 

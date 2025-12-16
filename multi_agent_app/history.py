@@ -3,26 +3,131 @@
 from __future__ import annotations
 
 import json
+import os
 import logging
-import re
 import threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-
 from .browser import _call_browser_agent_chat, _call_browser_agent_history_check
-from .config import _current_datetime_line
 from .errors import BrowserAgentError, LifestyleAPIError, IotAgentError, SchedulerAgentError
 from .lifestyle import _call_lifestyle
 from .iot import _call_iot_agent_command, _call_iot_agent_conversation_review
 from .scheduler import _call_scheduler_agent_conversation_review
-from .settings import load_memory_settings, resolve_llm_config
-from .memory_manager import MemoryManager
+from .settings import load_memory_settings
+from .memory_manager import MemoryManager, get_memory_llm
 
 _browser_history_supported = True
-_memory_llm_instance: ChatOpenAI | None = None
-_memory_llm_lock = threading.Lock()
+_PRIMARY_CHAT_HISTORY_PATH = Path("chat_history.json")
+_FALLBACK_CHAT_HISTORY_PATH = Path("var/chat_history.json")
+_LEGACY_CHAT_HISTORY_PATHS = [Path("instance/chat_history.json")]
+
+
+def _load_chat_history(prefer_fallback: bool = True) -> tuple[List[Dict[str, Any]], Path]:
+    """Return chat history and the path it was loaded from with permission-aware fallbacks."""
+
+    candidates = (
+        [_FALLBACK_CHAT_HISTORY_PATH, _PRIMARY_CHAT_HISTORY_PATH]
+        if prefer_fallback
+        else [_PRIMARY_CHAT_HISTORY_PATH, _FALLBACK_CHAT_HISTORY_PATH]
+    )
+    for legacy_path in _LEGACY_CHAT_HISTORY_PATHS:
+        if legacy_path not in candidates:
+            candidates.append(legacy_path)
+    last_error: Exception | None = None
+
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data, path
+            logging.warning("Chat history at %s was not a list. Resetting.", path)
+            return [], path
+        except FileNotFoundError:
+            continue
+        except json.JSONDecodeError:
+            logging.warning("Chat history JSON invalid at %s; resetting file.", path)
+            return [], path
+        except PermissionError as exc:
+            last_error = exc
+            logging.warning("Chat history not readable at %s: %s", path, exc)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            logging.warning("Unexpected error reading chat history at %s: %s", path, exc)
+
+    if last_error:
+        logging.warning("Falling back to empty chat history due to previous errors: %s", last_error)
+
+    fallback_path = candidates[0] if candidates else _PRIMARY_CHAT_HISTORY_PATH
+    return [], fallback_path
+
+
+def _write_chat_history(history: List[Dict[str, Any]], preferred_path: Path | None = None) -> Path:
+    """Persist chat history to the first writable path, preferring the provided path."""
+
+    candidate_paths: list[Path] = []
+    if preferred_path:
+        # Avoid noisy failures when the current file exists but is not writable.
+        if not (preferred_path.exists() and not os.access(preferred_path, os.W_OK)):
+            candidate_paths.append(preferred_path)
+    candidate_paths.extend([_FALLBACK_CHAT_HISTORY_PATH, _PRIMARY_CHAT_HISTORY_PATH])
+
+    seen: set[Path] = set()
+    last_error: Exception | None = None
+
+    for path in candidate_paths:
+        if path in seen:
+            continue
+        seen.add(path)
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+
+            # Best-effort mirror to other known locations for compatibility.
+            mirror_targets = [_PRIMARY_CHAT_HISTORY_PATH, _FALLBACK_CHAT_HISTORY_PATH]
+            for mirror in mirror_targets:
+                if mirror == path:
+                    continue
+                try:
+                    if mirror.exists() and not os.access(mirror, os.W_OK):
+                        continue
+                    mirror.parent.mkdir(parents=True, exist_ok=True)
+                    with open(mirror, "w", encoding="utf-8") as mf:
+                        json.dump(history, mf, ensure_ascii=False, indent=2)
+                except Exception as exc:  # noqa: BLE001
+                    logging.debug("Skipping mirror write to %s: %s", mirror, exc)
+
+            return path
+        except PermissionError as exc:
+            last_error = exc
+            logging.error("Failed to write chat history to %s: %s", path, exc)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            logging.error("Unexpected error writing chat history to %s: %s", path, exc)
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("Unable to write chat history to any candidate path.")
+
+
+def _read_chat_history(limit: int | None = None) -> List[Dict[str, Any]]:
+    """Public helper to read chat history with fallbacks."""
+
+    history, _ = _load_chat_history()
+    if not isinstance(history, list):
+        return []
+    if limit is None:
+        return history
+    return history[-limit:]
+
+
+def _reset_chat_history() -> None:
+    """Reset chat history, preferring the writable fallback path."""
+
+    _write_chat_history([], preferred_path=_FALLBACK_CHAT_HISTORY_PATH)
 
 
 def _append_agent_reply(agent_label: str, reply: str) -> None:
@@ -77,266 +182,45 @@ def _extract_reply(agent_label: str, response: Optional[Dict[str, str]]) -> bool
     return False
 
 
-def _get_memory_llm() -> ChatOpenAI | None:
-    """Initialise or reuse an LLM client for memory updates."""
+def _get_memory_llm():
+    """Delegate to the shared memory LLM factory."""
 
-    global _memory_llm_instance
-    if _memory_llm_instance is not None:
-        return _memory_llm_instance
-
-    with _memory_llm_lock:
-        if _memory_llm_instance is not None:
-            return _memory_llm_instance
-        try:
-            config = resolve_llm_config("orchestrator")
-            _memory_llm_instance = ChatOpenAI(
-                model=config["model"],
-                temperature=0.2,
-                api_key=config["api_key"],
-                base_url=config.get("base_url") or None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logging.warning("Failed to initialise memory LLM: %s", exc)
-            _memory_llm_instance = None
-    return _memory_llm_instance
-
-
-def _extract_text(content: Any) -> str:
-    """Normalise LangChain response content to text."""
-
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        chunks: list[str] = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
-                text = item.get("text")
-                if isinstance(text, str):
-                    chunks.append(text)
-        return "".join(chunks)
-    return str(content)
-
-
-def _extract_json_payload(response_text: str) -> str:
-    """Pull JSON string out of a response, tolerating code fences."""
-
-    json_match = re.search(r"```(?:json)?\s*(.*?)\s*```", response_text, re.DOTALL)
-    if json_match:
-        return json_match.group(1)
-    return response_text
-
-
-def _coerce_memory_diff(response_text: str, memory_kind: str) -> dict[str, Any]:
-    """Ensure memory diffs are JSON objects, even if the LLM replied with text."""
-
-    json_str = _extract_json_payload(response_text)
-    try:
-        parsed = json.loads(json_str)
-    except json.JSONDecodeError:
-        logging.warning("Memory update (%s) returned non-JSON; wrapping raw text.", memory_kind)
-        return {"category_summaries": {"general": response_text}, "operations": []}
-
-    if not isinstance(parsed, dict):
-        logging.warning("Memory update (%s) returned JSON that is not an object; coercing.", memory_kind)
-        summary_text = (
-            parsed if isinstance(parsed, (str, int, float, bool)) else json.dumps(parsed, ensure_ascii=False)
-        )
-        return {"category_summaries": {"general": str(summary_text)}, "operations": []}
-
-    # Handle category_summaries (new format)
-    category_summaries = parsed.get("category_summaries")
-    if not isinstance(category_summaries, dict):
-        category_summaries = {}
-    
-    # Handle legacy summary_text for backwards compatibility
-    summary_text = parsed.get("summary_text")
-    if isinstance(summary_text, str) and summary_text.strip() and not category_summaries:
-        category_summaries["general"] = summary_text
-    
-    operations = parsed.get("operations")
-    if not isinstance(operations, list):
-        operations = []
-    
-    # Extract new top-level data fields
-    new_data = parsed.get("new_data")
-    if not isinstance(new_data, dict):
-        new_data = {}
-
-    parsed["category_summaries"] = category_summaries
-    parsed["operations"] = operations
-    parsed["new_data"] = new_data
-    return parsed
-
-
-def _format_history_lines(history: List[Dict[str, str]]) -> str:
-    """Render recent history into numbered lines for prompting."""
-
-    lines: list[str] = []
-    for idx, entry in enumerate(history, start=1):
-        role = entry.get("role") if isinstance(entry, dict) else None
-        content = entry.get("content") if isinstance(entry, dict) else None
-        if not isinstance(role, str) or not isinstance(content, str):
-            continue
-        lines.append(f"{idx}. {role}: {content}")
-    return "\n".join(lines)
-
-
-def _build_memory_prompt(
-    kind_label: str,
-    current_memory: Dict[str, Any],
-    recent_history: List[Dict[str, str]],
-    current_datetime_str: str,
-) -> str:
-    """Craft a prompt that reconciles existing memory with the latest chat, requesting JSON diffs."""
-
-    history_text = _format_history_lines(recent_history)
-    memory_json = json.dumps(current_memory, ensure_ascii=False, indent=2)
-
-    # Specific instructions based on memory type
-    if "短期" in kind_label:
-        schema_instruction = """
-#### 2. 短期記憶の構造化データ (new_data)
-以下のフィールドを必要に応じて更新してください:
-- `active_task` (Dict): 現在進行中のタスク情報（task_id, goal, status, started_at）
-- `pending_questions` (List[str]): ユーザーへの未回答の質問や確認事項
-- `recent_entities` (List[Dict]): 直近の会話で言及された固有名詞（人名, 場所, 日時, context）
-- `emotional_context` (str): ユーザーの現在の感情状態や緊急度（normal, urgent, frustrated, happy 等）
-- `expires_at` (str): このコンテキストの有効期限（YYYY-MM-DD HH:MM:SS）
-"""
-    else:
-        schema_instruction = """
-#### 2. 長期記憶の構造化データ (new_data)
-以下のフィールドを必要に応じて更新してください:
-- `user_profile` (Dict): ユーザーの基本属性（name, timezone, language, occupation, birthday）
-- `preferences` (Dict): 永続的な好み設定（communication_style, response_length, formality_level）
-- `recurring_patterns` (List[Dict]): 繰り返し観測されるパターン（例: "毎朝7時に起きる"）
-- `learned_corrections` (List[Dict]): ユーザーから指摘された訂正事項（original, corrected, learned_at）
-- `relationship_graph` (List[Dict]): 人間関係（name, relation, notes）
-- `topics_of_interest` (List[str]): ユーザーが強い関心を持つトピック
-- `do_not_mention` (List[str]): 触れるべきでないセンシティブなトピック
-"""
-
-    return f"""
-現在の日時: {current_datetime_str}
-
-あなたはユーザーに関する{kind_label}を更新する専門のエージェントです。
-提供された「現在の記憶データ」と「直近の会話履歴」を分析し、記憶の更新差分（JSON）を作成してください。
-
-### 現在の記憶データ
-```json
-{memory_json}
-```
-
-### 直近の会話履歴
-{history_text}
-
-### 指示
-
-#### 1. カテゴリ別サマリー (category_summaries) の更新
-各カテゴリのサマリーテキストを更新してください。
-カテゴリ: profile, preference, health, work, hobby, relationship, life, travel, food, general
-
-{schema_instruction}
-
-#### 3. 記憶の更新（セマンティック・エピソード・プロジェクト）
-以下のオペレーションを使用して記憶を更新してください。
-
-**A. スロット (`set_slot`) の更新ルール【重要】**
-- **重複排除と統合**:
-  - まず「現在の記憶データ」の `slots` を確認し、すでに類似の情報が存在しないかチェックしてください。
-  - 類似情報（例: `fav_food` と `favorite_food`）がある場合、新規作成ではなく、既存のスロットIDを使用して情報を統合・上書きしてください。
-
-**B. エピソード (`add_episode`) の追加ルール**
-- **重要な出来事のみ**: 重要な決定、アクション、ライフイベントのみを記録してください。
-
-**C. プロジェクト (`update_project`) の更新ルール**
-- 新しいプロジェクトの開始や状態変更時に使用してください。
-
-**D. 既存メモリの活用評価 (`record_usage`)【新規】**
-- 直近のAIの回答（`assistant`のメッセージ）を確認し、それが「現在の記憶データ」内のどのスロット情報を利用して生成されたか特定してください。
-- **活用された情報**: 回答の根拠となったスロットがあれば、その `slot_id` と `used: true` を出力してください。
-- **無視された/不正確な情報**: 会話の文脈に関連しているにもかかわらず、内容が古かったり不正確で回答に使用されなかった（無視された）スロットがある場合、`used: false` を出力してください。
-  - 例: ユーザーが「住所変わったよ」と言った時、古い住所スロットが提示されていた場合 → `used: false`
-- **注意**: 全てのスロットを評価する必要はありません。会話に明確に関連したものだけを抽出してください。
-
-#### 出力スキーマ (JSON)
-```json
-{{
-  "new_data": {{
-    // 上記の構造化データフィールド
-  }},
-  "category_summaries": {{ ... }},
-  "operations": [
-    {{
-      "op": "set_slot",
-      "slot_id": "preference_food_ramen",
-      "value": "醤油ラーメン",
-      "category": "preference"
-    }},
-    {{
-      "op": "record_usage",
-      "slot_id": "user_profile_name",
-      "used": true
-    }},
-    {{
-      "op": "record_usage",
-      "slot_id": "user_address_old",
-      "used": false
-    }}
-  ]
-}}
-```
-""".strip()
+    return get_memory_llm()
 
 
 def _refresh_memory(memory_kind: str, recent_history: List[Dict[str, str]]) -> None:
     """Update short- or long-term memory by reconciling recent history with the current store."""
 
+    settings = load_memory_settings()
+    if not settings.get("enabled", True):
+        return
+
     llm = _get_memory_llm()
     if llm is None:
         return
 
-    normalized_history: List[Dict[str, str]] = []
-    for entry in recent_history:
-        role = entry.get("role") if isinstance(entry, dict) else None
-        content = entry.get("content") if isinstance(entry, dict) else None
-        if not isinstance(role, str) or not isinstance(content, str):
-            continue
-        normalized_history.append({"role": role, "content": content})
+    normalized_history: List[Dict[str, str]] = [
+        {"role": entry.get("role"), "content": entry.get("content")}
+        for entry in recent_history
+        if isinstance(entry, dict)
+        and isinstance(entry.get("role"), str)
+        and isinstance(entry.get("content"), str)
+        and str(entry.get("content")).strip()
+    ]
 
     if not normalized_history:
         return
 
     if memory_kind == "short":
         memory_path = "short_term_memory.json"
-        label = "短期記憶"
     else:
         memory_path = "long_term_memory.json"
-        label = "長期記憶"
 
     manager = MemoryManager(memory_path)
-    
-    # Apply time-based decay before processing updates (only for long-term memory or daily check)
-    if memory_kind != "short":
-        manager.apply_decay()
-        
-    current_memory = manager.load_memory()
-    
-    current_datetime_str = _current_datetime_line()
-    prompt = _build_memory_prompt(label, current_memory, normalized_history, current_datetime_str)
-
     try:
-        response = llm.invoke([
-            SystemMessage(content=prompt),
-            HumanMessage(content="上記の指示に従ってメモリ更新差分をJSON形式で出力してください。"),
-        ])
-        response_text = _extract_text(response.content).strip()
-
-        diff = _coerce_memory_diff(response_text, memory_kind)
-        manager.apply_diff(diff)
+        manager.consolidate_memory(normalized_history, memory_kind="short" if memory_kind == "short" else "long", llm=llm)
     except Exception as exc:  # noqa: BLE001
-        logging.warning("Memory update (%s) failed: %s", memory_kind, exc)
-        return
+        logging.warning("Memory consolidation (%s) failed: %s", memory_kind, exc)
 
 
 def _handle_agent_responses(
@@ -544,36 +428,23 @@ def _append_to_chat_history(
 ) -> None:
     """Append a message to the chat history file."""
 
-    history: List[Dict[str, str]] = []
     extras = metadata if isinstance(metadata, dict) else None
+    history, source_path = _load_chat_history()
+
+    next_id = len(history) + 1
+    entry: Dict[str, Any] = {"id": next_id, "role": role, "content": content}
+    if extras:
+        for key, value in extras.items():
+            if key in {"id", "role", "content"}:
+                continue
+            entry[key] = value
+    history.append(entry)
+
     try:
-        with open("chat_history.json", "r+", encoding="utf-8") as f:
-            try:
-                history = json.load(f)
-            except json.JSONDecodeError:
-                history = []
-            next_id = len(history) + 1
-            entry: Dict[str, Any] = {"id": next_id, "role": role, "content": content}
-            if extras:
-                for key, value in extras.items():
-                    if key in {"id", "role", "content"}:
-                        continue
-                    entry[key] = value
-            history.append(entry)
-            f.seek(0)
-            json.dump(history, f, ensure_ascii=False, indent=2)
-            f.truncate()
-    except FileNotFoundError:
-        next_id = 1
-        entry = {"id": next_id, "role": role, "content": content}
-        if extras:
-            for key, value in extras.items():
-                if key in {"id", "role", "content"}:
-                    continue
-                entry[key] = value
-        history = [entry]
-        with open("chat_history.json", "w", encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
+        _write_chat_history(history, preferred_path=source_path)
+    except Exception as exc:  # noqa: BLE001
+        logging.error("Chat history write failed; message may not persist: %s", exc)
+        raise
 
     total_entries = len(history)
     if total_entries == 0:

@@ -1150,6 +1150,22 @@ function handleBrowserStatusEvent(payload) {
           forceSidebar: currentChatMode === "browser",
         });
       }
+
+      // When the orchestrator is steering the Browser Agent from the General view,
+      // mirror the agent's own completion summary into the orchestrator chat as a
+      // fallback (e.g. if the orchestrator stream misses the final payload).
+      const shouldMirrorToOrchestrator =
+        orchestratorBrowserMirrorState.active
+        && orchestratorBrowserMirrorState.useSseFallback
+        && isGeneralProxyAgentBrowser();
+      if (shouldMirrorToOrchestrator) {
+        mirrorBrowserMessageToOrchestrator({
+          role: "assistant",
+          text: trimmed,
+          ts: Date.now(),
+        });
+      }
+
       if (containsBrowserAgentFinalMarker(trimmed)) {
         stopOrchestratorBrowserMirror();
         if (isGeneralProxyAgentBrowser()) {

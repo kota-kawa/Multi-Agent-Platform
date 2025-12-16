@@ -36,6 +36,7 @@ from .config import (
     _resolve_browser_embed_url,
 )
 from .errors import LifestyleAPIError, OrchestratorError
+from .history import _read_chat_history, _reset_chat_history
 from .iot import (
     _build_iot_agent_url,
     _fetch_iot_model_selection,
@@ -249,22 +250,13 @@ def proxy_scheduler_agent(path: str) -> Response:
 @bp.route("/chat_history", methods=["GET"])
 def chat_history() -> Any:
     """Fetch the entire chat history."""
-    try:
-        with open("chat_history.json", "r", encoding="utf-8") as f:
-            history = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        history = []
-    return jsonify(history)
+    return jsonify(_read_chat_history())
 
 
 @bp.route("/reset_chat_history", methods=["POST"])
 def reset_chat_history() -> Any:
     """Clear the chat history."""
-    try:
-        with open("chat_history.json", "w", encoding="utf-8") as f:
-            json.dump([], f)
-    except FileNotFoundError:
-        pass  # File doesn't exist, nothing to clear
+    _reset_chat_history()
     return jsonify({"message": "Chat history cleared successfully."})
 
 
