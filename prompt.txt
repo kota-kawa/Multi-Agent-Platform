@@ -1,4 +1,0 @@
-codex exec --config sandbox_mode="read-only" --dry-run "型注釈の不足箇所を洗い出して、変更案だけを一覧化して"
-
-
-

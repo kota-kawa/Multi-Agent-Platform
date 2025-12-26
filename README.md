@@ -1,7 +1,7 @@
+# Polyphony 
+
 <img src="assets/icons/Polyphony-Logo.png" width="800px">
 
-# Polyphony (旧 マルチエージェントプラットフォーム)
-# Polyphony (formerly Multi-Agent Platform)
 
 Flask と LangGraph を組み合わせ、計画・実行・レビューを行うマルチエージェントタスクをシングルページ UI へ逐次配信するリファレンススタックです。オーケストレーター、Browser/IoT/Life-Assistant ブリッジ、各種ダッシュボードを同梱しています。
 This project combines Flask and LangGraph to plan, execute, and review multi-agent tasks while streaming their progress to a single-page UI. It bundles the orchestrator, Browser/IoT/Life-Assistant bridges, and dashboards into one reference stack.
