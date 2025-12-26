@@ -1721,18 +1721,23 @@ class MultiAgentOrchestrator:
         """Execute memory consolidation for short- and long-term stores."""
 
         try:
-            if long_history:
-                MemoryManager("long_term_memory.json").consolidate_memory(
-                    long_history,
-                    memory_kind="long",
-                    llm=llm_client,
-                )
+            short_snapshot = None
             if short_history:
-                MemoryManager("short_term_memory.json").consolidate_memory(
+                short_snapshot = MemoryManager("short_term_memory.json").consolidate_memory(
                     short_history,
                     memory_kind="short",
                     llm=llm_client,
                 )
+
+            # Consolidate to long-term only when short-term has accumulated enough context
+            if short_snapshot and len(short_history) >= 6:
+                MemoryManager("long_term_memory.json").consolidate_memory(
+                    long_history or short_history,
+                    memory_kind="long",
+                    llm=llm_client,
+                    short_snapshot=short_snapshot,
+                )
+                MemoryManager("short_term_memory.json").reset_short_memory(preserve_active_task=True)
         except Exception as exc:  # noqa: BLE001
             logging.warning("Background memory consolidation failed: %s", exc)
 

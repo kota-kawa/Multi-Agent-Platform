@@ -1,7 +1,7 @@
 {
   "orchestrator": {
-    "provider": "claude",
-    "model": "claude-opus-4-5",
+    "provider": "gemini",
+    "model": "gemini-2.5-flash-lite",
     "base_url": "https://generativelanguage.googleapis.com/v1beta/openai"
   },
   "browser": {
@@ -15,14 +15,14 @@
     "base_url": "https://api.groq.com/openai/v1"
   },
   "iot": {
-    "provider": "claude",
-    "model": "claude-haiku-4-5",
-    "base_url": "https://api.groq.com/openai/v1"
+    "provider": "openai",
+    "model": "gpt-5.1",
+    "base_url": ""
   },
   "scheduler": {
-    "provider": "groq",
-    "model": "openai/gpt-oss-20b",
-    "base_url": "https://api.groq.com/openai/v1"
+    "provider": "openai",
+    "model": "gpt-5.1",
+    "base_url": ""
   },
   "memory": {
     "provider": "claude",

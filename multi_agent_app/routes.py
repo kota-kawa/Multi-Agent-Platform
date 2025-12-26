@@ -275,45 +275,37 @@ def api_memory() -> Any:
             return jsonify({"error": "Invalid JSON"}), 400
         
         try:
-            # Save long-term memory
-            lt_mgr = MemoryManager("long_term_memory.json")
-            lt_mem = lt_mgr.load_memory()
+            # Full structure update (preferred for new UI)
+            long_term_full = data.get("long_term_full")
+            short_term_full = data.get("short_term_full")
             
-            # Handle both legacy format (string) and new format (category_summaries)
+            # Legacy text update
             long_term_data = data.get("long_term_memory")
-            if isinstance(long_term_data, str):
-                # Legacy format: update summary_text and general category
-                lt_mem["summary_text"] = long_term_data
-                lt_mem["category_summaries"]["general"] = long_term_data
-            elif isinstance(long_term_data, dict):
-                # New format: update category_summaries
-                for category, summary in long_term_data.items():
-                    if isinstance(summary, str):
-                        lt_mem["category_summaries"][category] = summary
-            
-            lt_mgr.save_memory(lt_mem)
-
-            # Save short-term memory
-            st_mgr = MemoryManager("short_term_memory.json")
-            st_mem = st_mgr.load_memory()
-            
             short_term_data = data.get("short_term_memory")
-            if isinstance(short_term_data, str):
-                # Legacy format
-                st_mem["summary_text"] = short_term_data
-                st_mem["category_summaries"]["general"] = short_term_data
-            elif isinstance(short_term_data, dict):
-                # New format
-                for category, summary in short_term_data.items():
-                    if isinstance(summary, str):
-                        st_mem["category_summaries"][category] = summary
-            
-            st_mgr.save_memory(st_mem)
-            
+
+            if long_term_full is not None:
+                lt_mgr = MemoryManager("long_term_memory.json")
+                lt_mgr.save_memory(long_term_full)
+            elif long_term_data is not None:
+                lt_mgr = MemoryManager("long_term_memory.json")
+                lt_mgr.replace_with_user_payload(long_term_data)
+
+            if short_term_full is not None:
+                st_mgr = MemoryManager("short_term_memory.json")
+                st_mgr.save_memory(short_term_full)
+            elif short_term_data is not None:
+                st_mgr = MemoryManager("short_term_memory.json")
+                st_mgr.replace_with_user_payload(short_term_data)
+
             # Save settings
             save_memory_settings({
                 "enabled": data.get("enabled"),
                 "history_sync_enabled": data.get("history_sync_enabled"),
+                "short_term_ttl_minutes": data.get("short_term_ttl_minutes"),
+                "short_term_grace_minutes": data.get("short_term_grace_minutes"),
+                "short_term_active_task_hold_minutes": data.get("short_term_active_task_hold_minutes"),
+                "short_term_promote_score": data.get("short_term_promote_score"),
+                "short_term_promote_importance": data.get("short_term_promote_importance"),
             })
             
             return jsonify({"message": "Memory saved successfully."})
@@ -327,28 +319,43 @@ def api_memory() -> Any:
         # Return both legacy format and new format for compatibility
         long_term_memory = lt_mem.get("summary_text", "")
         long_term_categories = lt_mem.get("category_summaries", {})
+        long_term_titles = lt_mem.get("category_titles", {})
     except Exception:
+        lt_mem = {}
         long_term_memory = ""
         long_term_categories = {}
+        long_term_titles = {}
 
     try:
         st_mgr = MemoryManager("short_term_memory.json")
         st_mem = st_mgr.load_memory()
         short_term_memory = st_mem.get("summary_text", "")
         short_term_categories = st_mem.get("category_summaries", {})
+        short_term_titles = st_mem.get("category_titles", {})
     except Exception:
+        st_mem = {}
         short_term_memory = ""
         short_term_categories = {}
+        short_term_titles = {}
 
     settings = load_memory_settings()
 
     return jsonify({
+        "long_term_full": lt_mem,
+        "short_term_full": st_mem,
         "long_term_memory": long_term_memory,
         "short_term_memory": short_term_memory,
         "long_term_categories": long_term_categories,
         "short_term_categories": short_term_categories,
+        "long_term_titles": long_term_titles,
+        "short_term_titles": short_term_titles,
         "enabled": settings.get("enabled", True),
         "history_sync_enabled": settings.get("history_sync_enabled", True),
+        "short_term_ttl_minutes": settings.get("short_term_ttl_minutes"),
+        "short_term_grace_minutes": settings.get("short_term_grace_minutes"),
+        "short_term_active_task_hold_minutes": settings.get("short_term_active_task_hold_minutes"),
+        "short_term_promote_score": settings.get("short_term_promote_score"),
+        "short_term_promote_importance": settings.get("short_term_promote_importance"),
     })
 
 

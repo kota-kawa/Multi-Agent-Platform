@@ -26,9 +26,14 @@ DEFAULT_MODEL_SELECTIONS: Dict[str, Dict[str, str]] = {
     "memory": {"provider": "openai", "model": ORCHESTRATOR_MODEL, "base_url": ""},
 }
 
-DEFAULT_MEMORY_SETTINGS: Dict[str, bool] = {
+DEFAULT_MEMORY_SETTINGS: Dict[str, Any] = {
     "enabled": True,
     "history_sync_enabled": True,
+    "short_term_ttl_minutes": 45,
+    "short_term_grace_minutes": 10,
+    "short_term_active_task_hold_minutes": 20,
+    "short_term_promote_score": 2,
+    "short_term_promote_importance": 0.65,
 }
 
 LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
@@ -103,6 +108,48 @@ def _coerce_bool(value: Any, fallback: bool) -> bool:
     if isinstance(value, (int, float)):
         return bool(value)
     return fallback
+
+
+def _coerce_int(value: Any, fallback: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    candidate: int | None = None
+    if isinstance(value, int):
+        candidate = value
+    elif isinstance(value, float):
+        candidate = int(value)
+    elif isinstance(value, str) and value.strip():
+        try:
+            candidate = int(float(value))
+        except ValueError:
+            candidate = None
+
+    if candidate is None:
+        candidate = fallback
+
+    if minimum is not None:
+        candidate = max(minimum, candidate)
+    if maximum is not None:
+        candidate = min(maximum, candidate)
+    return candidate
+
+
+def _coerce_float(value: Any, fallback: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
+    candidate: float | None = None
+    if isinstance(value, (int, float)):
+        candidate = float(value)
+    elif isinstance(value, str) and value.strip():
+        try:
+            candidate = float(value)
+        except ValueError:
+            candidate = None
+
+    if candidate is None:
+        candidate = fallback
+
+    if minimum is not None:
+        candidate = max(minimum, candidate)
+    if maximum is not None:
+        candidate = min(maximum, candidate)
+    return candidate
 
 
 def _merge_connections(raw: Any) -> Dict[str, bool]:
@@ -255,34 +302,73 @@ def save_model_settings(payload: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
     return selection
 
 
-def load_memory_settings() -> Dict[str, bool]:
+def _normalize_memory_settings(raw: Dict[str, Any] | None) -> Dict[str, Any]:
+    merged: Dict[str, Any] = dict(DEFAULT_MEMORY_SETTINGS)
+
+    merged["enabled"] = _coerce_bool(raw.get("enabled") if raw else None, merged["enabled"])
+    merged["history_sync_enabled"] = _coerce_bool(
+        raw.get("history_sync_enabled") if raw else None,
+        merged["history_sync_enabled"],
+    )
+    merged["short_term_ttl_minutes"] = _coerce_int(
+        raw.get("short_term_ttl_minutes") if raw else None,
+        merged["short_term_ttl_minutes"],
+        minimum=5,
+        maximum=720,
+    )
+    merged["short_term_grace_minutes"] = _coerce_int(
+        raw.get("short_term_grace_minutes") if raw else None,
+        merged["short_term_grace_minutes"],
+        minimum=0,
+        maximum=240,
+    )
+    merged["short_term_active_task_hold_minutes"] = _coerce_int(
+        raw.get("short_term_active_task_hold_minutes") if raw else None,
+        merged["short_term_active_task_hold_minutes"],
+        minimum=0,
+        maximum=240,
+    )
+    merged["short_term_promote_score"] = _coerce_int(
+        raw.get("short_term_promote_score") if raw else None,
+        merged["short_term_promote_score"],
+        minimum=0,
+        maximum=10,
+    )
+    merged["short_term_promote_importance"] = _coerce_float(
+        raw.get("short_term_promote_importance") if raw else None,
+        merged["short_term_promote_importance"],
+        minimum=0.0,
+        maximum=1.0,
+    )
+    return merged
+
+
+def load_memory_settings() -> Dict[str, Any]:
     """Load the memory usage settings."""
     try:
         with open(_MEMORY_SETTINGS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return dict(DEFAULT_MEMORY_SETTINGS)
-    
-    return {
-        "enabled": _coerce_bool(data.get("enabled"), DEFAULT_MEMORY_SETTINGS["enabled"]),
-        "history_sync_enabled": _coerce_bool(
-            data.get("history_sync_enabled"),
-            DEFAULT_MEMORY_SETTINGS["history_sync_enabled"],
-        ),
-    }
+
+    return _normalize_memory_settings(data if isinstance(data, dict) else {})
 
 
-def save_memory_settings(payload: Dict[str, Any]) -> Dict[str, bool]:
+def save_memory_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Persist the memory usage settings."""
-    enabled = _coerce_bool(payload.get("enabled"), DEFAULT_MEMORY_SETTINGS["enabled"])
-    history_sync_enabled = _coerce_bool(
-        payload.get("history_sync_enabled"),
-        DEFAULT_MEMORY_SETTINGS["history_sync_enabled"],
-    )
-    settings = {
-        "enabled": enabled,
-        "history_sync_enabled": history_sync_enabled,
-    }
+    existing = load_memory_settings()
+    incoming = payload if isinstance(payload, dict) else {}
+
+    merged = dict(existing)
+    for key in DEFAULT_MEMORY_SETTINGS:
+        if key not in incoming:
+            continue
+        value = incoming[key]
+        if value is None:
+            continue
+        merged[key] = value
+
+    settings = _normalize_memory_settings(merged)
     with open(_MEMORY_SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(settings, f, ensure_ascii=False, indent=2)
     return settings

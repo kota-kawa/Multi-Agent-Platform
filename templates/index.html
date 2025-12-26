@@ -506,23 +506,294 @@
               </label>
             </div>
           </div>
-          <div class="form-row">
-            <label class="form-label" for="settingsLongTermMemory">長期記憶</label>
-            <textarea
-              id="settingsLongTermMemory"
-              name="long_term_memory"
-              class="form-control form-control--multiline"
-              placeholder="ユーザーの特性や背景などを記録します。"
-            ></textarea>
+          <div class="settings-memory-editor" data-memory-type="long">
+            <div class="settings-memory-toolbar">
+              <div class="settings-memory-tabs" role="tablist" aria-label="長期記憶の表示切り替え">
+                <button
+                  type="button"
+                  class="settings-memory-tab is-active"
+                  data-memory-tab="long"
+                  data-view="cards"
+                  aria-controls="settingsLongTermCardView"
+                  aria-selected="true"
+                >
+                  概要
+                </button>
+                <button
+                  type="button"
+                  class="settings-memory-tab"
+                  data-memory-tab="long"
+                  data-view="slots"
+                  aria-controls="settingsLongTermSlotsView"
+                  aria-selected="false"
+                >
+                  詳細 (Facts)
+                </button>
+                <button
+                  type="button"
+                  class="settings-memory-tab"
+                  data-memory-tab="long"
+                  data-view="profile"
+                  aria-controls="settingsLongTermProfileView"
+                  aria-selected="false"
+                >
+                  プロフィール
+                </button>
+                <button
+                  type="button"
+                  class="settings-memory-tab"
+                  data-memory-tab="long"
+                  data-view="json"
+                  aria-controls="settingsLongTermJsonView"
+                  aria-selected="false"
+                >
+                  JSON
+                </button>
+              </div>
+              <div id="settingsLongTermActions">
+                <button id="settingsLongTermAdd" class="btn subtle" type="button">カテゴリを追加</button>
+                <button id="settingsLongTermAddSlot" class="btn subtle" type="button" hidden>事実を追加</button>
+              </div>
+            </div>
+            
+            <!-- Cards View (Summaries) -->
+            <div id="settingsLongTermCardView" class="settings-memory-view" data-view="cards">
+              <div id="settingsLongTermGrid" class="settings-memory-grid"></div>
+              <p id="settingsLongTermEmpty" class="settings-memory-empty" hidden>
+                まだ長期記憶がありません。カードを追加するかテキスト貼付けで取り込みます。
+              </p>
+            </div>
+
+            <!-- Slots View (Detailed Facts) -->
+            <div id="settingsLongTermSlotsView" class="settings-memory-view settings-memory-view--slots" data-view="slots" hidden>
+              <div class="slots-table-container">
+                <table class="slots-table">
+                  <thead>
+                    <tr>
+                      <th>ラベル</th>
+                      <th>値</th>
+                      <th>カテゴリ</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="settingsLongTermSlotsBody">
+                    <!-- Rows injected by JS -->
+                  </tbody>
+                </table>
+              </div>
+              <p id="settingsLongTermSlotsEmpty" class="settings-memory-empty" hidden>
+                登録されている事実（Slot）はありません。
+              </p>
+            </div>
+
+            <!-- Profile View -->
+            <div id="settingsLongTermProfileView" class="settings-memory-view settings-memory-view--profile" data-view="profile" hidden>
+              <div class="profile-editor">
+                <h4>基本プロフィール</h4>
+                <div id="settingsLongTermProfileFields" class="form-grid"></div>
+                
+                <h4 class="mt-4">好み・嗜好 (Preferences)</h4>
+                <div class="preference-lists">
+                  <div class="preference-col">
+                    <label>好きなもの (Likes)</label>
+                    <textarea id="settingsProfileLikes" class="form-control" rows="5"></textarea>
+                  </div>
+                  <div class="preference-col">
+                    <label>嫌いなもの (Dislikes)</label>
+                    <textarea id="settingsProfileDislikes" class="form-control" rows="5"></textarea>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- JSON View -->
+            <div id="settingsLongTermJsonView" class="settings-memory-view settings-memory-view--raw" data-view="json" hidden>
+              <textarea
+                id="settingsLongTermJson"
+                class="form-control form-control--code"
+                spellcheck="false"
+                placeholder="{ ... }"
+              ></textarea>
+              <p class="settings-memory-raw-hint">全データを直接編集できます。構文エラーに注意してください。</p>
+            </div>
+            
+            <!-- Legacy Textarea (Hidden but kept for safety/fallback if JS expects it, though we will try to migrate usage) -->
+            <textarea id="settingsLongTermMemory" hidden></textarea>
           </div>
-          <div class="form-row">
-            <label class="form-label" for="settingsShortTermMemory">短期記憶</label>
-            <textarea
-              id="settingsShortTermMemory"
-              name="short_term_memory"
-              class="form-control form-control--multiline"
-              placeholder="最近の出来事や直近の指示を記録します。"
-            ></textarea>
+          <div>
+            <p class="settings-policy-note">短期記憶の保持時間と自動昇格ルールを調整できます。</p>
+            <div class="settings-policy-grid">
+              <label class="settings-policy-field" for="settingsShortTermTtl">
+                <span>標準保持時間 (分)</span>
+                <input
+                  id="settingsShortTermTtl"
+                  type="number"
+                  min="5"
+                  max="720"
+                  step="5"
+                  class="form-control"
+                  placeholder="45"
+                />
+              </label>
+              <label class="settings-policy-field" for="settingsShortTermGrace">
+                <span>グレース期間 (分)</span>
+                <input
+                  id="settingsShortTermGrace"
+                  type="number"
+                  min="0"
+                  max="240"
+                  step="5"
+                  class="form-control"
+                  placeholder="10"
+                />
+              </label>
+              <label class="settings-policy-field" for="settingsShortTermActiveHold">
+                <span>アクティブタスク延命 (分)</span>
+                <input
+                  id="settingsShortTermActiveHold"
+                  type="number"
+                  min="0"
+                  max="240"
+                  step="5"
+                  class="form-control"
+                  placeholder="20"
+                />
+              </label>
+              <label class="settings-policy-field" for="settingsShortTermPromoteScore">
+                <span>昇格スコアしきい値</span>
+                <input
+                  id="settingsShortTermPromoteScore"
+                  type="number"
+                  min="0"
+                  max="10"
+                  step="1"
+                  class="form-control"
+                  placeholder="2"
+                />
+              </label>
+              <label class="settings-policy-field" for="settingsShortTermPromoteImportance">
+                <span>昇格 importance (0-1)</span>
+                <input
+                  id="settingsShortTermPromoteImportance"
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  class="form-control"
+                  placeholder="0.65"
+                />
+              </label>
+            </div>
+          </div>
+          <div class="settings-memory-editor" data-memory-type="short">
+            <div class="settings-memory-toolbar">
+              <div class="settings-memory-tabs" role="tablist" aria-label="短期記憶の表示切り替え">
+                <button
+                  type="button"
+                  class="settings-memory-tab is-active"
+                  data-memory-tab="short"
+                  data-view="cards"
+                  aria-controls="settingsShortTermCardView"
+                  aria-selected="true"
+                >
+                  概要
+                </button>
+                <button
+                  type="button"
+                  class="settings-memory-tab"
+                  data-memory-tab="short"
+                  data-view="slots"
+                  aria-controls="settingsShortTermSlotsView"
+                  aria-selected="false"
+                >
+                  詳細 (Facts)
+                </button>
+                <button
+                  type="button"
+                  class="settings-memory-tab"
+                  data-memory-tab="short"
+                  data-view="context"
+                  aria-controls="settingsShortTermContextView"
+                  aria-selected="false"
+                >
+                  コンテキスト
+                </button>
+                <button
+                  type="button"
+                  class="settings-memory-tab"
+                  data-memory-tab="short"
+                  data-view="json"
+                  aria-controls="settingsShortTermJsonView"
+                  aria-selected="false"
+                >
+                  JSON
+                </button>
+              </div>
+              <div id="settingsShortTermActions">
+                <button id="settingsShortTermAdd" class="btn subtle" type="button">カテゴリを追加</button>
+                <button id="settingsShortTermAddSlot" class="btn subtle" type="button" hidden>事実を追加</button>
+              </div>
+            </div>
+
+            <!-- Cards View -->
+            <div id="settingsShortTermCardView" class="settings-memory-view" data-view="cards">
+              <div id="settingsShortTermGrid" class="settings-memory-grid"></div>
+              <p id="settingsShortTermEmpty" class="settings-memory-empty" hidden>
+                まだ短期記憶がありません。カードを追加するかテキスト貼付けで取り込みます。
+              </p>
+            </div>
+
+            <!-- Slots View -->
+            <div id="settingsShortTermSlotsView" class="settings-memory-view settings-memory-view--slots" data-view="slots" hidden>
+               <div class="slots-table-container">
+                <table class="slots-table">
+                  <thead>
+                    <tr>
+                      <th>ラベル</th>
+                      <th>値</th>
+                      <th>カテゴリ</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="settingsShortTermSlotsBody"></tbody>
+                </table>
+              </div>
+              <p id="settingsShortTermSlotsEmpty" class="settings-memory-empty" hidden>
+                登録されている事実（Slot）はありません。
+              </p>
+            </div>
+
+            <!-- Context View -->
+            <div id="settingsShortTermContextView" class="settings-memory-view settings-memory-view--context" data-view="context" hidden>
+              <div class="context-editor">
+                 <div class="form-group">
+                    <label>現在のアクティブタスク (Active Task)</label>
+                    <textarea id="settingsContextActiveTask" class="form-control" rows="4" placeholder="JSON format expected"></textarea>
+                 </div>
+                 <div class="form-group mt-3">
+                    <label>未解決の質問 (Pending Questions)</label>
+                    <textarea id="settingsContextQuestions" class="form-control" rows="4" placeholder="1行に1つの質問"></textarea>
+                 </div>
+                  <div class="form-group mt-3">
+                    <label>感情コンテキスト (Emotional Context)</label>
+                    <input type="text" id="settingsContextEmotion" class="form-control" placeholder="例: calm, urgent">
+                 </div>
+              </div>
+            </div>
+
+            <!-- JSON View -->
+            <div id="settingsShortTermJsonView" class="settings-memory-view settings-memory-view--raw" data-view="json" hidden>
+              <textarea
+                id="settingsShortTermJson"
+                class="form-control form-control--code"
+                spellcheck="false"
+                placeholder="{ ... }"
+              ></textarea>
+               <p class="settings-memory-raw-hint">全データを直接編集できます。</p>
+            </div>
+             
+            <!-- Legacy Textarea -->
+            <textarea id="settingsShortTermMemory" hidden></textarea>
           </div>
         </div>
         <p id="settingsStatusMessage" class="dialog-message settings-status" hidden></p>

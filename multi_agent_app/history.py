@@ -22,6 +22,12 @@ _PRIMARY_CHAT_HISTORY_PATH = Path("chat_history.json")
 _FALLBACK_CHAT_HISTORY_PATH = Path("var/chat_history.json")
 _LEGACY_CHAT_HISTORY_PATHS = [Path("instance/chat_history.json")]
 
+# Consolidation cadence: short-term is updated every turn; long-term is only
+# consolidated after a few short-term refreshes to keep roles distinct.
+_SHORT_TO_LONG_THRESHOLD = 3
+_short_updates_since_last_long = 0
+_short_update_lock = threading.Lock()
+
 
 def _load_chat_history(prefer_fallback: bool = True) -> tuple[List[Dict[str, Any]], Path]:
     """Return chat history and the path it was loaded from with permission-aware fallbacks."""
@@ -191,6 +197,8 @@ def _get_memory_llm():
 def _refresh_memory(memory_kind: str, recent_history: List[Dict[str, str]]) -> None:
     """Update short- or long-term memory by reconciling recent history with the current store."""
 
+    global _short_updates_since_last_long  # noqa: PLW0603
+
     settings = load_memory_settings()
     if not settings.get("enabled", True):
         return
@@ -218,9 +226,48 @@ def _refresh_memory(memory_kind: str, recent_history: List[Dict[str, str]]) -> N
 
     manager = MemoryManager(memory_path)
     try:
-        manager.consolidate_memory(normalized_history, memory_kind="short" if memory_kind == "short" else "long", llm=llm)
+        snapshot = manager.consolidate_memory(
+            normalized_history,
+            memory_kind="short" if memory_kind == "short" else "long",
+            llm=llm,
+        )
+        if memory_kind == "short":
+            with _short_update_lock:
+                _short_updates_since_last_long += 1
+        else:
+            with _short_update_lock:
+                _short_updates_since_last_long = 0
+        return snapshot
     except Exception as exc:  # noqa: BLE001
         logging.warning("Memory consolidation (%s) failed: %s", memory_kind, exc)
+        return None
+
+
+def _consolidate_short_into_long(recent_history: List[Dict[str, str]]) -> None:
+    """Persist short-term highlights into long-term memory, then reset short memory."""
+
+    global _short_updates_since_last_long  # noqa: PLW0603
+
+    llm = _get_memory_llm()
+    if llm is None:
+        return
+
+    short_manager = MemoryManager("short_term_memory.json")
+    short_snapshot = short_manager.load_memory()
+
+    long_manager = MemoryManager("long_term_memory.json")
+    try:
+        long_manager.consolidate_memory(
+            recent_history,
+            memory_kind="long",
+            llm=llm,
+            short_snapshot=short_snapshot,
+        )
+        short_manager.reset_short_memory(preserve_active_task=True)
+        with _short_update_lock:
+            _short_updates_since_last_long = 0
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Short->Long consolidation failed: %s", exc)
 
 
 def _handle_agent_responses(
@@ -450,11 +497,17 @@ def _append_to_chat_history(
     if total_entries == 0:
         return
 
+    # Keep agents loosely in sync
     if broadcast and total_entries % 5 == 0:
         memory_settings = load_memory_settings()
         if memory_settings.get("history_sync_enabled", True):
             threading.Thread(target=_send_recent_history_to_agents, args=(history,)).start()
-    if total_entries % 10 == 0:
-        threading.Thread(target=_refresh_memory, args=("short", history[-10:])).start()
-    if total_entries % 30 == 0:
-        threading.Thread(target=_refresh_memory, args=("long", history[-30:])).start()
+
+    # Short-term memory: refresh every turn using the latest few lines as context
+    threading.Thread(target=_refresh_memory, args=("short", history[-6:])).start()
+
+    # Long-term memory: consolidate only after several short updates to avoid homogenization
+    with _short_update_lock:
+        should_consolidate_long = _short_updates_since_last_long >= _SHORT_TO_LONG_THRESHOLD
+    if should_consolidate_long:
+        threading.Thread(target=_consolidate_short_into_long, args=(history[-20:],)).start()

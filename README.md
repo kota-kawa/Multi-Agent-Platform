@@ -1,3 +1,5 @@
+<img src="assets/icons/Polyphony-Logo.png" width="800px">
+
 # マルチエージェントプラットフォーム
 # Multi-Agent Platform
 

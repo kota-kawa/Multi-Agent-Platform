@@ -23,6 +23,7 @@
 ## Runtime Data & Memory Management
 - `_append_to_chat_history` maintains `chat_history.json`, appends every user/assistant turn from the一般（オーケストレーター）ビュー, and asynchronously calls `_send_recent_history_to_agents` every five entries to sync the Life-Assistantエージェント, Browser Agent, and IoT Agent. 送信スキーマは `{"history": [{"role": "...", "content": "..."}]}` に統一し、各エージェントから `should_reply`/`reply`/`addressed_agents` が返ってきた場合は `[Agent] ...` 形式で `chat_history.json` に追記する。Theチャットビュー (`/rag_answer`) now bypasses this file entirely so only orchestrated conversations persist locally.
 - 短期記憶は会話履歴が10件ごと、長期記憶は30件ごとにLLMで再生成される。直近10/30件の履歴と既存メモを突き合わせ、差分は「以前 -> 更新後」の矢印付きで `short_term_memory.json` / `long_term_memory.json` に保存される。
+- `short_term_memory.json` には `expires_at` が必ず付与され、既定（45分 + グレース期間）を過ぎると自動で初期化される。アクティブタスクがある場合は延命し、期限切れ時にスコア/importance の高いスロットやエピソードは長期記憶へ昇格する。
 - `/chat_history` + `/reset_chat_history` expose the local transcript to the UI; `assets/app.js` also duplicates key steps into sidebar/orchestrator panes.
 - `/memory` + `/api/memory` wrap `short_term_memory.json` and `long_term_memory.json`. `POST /api/memory` replaces both files; reads tolerate missing/invalid JSON.
 - Never commit large diffs for these JSON files; they are runtime artifacts used for demos/local state only.
@@ -35,6 +36,7 @@
   - `BROWSER_AGENT_CONNECT_TIMEOUT`, `BROWSER_AGENT_TIMEOUT`, `BROWSER_AGENT_STREAM_TIMEOUT`, `BROWSER_AGENT_CHAT_TIMEOUT`
   - `IOT_AGENT_API_BASE`, `IOT_AGENT_TIMEOUT`
 - Use comma-delimited strings for multi-endpoint overrides (Browser/Life-Assistant/IoT). `_canonicalise_browser_agent_base` normalizes hostnames; the UI can also send override lists in orchestrator requests.
+- `/api/memory` exposes runtime toggles for短期記憶のポリシー（`short_term_ttl_minutes`, `short_term_grace_minutes`, `short_term_active_task_hold_minutes`, `short_term_promote_score`, `short_term_promote_importance`）。値は `memory_settings.json` に保存され、Settingsダイアログ / `templates/memory.html` から編集できる。
 - Do not bake secrets into source—pass them via env (compose, Docker, local shell).
 
 ## Development Workflow

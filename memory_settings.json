@@ -1,4 +1,9 @@
 {
   "enabled": true,
-  "history_sync_enabled": false
+  "history_sync_enabled": false,
+  "short_term_ttl_minutes": 45,
+  "short_term_grace_minutes": 10,
+  "short_term_active_task_hold_minutes": 20,
+  "short_term_promote_score": 2,
+  "short_term_promote_importance": 0.65
 }

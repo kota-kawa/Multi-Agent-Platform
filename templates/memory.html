@@ -9,72 +9,99 @@
   <link rel="apple-touch-icon" href="/assets/icons/orchestrator-favicon.png" />
   <link rel="stylesheet" href="/assets/styles.css" />
   <style>
-    body {
-      padding: 20px;
-    }
+    body { padding: 20px; }
     .memory-container {
-      max-width: 800px;
+      max-width: 1100px;
       margin: 0 auto;
       background-color: var(--panel-2);
       padding: 20px;
-      border-radius: 8px;
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.18);
     }
-    h1 {
-      color: var(--text);
+    h1 { color: var(--text); margin-bottom: 4px; }
+    .subtitle { color: var(--muted); margin-bottom: 24px; }
+    .memory-form { display: flex; flex-direction: column; gap: 28px; }
+    .memory-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
     }
-    .memory-form {
+    .memory-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
       display: flex;
       flex-direction: column;
-      gap: 20px;
+      gap: 8px;
     }
-    .memory-group {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    label {
-      font-weight: bold;
-      color: var(--text);
-    }
+    label { font-weight: 700; color: var(--text); }
+    .memory-hint { color: var(--muted); font-size: 12px; }
     textarea {
       width: 100%;
-      min-height: 150px;
+      min-height: 110px;
       padding: 10px;
-      border-radius: 4px;
+      border-radius: 8px;
       border: 1px solid var(--border);
-      background-color: var(--bg);
+      background-color: var(--panel);
       color: var(--text);
       font-family: inherit;
+      line-height: 1.5;
+      resize: vertical;
+    }
+    .save-bar {
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+      align-items: center;
     }
     .save-button {
-      align-self: flex-end;
       padding: 10px 20px;
       border: none;
-      border-radius: 4px;
+      border-radius: 8px;
       background-color: var(--primary);
       color: white;
       cursor: pointer;
+      font-weight: 700;
+      box-shadow: 0 8px 16px rgba(0,0,0,0.12);
     }
-    .save-button:hover {
-      background-color: var(--primary-2);
+    .save-button:hover { background-color: var(--primary-2); }
+    .status { color: var(--accent); min-height: 20px; }
+    .section-title { margin: 12px 0 4px; font-weight: 800; color: var(--text); }
+    .memory-note {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
     }
   </style>
 </head>
 <body>
   <div class="memory-container">
     <h1>Memory Management</h1>
+    <div class="subtitle">短期・長期記憶を「自然言語」で編集できます。JSONは不要です。</div>
+    <div class="memory-note">
+      推奨カテゴリは「プロフィール / 好み・嗜好 / 健康 / 仕事・学業 / 趣味 / 人間関係 / 生活 / 旅行 / 食事 / その他」です。
+      JSONなどで直接編集する場合も、上記ラベルを使用するとUIとオーケストレーター双方で確実に参照されます。
+      それ以外のカテゴリを入力した場合は、自動的に追加カテゴリとして扱われます。
+    </div>
     <form id="memoryForm" class="memory-form">
-      <div class="memory-group">
-        <label for="longTermMemory">Long-Term Memory</label>
-        <textarea id="longTermMemory" name="long_term_memory"></textarea>
+      <div>
+        <div class="section-title">長期記憶（永続・変わりにくい事実）</div>
+        <div id="longTermSections" class="memory-grid"></div>
       </div>
-      <div class="memory-group">
-        <label for="shortTermMemory">Short-Term Memory</label>
-        <textarea id="shortTermMemory" name="short_term_memory"></textarea>
+      <div>
+        <div class="section-title">短期記憶（直近のコンテキスト・保留事項）</div>
+        <div id="shortTermSections" class="memory-grid"></div>
       </div>
-      <button type="submit" class="save-button">Save</button>
+      <div class="save-bar">
+        <p id="statusMessage" class="status"></p>
+        <button type="submit" class="save-button">保存する</button>
+      </div>
     </form>
-    <p id="statusMessage" style="color: var(--accent);"></p>
   </div>
   <script src="/assets/memory.js" defer></script>
 </body>

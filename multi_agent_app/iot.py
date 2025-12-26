@@ -571,6 +571,7 @@ def _call_iot_agent_command(command: str) -> Dict[str, Any]:
         raise IotAgentError("IoT Agent API の接続先が設定されていません。", status_code=500)
 
     errors: list[str] = []
+    skipped_http_fallback = False
     for base in bases:
         is_external = _is_external_endpoint(base)
         
@@ -592,15 +593,7 @@ def _call_iot_agent_command(command: str) -> Dict[str, Any]:
             message = f"{base} (MCP): {exc}"
             errors.append(message)
             logging.warning("MCP execution failed for %s: %s", base, exc)
-            
-            # Fallback to HTTP API for local endpoints too
-            if not is_external:
-                try:
-                    logging.debug("Falling back to HTTP API for %s", base)
-                    return _execute_via_http_chat(command, base)
-                except IotAgentError as http_exc:
-                    errors.append(f"{base} (HTTP fallback): {http_exc}")
-                    logging.warning("HTTP fallback failed for %s: %s", base, http_exc)
+            skipped_http_fallback = True
             continue
         except Exception as exc:  # pragma: no cover - defensive guard
             message = f"{base}: {exc}"
@@ -609,9 +602,9 @@ def _call_iot_agent_command(command: str) -> Dict[str, Any]:
             continue
 
     details = "\n".join(f"- {error}" for error in errors) if errors else "- 理由不明のエラー"
-    raise IotAgentError(
-        "IoT Agent コマンドを実行できませんでした。\n" + details
-    )
+    if skipped_http_fallback:
+        details += "\n- HTTP API にはフォールバックしませんでした（MCP 専用エンドポイント）"
+    raise IotAgentError("IoT Agent コマンドを実行できませんでした。\n" + details)
 
 
 def _call_iot_agent_chat(command: str) -> Dict[str, Any]:
