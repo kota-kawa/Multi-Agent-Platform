@@ -1,7 +1,7 @@
 <img src="assets/icons/Polyphony-Logo.png" width="800px">
 
-# マルチエージェントプラットフォーム
-# Multi-Agent Platform
+# Polyphony (旧 マルチエージェントプラットフォーム)
+# Polyphony (formerly Multi-Agent Platform)
 
 Flask と LangGraph を組み合わせ、計画・実行・レビューを行うマルチエージェントタスクをシングルページ UI へ逐次配信するリファレンススタックです。オーケストレーター、Browser/IoT/Life-Assistant ブリッジ、各種ダッシュボードを同梱しています。
 This project combines Flask and LangGraph to plan, execute, and review multi-agent tasks while streaming their progress to a single-page UI. It bundles the orchestrator, Browser/IoT/Life-Assistant bridges, and dashboards into one reference stack.
@@ -21,8 +21,8 @@ This project combines Flask and LangGraph to plan, execute, and review multi-age
 12. トラブルシューティング / Troubleshooting & Tips
 
 ## 概要 / Overview
-マルチエージェントプラットフォームは `multi_agent_app` Flask ブループリントを中心に、LangGraph + ChatOpenAI で動作するオーケストレーターと Browser/IoT/Life-Assistant ブリッジを提供します。`assets/` と `templates/` に格納された SPA がオーケストレーターイベントを可視化し、Browser Agent 埋め込み、IoT ウィジェット、共有チャット、メモリエディタを提供します。
-The platform exposes the `multi_agent_app` Flask blueprint that hosts a LangGraph + ChatOpenAI orchestrator plus Browser/IoT/Life-Assistant bridges. The SPA bundles in `assets/` and `templates/` mirror orchestrator events, embed the Browser Agent, and surface IoT widgets, shared chat, and memory editors.
+Polyphony は `multi_agent_app` Flask ブループリントを中心に、LangGraph + ChatOpenAI で動作するオーケストレーターと Browser/IoT/Life-Assistant ブリッジを提供します。`assets/` と `templates/` に格納された SPA がオーケストレーターイベントを可視化し、Browser Agent 埋め込み、IoT ウィジェット、共有チャット、メモリエディタを提供します。
+Polyphony exposes the `multi_agent_app` Flask blueprint that hosts a LangGraph + ChatOpenAI orchestrator plus Browser/IoT/Life-Assistant bridges. The SPA bundles in `assets/` and `templates/` mirror orchestrator events, embed the Browser Agent, and surface IoT widgets, shared chat, and memory editors.
 
 ## 特長 / Features
 - LangGraph 駆動の `MultiAgentOrchestrator` が `plan → execute → review` ループと SSE (`plan`, `before_execution`, `browser_init`, `execution_progress`, `after_execution`, `complete`) を提供します。

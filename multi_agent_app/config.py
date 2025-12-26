@@ -1,4 +1,4 @@
-"""Configuration helpers and constants for the Multi-Agent Platform."""
+"""Configuration helpers and constants for Polyphony."""
 
 from __future__ import annotations
 

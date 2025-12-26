@@ -1,4 +1,4 @@
-"""Application factory for the Multi-Agent Platform."""
+"""Application factory for Polyphony."""
 
 from __future__ import annotations
 

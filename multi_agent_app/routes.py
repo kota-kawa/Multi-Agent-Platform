@@ -1,4 +1,4 @@
-"""Flask blueprint and HTTP routes for the Multi-Agent Platform."""
+"""Flask blueprint and HTTP routes for Polyphony."""
 
 from __future__ import annotations
 

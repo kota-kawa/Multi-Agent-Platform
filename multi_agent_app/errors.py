@@ -1,4 +1,4 @@
-"""Custom exception classes used throughout the Multi-Agent Platform."""
+"""Custom exception classes used throughout Polyphony."""
 
 from __future__ import annotations
 
