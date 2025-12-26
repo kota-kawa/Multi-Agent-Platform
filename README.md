@@ -206,3 +206,6 @@ Polyphony exposes the `multi_agent_app` Flask blueprint that hosts a LangGraph +
 - Update backend helpers and `assets/app.js` together when changing SSE payloads or agent bridge contracts to avoid UI desyncs.
 - ブロードキャスト処理は `_send_recent_history_to_agents` のようにバックグラウンドスレッドを用いて Flask スレッドを塞がないようにします。
 - Use background threads (as `_send_recent_history_to_agents` does) to avoid blocking Flask request threads during broadcasts.
+
+## License
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
