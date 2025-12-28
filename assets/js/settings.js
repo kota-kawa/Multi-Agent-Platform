@@ -1,4 +1,5 @@
 import { $, $$ } from "./dom-utils.js";
+import { applyAgentStatusPayload } from "./agent-status.js";
 
 const settingsBtn = $("#settingsBtn");
 const dialog = $("#settingsDialog");
@@ -544,6 +545,9 @@ async function saveSettings() {
   return { results, timedOut: aborts.length > 0 };
 }
 function applyAgentStatus(payload) {
+  // Sync with the shared agent status state/banner
+  applyAgentStatusPayload(payload);
+
   const agents = payload?.agents && typeof payload.agents === "object" ? payload.agents : payload;
   if (!agents || typeof agents !== "object") {
     state.agentStatus = { ...DEFAULT_AGENT_STATUS };

@@ -572,6 +572,15 @@ body{
   text-align:center;
 }
 
+.stage-fallback--loading{
+  color:#c7d3e6;
+}
+
+.stage-fallback--error{
+  color:#ffb5b5;
+  text-shadow:0 1px 6px rgba(0,0,0,.35);
+}
+
 .browser-toolbar{
   position:absolute;
   top:16px;
@@ -933,6 +942,13 @@ body{
 .settings-section__head{display:flex; align-items:flex-start; justify-content:space-between; gap:12px}
 .settings-section__title{margin:0; font-size:14px; font-weight:700; letter-spacing:.04em}
 .settings-section__desc{margin:2px 0 0; font-size:12px; color:var(--muted); line-height:1.6}
+.settings-section__status-note{
+  margin:4px 0 0;
+  font-size:12px;
+  color:var(--bad);
+  font-weight:500;
+  line-height:1.5;
+}
 .settings-stats{display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:12px}
 .settings-stat{
   border:1px solid rgba(91,209,255,.18);

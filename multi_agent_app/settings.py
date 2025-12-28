@@ -18,12 +18,12 @@ DEFAULT_AGENT_CONNECTIONS: Dict[str, bool] = {
 }
 
 DEFAULT_MODEL_SELECTIONS: Dict[str, Dict[str, str]] = {
-    "orchestrator": {"provider": "openai", "model": ORCHESTRATOR_MODEL, "base_url": ""},
-    "browser": {"provider": "openai", "model": "gpt-5.1", "base_url": ""},
-    "lifestyle": {"provider": "openai", "model": "gpt-5.1", "base_url": ""},
-    "iot": {"provider": "openai", "model": "gpt-5.1", "base_url": ""},
-    "scheduler": {"provider": "openai", "model": "gpt-5.1", "base_url": ""},
-    "memory": {"provider": "openai", "model": ORCHESTRATOR_MODEL, "base_url": ""},
+    "orchestrator": {"provider": "groq", "model": ORCHESTRATOR_MODEL, "base_url": ""},
+    "browser": {"provider": "groq", "model": "openai/gpt-oss-20b", "base_url": ""},
+    "lifestyle": {"provider": "groq", "model": "openai/gpt-oss-20b", "base_url": ""},
+    "iot": {"provider": "groq", "model": "openai/gpt-oss-20b", "base_url": ""},
+    "scheduler": {"provider": "groq", "model": "openai/gpt-oss-20b", "base_url": ""},
+    "memory": {"provider": "groq", "model": ORCHESTRATOR_MODEL, "base_url": ""},
 }
 
 DEFAULT_MEMORY_SETTINGS: Dict[str, Any] = {

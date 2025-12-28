@@ -119,7 +119,7 @@ DEFAULT_BROWSER_AGENT_CLIENT_BASE = "http://localhost:5005"
 BROWSER_AGENT_FINAL_MARKER = "[browser-agent-final]"
 BROWSER_AGENT_FINAL_NOTICE = "※ ブラウザエージェントの応答はここで終了です。"
 
-ORCHESTRATOR_MODEL = os.environ.get("ORCHESTRATOR_MODEL", "gpt-5.1")
+ORCHESTRATOR_MODEL = os.environ.get("ORCHESTRATOR_MODEL", "openai/gpt-oss-20b")
 ORCHESTRATOR_MAX_TASKS = int(os.environ.get("ORCHESTRATOR_MAX_TASKS", "5"))
 
 

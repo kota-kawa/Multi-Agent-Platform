@@ -439,6 +439,14 @@ function normalizeBrowserEmbedUrl(value) {
 function resolveBrowserEmbedUrl() {
   const sanitize = value => (typeof value === "string" ? value.trim() : "");
   const hasProtocol = value => /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value);
+  const localHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+  const isLocalHost = host => typeof host === "string" && localHosts.has(host.toLowerCase());
+  const preferredProtocol = () => {
+    if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+      return window.location.protocol;
+    }
+    return "http:";
+  };
 
   let queryValue = "";
   try {
@@ -456,18 +464,41 @@ function resolveBrowserEmbedUrl() {
   for (const candidate of sources) {
     if (!candidate) continue;
     if (hasProtocol(candidate)) {
-      return normalizeBrowserEmbedUrl(candidate);
+      try {
+        const parsed = new URL(candidate);
+        if (!isLocalHost(window.location.hostname) && isLocalHost(parsed.hostname)) {
+          parsed.hostname = window.location.hostname;
+          if (!parsed.port) {
+            parsed.port = "7900";
+          }
+          parsed.protocol = preferredProtocol();
+        }
+        return normalizeBrowserEmbedUrl(parsed.toString());
+      } catch (_) {
+        return normalizeBrowserEmbedUrl(candidate);
+      }
     }
     try {
-      const absolute = new URL(candidate, window.location.origin).toString();
-      return normalizeBrowserEmbedUrl(absolute);
+      const absolute = new URL(candidate, window.location.origin);
+      if (!isLocalHost(window.location.hostname) && isLocalHost(absolute.hostname)) {
+        absolute.hostname = window.location.hostname;
+        if (!absolute.port) {
+          absolute.port = "7900";
+        }
+        absolute.protocol = preferredProtocol();
+      }
+      return normalizeBrowserEmbedUrl(absolute.toString());
     } catch (_) {
       continue;
     }
   }
 
+  const fallbackBase =
+    !isLocalHost(window.location.hostname)
+      ? `${preferredProtocol()}//${window.location.hostname}:7900/`
+      : "http://127.0.0.1:7900/";
   return normalizeBrowserEmbedUrl(
-    "http://127.0.0.1:7900/vnc_lite.html?autoconnect=1&resize=scale&scale=auto&view_clip=false",
+    `${fallbackBase}vnc_lite.html?autoconnect=1&resize=scale&scale=auto&view_clip=false`,
   );
 }
 
@@ -495,6 +526,10 @@ function createNoVncController({ stage, fullscreenButton, context = "default" } 
     deferredReloadFallback: false,
     stageResizeObserver: null,
     stageResizeRaf: null,
+    statusEl: null,
+    connectTimer: null,
+    connectAttempts: 0,
+    lastReadyAt: 0,
   };
 
   const controller = {
@@ -504,9 +539,94 @@ function createNoVncController({ stage, fullscreenButton, context = "default" } 
     sync,
     reload,
     matchesWindow,
+    markReady,
     getStage: () => stage,
     getIframe: () => state.iframe,
   };
+
+  const CONNECT_CHECK_MS = 8000;
+  const CONNECT_RETRY_DELAYS = [2000, 4000, 7000];
+
+  function ensureStatusEl() {
+    if (state.statusEl) return state.statusEl;
+    let fallback = stage.querySelector(".stage-fallback");
+    if (!fallback) {
+      fallback = document.createElement("p");
+      fallback.className = "stage-fallback";
+      stage.appendChild(fallback);
+    }
+    state.statusEl = fallback;
+    return fallback;
+  }
+
+  function setStatus({ message, kind = "loading", hidden = false } = {}) {
+    const el = ensureStatusEl();
+    if (!el) return;
+    el.textContent = message || "";
+    el.classList.toggle("stage-fallback--error", kind === "error");
+    el.classList.toggle("stage-fallback--loading", kind === "loading");
+    el.hidden = Boolean(hidden);
+  }
+
+  function clearConnectTimer() {
+    if (state.connectTimer) {
+      clearTimeout(state.connectTimer);
+      state.connectTimer = null;
+    }
+  }
+
+  function getEmbedHostLabel() {
+    try {
+      const parsed = new URL(BROWSER_EMBED_URL, window.location.origin);
+      return parsed.host || parsed.hostname || "127.0.0.1:7900";
+    } catch (_error) {
+      return "127.0.0.1:7900";
+    }
+  }
+
+  function buildFailureMessage({ retrying = false } = {}) {
+    const hostLabel = getEmbedHostLabel();
+    const lines = [
+      "リモートブラウザに接続できませんでした。",
+      `noVNC(Websockify) が ${hostLabel} で起動しているか確認してください。`,
+      "必要なら設定の BROWSER_EMBED_URL を正しいホストに変更してください。",
+    ];
+    if (window.location.protocol === "https:" && BROWSER_EMBED_URL.startsWith("http://")) {
+      lines.push("https で開いている場合は https の埋め込みURLを指定してください。");
+    }
+    if (retrying) {
+      lines.push("再接続を試しています…");
+    }
+    return lines.join(" ");
+  }
+
+  function scheduleConnectionCheck(delay = CONNECT_CHECK_MS) {
+    clearConnectTimer();
+    state.connectTimer = setTimeout(() => {
+      if (state.lastReadyAt) {
+        return;
+      }
+      const attempt = state.connectAttempts;
+      if (attempt < CONNECT_RETRY_DELAYS.length) {
+        state.connectAttempts += 1;
+        setStatus({ kind: "error", message: buildFailureMessage({ retrying: true }) });
+        const retryDelay = CONNECT_RETRY_DELAYS[attempt] || 0;
+        setTimeout(() => {
+          controller.reload();
+          scheduleConnectionCheck(CONNECT_CHECK_MS);
+        }, retryDelay);
+      } else {
+        setStatus({ kind: "error", message: buildFailureMessage() });
+      }
+    }, delay);
+  }
+
+  function markReady() {
+    state.lastReadyAt = Date.now();
+    state.connectAttempts = 0;
+    clearConnectTimer();
+    setStatus({ hidden: true });
+  }
 
   function ensureIframe() {
     if (!stage || !BROWSER_EMBED_URL) {
@@ -521,6 +641,10 @@ function createNoVncController({ stage, fullscreenButton, context = "default" } 
       iframe.setAttribute("title", `埋め込みブラウザ${titleSuffix}`);
       iframe.setAttribute("allow", "fullscreen");
       iframe.addEventListener("load", () => {
+        state.lastReadyAt = 0;
+        state.connectAttempts = 0;
+        setStatus({ kind: "loading", message: "リモートブラウザを読み込んでいます…" });
+        scheduleConnectionCheck();
         controller.requestSync();
       });
       stage.appendChild(iframe);
@@ -690,12 +814,14 @@ window.addEventListener("message", event => {
     for (const controller of noVncControllers) {
       if (!controller) continue;
       if (!event.source || controller.matchesWindow(event.source)) {
+        controller.markReady?.();
         controller.requestSync();
         handled = true;
       }
     }
     if (!handled) {
       for (const controller of noVncControllers) {
+        controller?.markReady?.();
         controller?.requestSync();
       }
     }

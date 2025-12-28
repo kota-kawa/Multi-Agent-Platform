@@ -4,7 +4,7 @@ const banner = $("#agentStatusBanner");
 
 const AGENT_LABELS = {
   browser: "ブラウザエージェント",
-  lifestyle: "Life-Styleエージェント",
+  lifestyle: "Life-Style エージェント",
   iot: "IoT エージェント",
   scheduler: "Scheduler エージェント",
 };
@@ -20,20 +20,37 @@ const state = {
 };
 
 function updateBanner() {
-  if (!banner) return;
+  const settingsBanner = $("#settingsAgentStatusBanner");
   const entries = Object.entries(state.agents);
   const disconnected = entries.filter(([, info]) => info.enabled !== false && info.available === false);
+  
   if (!disconnected.length) {
-    banner.hidden = true;
-    banner.textContent = "";
-    banner.dataset.kind = "ok";
+    if (banner) {
+      banner.hidden = true;
+      banner.textContent = "";
+    }
+    if (settingsBanner) {
+      settingsBanner.hidden = true;
+      settingsBanner.textContent = "";
+    }
     return;
   }
 
   const names = disconnected.map(([key]) => AGENT_LABELS[key] || key);
-  banner.textContent = `未接続: ${names.join(" / ")}。接続できているエージェントの機能のみ利用できます。`;
-  banner.dataset.kind = "error";
-  banner.hidden = false;
+  const message = `未接続: ${names.join(" / ")}。接続できているエージェントの機能のみ利用できます。`;
+  
+  // Top page banner: stay hidden as per user request
+  if (banner) {
+    banner.textContent = message;
+    banner.dataset.kind = "error";
+    banner.hidden = true; // Force hidden
+  }
+
+  // Settings modal status note: show this one
+  if (settingsBanner) {
+    settingsBanner.textContent = message;
+    settingsBanner.hidden = false;
+  }
 }
 
 function applyStatusPayload(payload) {

@@ -28,7 +28,7 @@ function stripPrefixFromPath(path) {
 }
 
 /** ---------- モデル選択 ---------- */
-const DEFAULT_MODEL = { provider: "openai", model: "gpt-5.1", base_url: "" };
+const DEFAULT_MODEL = { provider: "groq", model: "openai/gpt-oss-20b", base_url: "https://api.groq.com/openai/v1" };
 let availableModels = [];
 let currentModel = { ...DEFAULT_MODEL };
 
@@ -40,7 +40,7 @@ function populateModelSelect(){
 
   const options = availableModels.length
     ? availableModels
-    : [{ ...DEFAULT_MODEL, label: "Default (OpenAI gpt-5.1)" }];
+    : [{ ...DEFAULT_MODEL, label: "Default (Groq GPT-OSS)" }];
 
   options.forEach((m) => {
     const option = document.createElement("option");
