@@ -6,6 +6,7 @@ import datetime
 import json
 import logging
 from typing import Any, Dict, Iterator
+from concurrent.futures import ThreadPoolExecutor
 
 from flask import (
     Blueprint,
@@ -64,6 +65,7 @@ from .settings import (
     save_memory_settings,
 )
 from .orchestrator import _get_orchestrator
+from .agent_status import get_agent_status
 from .memory_manager import MemoryManager
 
 bp = Blueprint("multi_agent_app", __name__)
@@ -183,11 +185,18 @@ def rag_answer() -> Any:
     if not question:
         return jsonify({"error": "質問を入力してください。"}), 400
 
+    status = get_agent_status()
+    lifestyle_status = (status.get("agents") or {}).get("lifestyle", {})
+    if not lifestyle_status.get("available", True):
+        message = "Life-Styleエージェントに接続できないため回答できません。"
+        return jsonify({"status": "unavailable", "answer": "", "message": message, "error": lifestyle_status.get("error")})
+
     try:
         data = _call_lifestyle("/rag_answer", method="POST", payload={"question": question})
     except LifestyleAPIError as exc:
         logging.exception("Life-Style rag_answer failed: %s", exc)
-        return jsonify({"error": str(exc)}), exc.status_code
+        message = "Life-Styleエージェントに接続できないため回答できません。"
+        return jsonify({"status": "unavailable", "answer": "", "message": message, "error": str(exc)})
 
     return jsonify(data)
 
@@ -196,11 +205,18 @@ def rag_answer() -> Any:
 def conversation_history() -> Any:
     """Fetch the conversation history from the Life-Style backend."""
 
+    status = get_agent_status()
+    lifestyle_status = (status.get("agents") or {}).get("lifestyle", {})
+    if not lifestyle_status.get("available", True):
+        message = "Life-Styleエージェントに接続できないため履歴を取得できません。"
+        return jsonify({"status": "unavailable", "conversation_history": [], "message": message, "error": lifestyle_status.get("error")})
+
     try:
         data = _call_lifestyle("/conversation_history")
     except LifestyleAPIError as exc:
         logging.exception("Life-Style conversation_history failed: %s", exc)
-        return jsonify({"error": str(exc)}), exc.status_code
+        message = "Life-Styleエージェントに接続できないため履歴を取得できません。"
+        return jsonify({"status": "unavailable", "conversation_history": [], "message": message, "error": str(exc)})
 
     return jsonify(data)
 
@@ -209,11 +225,18 @@ def conversation_history() -> Any:
 def conversation_summary() -> Any:
     """Fetch the conversation summary from the Life-Style backend."""
 
+    status = get_agent_status()
+    lifestyle_status = (status.get("agents") or {}).get("lifestyle", {})
+    if not lifestyle_status.get("available", True):
+        message = "Life-Styleエージェントに接続できないため要約を取得できません。"
+        return jsonify({"status": "unavailable", "summary": "", "message": message, "error": lifestyle_status.get("error")})
+
     try:
         data = _call_lifestyle("/conversation_summary")
     except LifestyleAPIError as exc:
         logging.exception("Life-Style conversation_summary failed: %s", exc)
-        return jsonify({"error": str(exc)}), exc.status_code
+        message = "Life-Styleエージェントに接続できないため要約を取得できません。"
+        return jsonify({"status": "unavailable", "summary": "", "message": message, "error": str(exc)})
 
     return jsonify(data)
 
@@ -222,11 +245,18 @@ def conversation_summary() -> Any:
 def reset_history() -> Any:
     """Request the Life-Style backend to clear the conversation history."""
 
+    status = get_agent_status()
+    lifestyle_status = (status.get("agents") or {}).get("lifestyle", {})
+    if not lifestyle_status.get("available", True):
+        message = "Life-Styleエージェントに接続できないため履歴をリセットできません。"
+        return jsonify({"status": "unavailable", "message": message, "error": lifestyle_status.get("error")})
+
     try:
         data = _call_lifestyle("/reset_history", method="POST")
     except LifestyleAPIError as exc:
         logging.exception("Life-Style reset_history failed: %s", exc)
-        return jsonify({"error": str(exc)}), exc.status_code
+        message = "Life-Styleエージェントに接続できないため履歴をリセットできません。"
+        return jsonify({"status": "unavailable", "message": message, "error": str(exc)})
 
     return jsonify(data)
 
@@ -378,6 +408,12 @@ def api_agent_connections() -> Any:
     return jsonify(saved)
 
 
+@bp.route("/api/agent_status", methods=["GET"])
+def api_agent_status() -> Any:
+    """Return the latest agent connectivity status."""
+    return jsonify(get_agent_status(force=True))
+
+
 @bp.route("/api/model_settings", methods=["GET", "POST"])
 def api_model_settings() -> Any:
     """Expose and persist LLM model preferences per agent."""
@@ -385,16 +421,22 @@ def api_model_settings() -> Any:
     if request.method == "GET":
         selection = load_model_settings()
         updates: Dict[str, Dict[str, str]] = {}
-        try:
-            iot_selection = _fetch_iot_model_selection()
-        except Exception as exc:  # noqa: BLE001
-            logging.info("Skipping IoT model pull during settings fetch: %s", exc)
-            iot_selection = None
-        try:
-            scheduler_selection = _fetch_scheduler_model_selection()
-        except Exception as exc:  # noqa: BLE001
-            logging.info("Skipping Scheduler model pull during settings fetch: %s", exc)
-            scheduler_selection = None
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_iot = executor.submit(_fetch_iot_model_selection)
+            future_scheduler = executor.submit(_fetch_scheduler_model_selection)
+
+            try:
+                iot_selection = future_iot.result()
+            except Exception as exc:  # noqa: BLE001
+                logging.info("Skipping IoT model pull during settings fetch: %s", exc)
+                iot_selection = None
+
+            try:
+                scheduler_selection = future_scheduler.result()
+            except Exception as exc:  # noqa: BLE001
+                logging.info("Skipping Scheduler model pull during settings fetch: %s", exc)
+                scheduler_selection = None
 
         if iot_selection and selection.get("iot") != iot_selection:
             updates["iot"] = iot_selection
@@ -433,8 +475,16 @@ def scheduler_index():
     try:
         data = _fetch_calendar_data(year, month)
     except ConnectionError as exc:
-        logging.error("Failed to fetch calendar data: %s", exc)
-        return jsonify({"error": str(exc)}), 500
+        logging.info("Scheduler calendar fetch skipped (agent unavailable): %s", exc)
+        status_message = "Scheduler エージェントに接続できないためカレンダーを表示できません。"
+        return render_template(
+            "scheduler_index.html",
+            calendar_data=[],
+            year=year,
+            month=month,
+            today=datetime.date.today(),
+            status_message=status_message,
+        )
     
     # Convert ISO format date strings back to datetime.date objects for Jinja
     for week in data['calendar_data']:
@@ -447,7 +497,8 @@ def scheduler_index():
         calendar_data=data['calendar_data'],
         year=data['year'],
         month=data['month'],
-        today=data['today']
+        today=data['today'],
+        status_message=None,
     )
 
 @bp.route("/scheduler-ui/calendar_partial")
@@ -473,13 +524,20 @@ def scheduler_calendar_partial():
             data['today'] = datetime.date.today()
             
     except (ConnectionError, ValueError, KeyError, TypeError) as exc:
-        logging.error("Failed to fetch calendar partial data: %s", exc)
-        return jsonify({"error": str(exc)}), 502
+        logging.info("Scheduler calendar partial fetch skipped (agent unavailable): %s", exc)
+        status_message = "Scheduler エージェントに接続できないためカレンダーを表示できません。"
+        return render_template(
+            "scheduler_calendar_partial.html",
+            calendar_data=[],
+            today=datetime.date.today(),
+            status_message=status_message,
+        )
     
     return render_template(
         "scheduler_calendar_partial.html",
         calendar_data=data.get('calendar_data', []),
-        today=data['today']
+        today=data['today'],
+        status_message=None,
     )
 
 @bp.route("/scheduler-ui/day/<date_str>", methods=["GET", "POST"])

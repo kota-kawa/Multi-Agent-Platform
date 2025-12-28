@@ -1,4 +1,4 @@
-const MEMORY_CATEGORIES = [
+const LONG_TERM_CATEGORIES = [
   'profile',
   'preference',
   'health',
@@ -11,7 +11,16 @@ const MEMORY_CATEGORIES = [
   'general',
 ];
 
+const SHORT_TERM_CATEGORIES = [
+  'active_task',
+  'pending_questions',
+  'recent_entities',
+  'emotional_context',
+  'general', // Short term also has general summary
+];
+
 const CATEGORY_LABELS = {
+  // Long Term
   profile: '基本情報',
   preference: '好み・嗜好',
   health: '健康',
@@ -21,7 +30,13 @@ const CATEGORY_LABELS = {
   life: '生活',
   travel: '旅行',
   food: '食事',
-  general: 'その他',
+  general: 'その他・メモ',
+
+  // Short Term
+  active_task: '現在進行中のタスク',
+  pending_questions: '未解決の質問',
+  recent_entities: '直近の話題・キーワード',
+  emotional_context: '現在の感情・雰囲気',
 };
 
 const PLACEHOLDER = {
@@ -34,19 +49,66 @@ const PLACEHOLDER = {
   life: '例: 早朝型。家事は週末にまとめて行う。',
   travel: '例: 夏に北海道旅行を計画中。温泉が好き。',
   food: '例: 和食とコーヒーが好き。辛すぎる料理は苦手。',
-  general: '例: 今日は穏やかな気分。次に話すときのトピック候補はAIとDIY。',
+  general: '例: 雑多なメモや、まだ分類できていない情報。',
+
+  active_task: '例: タスク: 旅行の計画を立てる (ステータス: 進行中)',
+  pending_questions: '例: 質問: 次回の会議はいつ？\n質問: あのレストランの名前は？',
+  recent_entities: '例: キーワード: React, Python, 温泉',
+  emotional_context: '例: 気分: 落ち着いている。少し急ぎ。',
 };
 
-function buildSections(containerId, categoryData = {}, fallbackSummary = '') {
+/**
+ * Convert structured short-term data into natural language text for the editor.
+ */
+function formatShortTermValue(category, data, fullMemory) {
+  // If we already have a text summary for this category, prefer it (unless it's empty)
+  // However, for structured fields like active_task, we want to reconstruct the text from the structure if possible,
+  // to ensure the user sees the actual state.
+  
+  if (category === 'active_task') {
+    const task = fullMemory.active_task || {};
+    if (task.goal) {
+      return `タスク: ${task.goal}\nステータス: ${task.status || 'active'}`;
+    }
+  }
+
+  if (category === 'pending_questions') {
+    const questions = fullMemory.pending_questions || [];
+    if (Array.isArray(questions) && questions.length > 0) {
+      return questions.map(q => `質問: ${q}`).join('\n');
+    }
+  }
+
+  if (category === 'recent_entities') {
+    const entities = fullMemory.recent_entities || [];
+    if (Array.isArray(entities) && entities.length > 0) {
+      // entities are dicts {name: "...", ...}
+      const names = entities.map(e => e.name).filter(n => n);
+      if (names.length > 0) {
+        return `キーワード: ${names.join(', ')}`;
+      }
+    }
+  }
+
+  if (category === 'emotional_context') {
+    if (fullMemory.emotional_context) {
+      return `気分: ${fullMemory.emotional_context}`;
+    }
+  }
+
+  // Fallback to existing category summary string if available
+  if (data && typeof data === 'string') {
+    return data;
+  }
+
+  return '';
+}
+
+function buildSections(containerId, categoryList, summaries = {}, fullMemory = {}) {
   const container = document.getElementById(containerId);
   container.innerHTML = '';
 
-  const seeded = { ...categoryData };
-  if (fallbackSummary && Object.keys(seeded).length === 0) {
-    seeded.general = fallbackSummary;
-  }
-
-  MEMORY_CATEGORIES.forEach((cat) => {
+  categoryList.forEach((cat) => {
     const wrapper = document.createElement('div');
     wrapper.className = 'memory-card';
 
@@ -62,7 +124,17 @@ function buildSections(containerId, categoryData = {}, fallbackSummary = '') {
     textarea.id = `${containerId}-${cat}`;
     textarea.dataset.category = cat;
     textarea.placeholder = PLACEHOLDER[cat] || '';
-    textarea.value = seeded[cat] || '';
+
+    // Determine initial value
+    let value = '';
+    // For short-term specific structured fields, try to format them
+    if (SHORT_TERM_CATEGORIES.includes(cat) && cat !== 'general') {
+       value = formatShortTermValue(cat, summaries[cat], fullMemory);
+    } else {
+       value = summaries[cat] || '';
+    }
+    
+    textarea.value = value;
 
     wrapper.appendChild(label);
     wrapper.appendChild(hint);
@@ -93,8 +165,11 @@ document.addEventListener('DOMContentLoaded', () => {
   fetch('/api/memory')
     .then((response) => response.json())
     .then((data) => {
-      buildSections(longContainer, data.long_term_categories, data.long_term_memory);
-      buildSections(shortContainer, data.short_term_categories, data.short_term_memory);
+      // Build Long Term (Standard Categories)
+      buildSections(longContainer, LONG_TERM_CATEGORIES, data.long_term_categories, data.long_term_full);
+      
+      // Build Short Term (Special Categories)
+      buildSections(shortContainer, SHORT_TERM_CATEGORIES, data.short_term_categories, data.short_term_full);
     })
     .catch((error) => {
       console.error('Error fetching memory:', error);
@@ -103,16 +178,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
+    statusMessage.textContent = '保存中...';
 
-    const longTermCategories = collectSections(longContainer);
-    const shortTermCategories = collectSections(shortContainer);
+    const longTermData = collectSections(longContainer);
+    const shortTermData = collectSections(shortContainer);
 
     fetch('/api/memory', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        long_term_memory: longTermCategories,
-        short_term_memory: shortTermCategories,
+        // We send "categories" map. The backend `replace_with_user_payload` expects this structure
+        // or a simple map which it treats as categories.
+        long_term_memory: longTermData, 
+        short_term_memory: shortTermData,
       }),
     })
       .then((response) => response.json())

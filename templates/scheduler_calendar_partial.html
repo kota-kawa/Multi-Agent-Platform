@@ -1,4 +1,10 @@
 <div class="calendar-grid" id="calendar-grid">
+    {% if status_message %}
+        <div class="scheduler-empty scheduler-empty--calendar">
+            <i class="bi bi-cloud-slash"></i>
+            <p>{{ status_message }}</p>
+        </div>
+    {% endif %}
     {% for week in calendar_data %}
         {% for day in week %}
         {% set date_str = day.date.isoformat() if day.date and day.date.isoformat is not none else day.date|string %}

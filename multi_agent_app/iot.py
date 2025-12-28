@@ -19,7 +19,12 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from .config import DEFAULT_IOT_AGENT_BASES, IOT_AGENT_TIMEOUT, PUBLIC_IOT_AGENT_BASE
+from .config import (
+    DEFAULT_IOT_AGENT_BASES,
+    IOT_AGENT_TIMEOUT,
+    IOT_MODEL_SYNC_TIMEOUT,
+    PUBLIC_IOT_AGENT_BASE,
+)
 from .settings import resolve_llm_config
 
 # Context fetch should be best-effort to avoid blocking orchestrator planning.
@@ -133,7 +138,7 @@ def _fetch_iot_model_selection() -> Dict[str, str] | None:
     for base in bases:
         url = _build_iot_agent_url(base, "/api/models")
         try:
-            response = requests.get(url, timeout=IOT_AGENT_TIMEOUT)
+            response = requests.get(url, timeout=IOT_MODEL_SYNC_TIMEOUT)
         except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
             logging.info("IoT model sync attempt to %s skipped (%s)", url, exc)
             continue
@@ -729,7 +734,10 @@ def _proxy_iot_agent_request(path: str) -> Response:
 
     bases = _iter_iot_agent_bases()
     if not bases:
-        return jsonify({"error": "IoT Agent API の接続先が設定されていません。"}), 500
+        return jsonify({
+            "status": "unavailable",
+            "error": "IoT Agent API の接続先が設定されていません。",
+        })
 
     if request.is_json:
         json_payload = request.get_json(silent=True)
@@ -769,7 +777,10 @@ def _proxy_iot_agent_request(path: str) -> Response:
         if connection_errors:
             message_lines.append("試行した URL:")
             message_lines.extend(f"- {error}" for error in connection_errors)
-        return jsonify({"error": "\n".join(message_lines)}), 502
+        return jsonify({
+            "status": "unavailable",
+            "error": "\n".join(message_lines),
+        })
 
     proxy_response = Response(response.content, status=response.status_code)
     excluded_headers = {"content-encoding", "transfer-encoding", "connection", "content-length"}

@@ -1430,6 +1430,9 @@ class MemoryManager:
         self._apply_manual_slots(memory, entries or [])
         self._apply_manual_profile_updates(memory, structured.get("profile") if structured else {})
         self._apply_manual_preference_updates(memory, structured.get("preferences") if structured else {})
+        
+        if self._is_short_term:
+            self._apply_manual_short_term_updates(memory, entries or [])
 
     def _apply_manual_slots(self, memory: MemoryStore, entries: List[ManualEntry]) -> None:
         """Replace manual-editor slots with freshly parsed entries."""
@@ -1522,6 +1525,108 @@ class MemoryManager:
                 prefs[key] = clean_values
 
         memory["preferences"] = prefs
+
+    def _apply_manual_short_term_updates(self, memory: MemoryStore, entries: List[ManualEntry]) -> None:
+        """Update short-term specific fields from manual entries (natural language to structured)."""
+        
+        for entry in entries:
+            key = entry.get("key")
+            value = entry.get("value")
+            if not key:
+                continue
+            
+            # Allow empty value to clear the field
+            cleaned_value = value.strip() if isinstance(value, str) else ""
+
+            field = self._identify_short_term_field(key)
+            if not field:
+                continue
+
+            if field == "active_task":
+                # Try to parse as JSON first (in case user pasted JSON), otherwise treat as description
+                try:
+                    task_data = json.loads(cleaned_value) if cleaned_value.startswith("{") else None
+                    if isinstance(task_data, dict):
+                        memory["active_task"] = task_data
+                    else:
+                        raise ValueError
+                except (json.JSONDecodeError, ValueError):
+                    # Treat as simple text goal
+                    if cleaned_value:
+                        memory["active_task"] = {
+                            "goal": cleaned_value,
+                            "status": "active",
+                            "created_at": datetime.now().isoformat()
+                        }
+                    else:
+                        memory["active_task"] = {}
+
+            elif field == "pending_questions":
+                # Split by newline
+                if cleaned_value:
+                    lines = [line.strip() for line in cleaned_value.replace("・", "\n").split("\n") if line.strip()]
+                    # Remove "Question:" prefixes if present
+                    clean_lines = []
+                    for line in lines:
+                        # Strip common prefixes like "1.", "-", "Question:", "質問:"
+                        sub = re.sub(r'^(?:\d+\.|-|Question:|質問:|Q:)\s*', '', line, flags=re.IGNORECASE)
+                        if sub.strip():
+                            clean_lines.append(sub.strip())
+                    memory["pending_questions"] = clean_lines
+                else:
+                    memory["pending_questions"] = []
+
+            elif field == "recent_entities":
+                # Split by comma or newline
+                if cleaned_value:
+                    # Normalize separators
+                    normalized = cleaned_value.replace("、", ",").replace("\n", ",")
+                    items = [x.strip() for x in normalized.split(",") if x.strip()]
+                    
+                    # Convert to entity objects
+                    new_entities = []
+                    for item in items:
+                        # Strip prefixes like "Keyword:"
+                        sub = re.sub(r'^(?:Keyword:|Entity:|キーワード:|単語:)\s*', '', item, flags=re.IGNORECASE)
+                        if sub.strip():
+                            new_entities.append({
+                                "name": sub.strip(),
+                                "type": "unknown",
+                                "last_mentioned": datetime.now().isoformat()
+                            })
+                    memory["recent_entities"] = new_entities
+                else:
+                    memory["recent_entities"] = []
+
+            elif field == "emotional_context":
+                # Strip prefixes like "Mood:"
+                sub = re.sub(r'^(?:Mood:|Emotion:|Feeling:|気分:|感情:)\s*', '', cleaned_value, flags=re.IGNORECASE)
+                memory["emotional_context"] = sub.strip()
+
+            else:
+                # Fallback for other fields
+                memory[field] = cleaned_value
+
+
+    def _identify_short_term_field(self, key: str) -> Optional[str]:
+        """Map manual keys to short-term memory fields."""
+        key_lower = key.lower()
+        
+        if any(x in key_lower for x in ["task", "タスク", "doing", "goal", "目標", "作業"]):
+            return "active_task"
+        if any(x in key_lower for x in ["question", "質問", "疑問", "pending", "ask"]):
+            return "pending_questions"
+        if any(x in key_lower for x in ["entity", "keyword", "term", "word", "単語", "エンティティ", "キーワード"]):
+            return "recent_entities"
+        if any(x in key_lower for x in ["emotion", "mood", "feeling", "感情", "気分", "コンテキスト", "context"]):
+            return "emotional_context"
+        
+        return None
+
+    def _coerce_short_term_value(self, field: str, value: str) -> Any:
+        if field == "emotional_context":
+            return value.strip()
+        return value.strip()
 
 
     def _coerce_user_category_payload(self, payload: Any) -> tuple[CategorySummaries, Dict[str, str]]:

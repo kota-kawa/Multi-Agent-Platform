@@ -3,6 +3,7 @@ import { ensureChatInitialized, ensureBrowserAgentInitialized, ensureOrchestrato
 import { ensureIotDashboardInitialized } from './js/iot.js';
 import { ensureSchedulerAgentInitialized } from './js/scheduler.js';
 import { initSettingsModal } from './js/settings.js';
+import { refreshAgentStatus } from './js/agent-status.js';
 
 let schedulerWarmupScheduled = false;
 
@@ -66,3 +67,5 @@ registerViewActivationHook(({ view, isBrowserView, isChatView, isIotView, isGene
 initSettingsModal();
 activateView(initialActiveView);
 warmupSchedulerResources();
+refreshAgentStatus();
+setInterval(() => refreshAgentStatus({ silent: true }), 30000);

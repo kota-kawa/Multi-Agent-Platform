@@ -49,6 +49,7 @@ from .iot import _call_iot_agent_command, _count_iot_devices, _fetch_iot_device_
 from .scheduler import _call_scheduler_agent_chat
 from .settings import load_agent_connections, resolve_llm_config, load_memory_settings
 from .memory_manager import MemoryManager, get_memory_llm
+from .agent_status import get_agent_availability
 
 
 class TaskSpec(TypedDict):
@@ -425,8 +426,16 @@ class MultiAgentOrchestrator:
             raise OrchestratorError("オーケストレーターに渡された入力が空でした。")
 
         agent_connections = state.get("agent_connections") or load_agent_connections()
-        enabled_agents = [agent for agent, enabled in agent_connections.items() if enabled]
+        availability = get_agent_availability()
+        enabled_agents = [
+            agent for agent, enabled in agent_connections.items()
+            if enabled and availability.get(agent, True)
+        ]
         disabled_agents = [agent for agent, enabled in agent_connections.items() if not enabled]
+        disconnected_agents = [
+            agent for agent, enabled in agent_connections.items()
+            if enabled and not availability.get(agent, True)
+        ]
         state["agent_connections"] = agent_connections
 
         previous_plan_summary = str(state.get("plan_summary") or "").strip()
@@ -521,10 +530,16 @@ class MultiAgentOrchestrator:
                 canonical = self._AGENT_ALIASES.get(agent_raw)
                 if canonical and canonical in disabled_agents:
                     skipped_agents.add(canonical)
+        notices: list[str] = []
         if skipped_agents:
             skipped_labels = [self._AGENT_DISPLAY_NAMES.get(agent, agent) for agent in sorted(skipped_agents)]
-            notice = "接続がオフのため次のエージェントタスクをスキップしました: " + ", ".join(skipped_labels)
-            plan_summary = f"{plan_summary}\n\n{notice}" if plan_summary else notice
+            notices.append("接続がオフのため次のエージェントタスクをスキップしました: " + ", ".join(skipped_labels))
+        if disconnected_agents:
+            disconnected_labels = [self._AGENT_DISPLAY_NAMES.get(agent, agent) for agent in sorted(disconnected_agents)]
+            notices.append("接続できないため次のエージェントは使用しません: " + ", ".join(disconnected_labels))
+        if notices:
+            notice_text = "\n".join(notices)
+            plan_summary = f"{plan_summary}\n\n{notice_text}" if plan_summary else notice_text
 
         return {
             "user_input": user_input,
@@ -964,6 +979,18 @@ class MultiAgentOrchestrator:
         if clarification is not None:
             return clarification
 
+        availability = get_agent_availability()
+        if not availability.get(agent, True):
+            agent_label = self._AGENT_DISPLAY_NAMES.get(agent, agent)
+            return {
+                "agent": agent,
+                "command": command,
+                "status": "success",
+                "response": f"{agent_label} に接続できないため、このタスクはスキップしました。",
+                "error": None,
+                "finalized": True,
+            }
+
         if agent == "lifestyle":
             try:
                 data = _call_lifestyle("/agent_rag_answer", method="POST", payload={"question": command})
@@ -1052,6 +1079,22 @@ class MultiAgentOrchestrator:
             yield {
                 "type": "result",
                 "result": clarification,
+            }
+            return
+
+        availability = get_agent_availability()
+        if not availability.get("browser", True):
+            agent_label = self._AGENT_DISPLAY_NAMES.get("browser", "browser")
+            yield {
+                "type": "result",
+                "result": {
+                    "agent": "browser",
+                    "command": command,
+                    "status": "success",
+                    "response": f"{agent_label} に接続できないため、このタスクはスキップしました。",
+                    "error": None,
+                    "finalized": True,
+                },
             }
             return
 

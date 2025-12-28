@@ -9,6 +9,7 @@ import {
 } from "./layout.js";
 import { ensureIotDashboardInitialized, iotAgentRequest, summarizeIotDevices } from "./iot.js";
 import { schedulerAgentRequest, ensureSchedulerAgentInitialized } from "./scheduler.js";
+import { markAgentAvailable, markAgentUnavailable } from "./agent-status.js";
 
 /* ---------- Chat + Summarizer (Life-Style integration) ---------- */
 
@@ -180,13 +181,19 @@ async function lifestyleRequest(path, { method = "GET", headers = {}, body, sign
     finalHeaders["Content-Type"] = "application/json";
   }
 
-  const response = await fetch(url, {
-    method,
-    headers: finalHeaders,
-    body,
-    signal,
-    mode: "cors",
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: finalHeaders,
+      body,
+      signal,
+      mode: "cors",
+    });
+  } catch (error) {
+    markAgentUnavailable("lifestyle", error?.message || "接続に失敗しました。");
+    return { status: "unavailable", message: "Life-Styleエージェントに接続できません。", error: error?.message };
+  }
 
   const contentType = response.headers.get("content-type") || "";
   const isJson = contentType.includes("application/json");
@@ -203,10 +210,20 @@ async function lifestyleRequest(path, { method = "GET", headers = {}, body, sign
       : (data && typeof data.error === "string")
         ? data.error
         : `${response.status} ${response.statusText}`;
+    if (response.status >= 500) {
+      markAgentUnavailable("lifestyle", message);
+      return { status: "unavailable", message: "Life-Styleエージェントに接続できません。", error: message };
+    }
     throw new Error(message);
   }
 
-  return typeof data === "string" ? { message: data } : data;
+  const payload = typeof data === "string" ? { message: data } : data;
+  if (payload && payload.status === "unavailable") {
+    markAgentUnavailable("lifestyle", payload.error || payload.message);
+    return payload;
+  }
+  markAgentAvailable("lifestyle");
+  return payload;
 }
 
 function parseSseEventBlock(block) {
@@ -808,15 +825,22 @@ async function loadSchedulerChatHistory({ showLoading = false, forceSidebar = fa
   }
 
   try {
-    const { data } = await schedulerAgentRequest("/api/chat/history");
-    const entries = Array.isArray(data.history) ? data.history.map(normalizeSchedulerHistoryEntry).filter(Boolean) : [];
-    if (entries.length) {
-      schedulerChatState.messages = entries;
-      schedulerChatState.history = entries.map(entry => ({ role: entry.role, content: entry.text }));
-    } else {
-      schedulerChatState.messages = [];
+    const { data, unavailable } = await schedulerAgentRequest("/api/chat/history");
+    if (unavailable || data?.status === "unavailable") {
+      schedulerChatState.messages = [
+        { role: "assistant", text: `${SCHEDULER_CHAT_GREETING}\n（Scheduler エージェントに接続できません）`, ts: Date.now() },
+      ];
       schedulerChatState.history = [];
-      pushSchedulerMessage("assistant", SCHEDULER_CHAT_GREETING, { addToHistory: false });
+    } else {
+      const entries = Array.isArray(data.history) ? data.history.map(normalizeSchedulerHistoryEntry).filter(Boolean) : [];
+      if (entries.length) {
+        schedulerChatState.messages = entries;
+        schedulerChatState.history = entries.map(entry => ({ role: entry.role, content: entry.text }));
+      } else {
+        schedulerChatState.messages = [];
+        schedulerChatState.history = [];
+        pushSchedulerMessage("assistant", SCHEDULER_CHAT_GREETING, { addToHistory: false });
+      }
     }
   } catch (error) {
     schedulerChatState.messages = [
@@ -903,13 +927,19 @@ async function browserAgentRequest(path, { method = "GET", headers = {}, body, s
     finalHeaders["Content-Type"] = "application/json";
   }
 
-  const response = await fetch(url, {
-    method,
-    headers: finalHeaders,
-    body,
-    signal,
-    mode: "cors",
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: finalHeaders,
+      body,
+      signal,
+      mode: "cors",
+    });
+  } catch (error) {
+    markAgentUnavailable("browser", error?.message || "接続に失敗しました。");
+    return { data: { status: "unavailable", message: "ブラウザエージェントに接続できません。", error: error?.message }, status: 0, unavailable: true };
+  }
 
   const contentType = response.headers.get("content-type") || "";
   const isJson = contentType.includes("application/json");
@@ -926,12 +956,21 @@ async function browserAgentRequest(path, { method = "GET", headers = {}, body, s
       : (data && typeof data.error === "string")
         ? data.error
         : `${response.status} ${response.statusText}`;
+    if (response.status >= 500) {
+      markAgentUnavailable("browser", message);
+      return { data: { status: "unavailable", message: "ブラウザエージェントに接続できません。", error: message }, status: response.status, unavailable: true };
+    }
     const error = new Error(message);
     error.status = response.status;
     throw error;
   }
 
   const payload = typeof data === "string" ? { message: data } : data;
+  if (payload && payload.status === "unavailable") {
+    markAgentUnavailable("browser", payload.error || payload.message);
+    return { data: payload, status: response.status, unavailable: true };
+  }
+  markAgentAvailable("browser");
   return { data: payload, status: response.status };
 }
 
@@ -1190,8 +1229,16 @@ async function loadBrowserAgentHistory({ showLoading = false, forceSidebar = fal
     renderBrowserChat({ forceSidebar });
   }
   try {
-    const { data } = await browserAgentRequest("/api/history", { signal: controller.signal });
+    const { data, unavailable } = await browserAgentRequest("/api/history", { signal: controller.signal });
     if (controller.signal.aborted) return;
+    if (unavailable || data?.status === "unavailable") {
+      browserChatState.messages = [
+        { id: null, role: "system", text: data?.message || "ブラウザエージェントに接続できません。", ts: Date.now() },
+      ];
+      browserMessageIndex.clear();
+      renderBrowserChat({ forceSidebar });
+      return;
+    }
     setBrowserChatHistory(data.messages || [], { forceSidebar });
   } catch (error) {
     if (controller.signal.aborted) return;
@@ -1240,6 +1287,7 @@ function connectBrowserEventStream() {
       if (browserChatState.eventSource === source) {
         source.close();
         browserChatState.eventSource = null;
+        markAgentUnavailable("browser", "イベントストリームに接続できません。");
         setTimeout(() => {
           connectBrowserEventStream();
         }, 4000);
@@ -1337,10 +1385,14 @@ async function sendBrowserAgentPrompt(text, options = {}) {
     if (startNewTask) {
       payload.new_task = true;
     }
-    const { data } = await browserAgentRequest("/api/chat", {
+    const { data, unavailable } = await browserAgentRequest("/api/chat", {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    if (unavailable || data?.status === "unavailable") {
+      addBrowserSystemMessage(data?.message || "ブラウザエージェントに接続できません。", { forceSidebar: isBrowserContextActive });
+      return;
+    }
     if (Array.isArray(data.messages)) {
       setBrowserChatHistory(data.messages, { forceSidebar: currentChatMode === "browser" });
     }
@@ -1381,10 +1433,17 @@ async function sendIotChatMessage(text) {
     const payload = {
       messages: iotChatState.history.map(entry => ({ role: entry.role, content: entry.content })),
     };
-    const { data } = await iotAgentRequest("/api/chat", {
+    const { data, unavailable } = await iotAgentRequest("/api/chat", {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    if (unavailable || data?.status === "unavailable") {
+      pending.text = data?.message || "IoT エージェントに接続できません。";
+      pending.pending = false;
+      pending.ts = Date.now();
+      iotChatState.history.push({ role: "assistant", content: pending.text });
+      return;
+    }
     let reply = typeof data.reply === "string" ? data.reply.trim() : "";
     if (!reply) {
       reply = summarizeIotDevices() || "了解しました。";
@@ -1421,10 +1480,17 @@ async function sendSchedulerChatMessage(text) {
     const payload = {
       messages: schedulerChatState.history.map(entry => ({ role: entry.role, content: entry.content })),
     };
-    const { data } = await schedulerAgentRequest("/api/chat", {
+    const { data, unavailable } = await schedulerAgentRequest("/api/chat", {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    if (unavailable || data?.status === "unavailable") {
+      pending.text = data?.message || "Scheduler エージェントに接続できません。";
+      pending.pending = false;
+      pending.ts = Date.now();
+      schedulerChatState.history.push({ role: "assistant", content: pending.text });
+      return;
+    }
     const reply = typeof data.reply === "string" ? data.reply.trim() : "";
     pending.text = reply || "了解しました。";
     pending.pending = false;
@@ -1493,6 +1559,17 @@ async function syncConversationHistory({ showLoading = false, force = false } = 
   }
   try {
     const data = await lifestyleRequest("/conversation_history");
+    if (data?.status === "unavailable") {
+      const message = data.message || "Life-Styleエージェントに接続できません。";
+      if (showLoading && (!chatState.sending || force)) {
+        chatState.messages = [
+          getIntroMessage(),
+          { role: "system", text: message, ts: Date.now() },
+        ];
+        renderGeneralChat();
+      }
+      return;
+    }
     if (chatState.sending && !force) {
       return;
     }
@@ -1520,6 +1597,10 @@ async function refreshSummaryBox({ showLoading = false } = {}) {
   }
   try {
     const data = await lifestyleRequest("/conversation_summary");
+    if (data?.status === "unavailable") {
+      summaryBox.textContent = data.message || "Life-Styleエージェントに接続できません。";
+      return;
+    }
     const summary = (data.summary || "").trim();
     summaryBox.textContent = summary ? summary : SUMMARY_PLACEHOLDER;
   } catch (error) {
@@ -1852,6 +1933,16 @@ async function sendChatMessage(text) {
   try {
     const payload = JSON.stringify({ question: text });
     const data = await lifestyleRequest("/rag_answer", { method: "POST", body: payload });
+    if (data?.status === "unavailable") {
+      const fallback = data.message || "Life-Styleエージェントに接続できません。";
+      if (pendingAssistantMessage) {
+        pendingAssistantMessage.text = fallback;
+        pendingAssistantMessage.pending = false;
+        pendingAssistantMessage.ts = Date.now();
+      }
+      renderGeneralChat();
+      return;
+    }
     const answer = (data.answer || "").trim();
     if (pendingAssistantMessage) {
       pendingAssistantMessage.text = answer || "回答が空でした。";

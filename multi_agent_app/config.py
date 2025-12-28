@@ -80,6 +80,7 @@ DEFAULT_IOT_AGENT_BASES = (
     PUBLIC_IOT_AGENT_BASE,
 )
 IOT_AGENT_TIMEOUT = float(os.environ.get("IOT_AGENT_TIMEOUT", "60"))
+IOT_MODEL_SYNC_TIMEOUT = float(os.environ.get("IOT_MODEL_SYNC_TIMEOUT", "1.0"))
 
 DEFAULT_SCHEDULER_AGENT_BASES = (
     # Docker Compose service name (same network) - prioritize for container environments
@@ -90,8 +91,10 @@ DEFAULT_SCHEDULER_AGENT_BASES = (
     "http://127.0.0.1:5010",
     "http://localhost:5010",
 )
-SCHEDULER_AGENT_CONNECT_TIMEOUT = _parse_timeout_env("SCHEDULER_AGENT_CONNECT_TIMEOUT", 3.0)
+SCHEDULER_AGENT_CONNECT_TIMEOUT = _parse_timeout_env("SCHEDULER_AGENT_CONNECT_TIMEOUT", 1.0)
 SCHEDULER_AGENT_TIMEOUT = float(os.environ.get("SCHEDULER_AGENT_TIMEOUT", "30"))
+SCHEDULER_MODEL_SYNC_CONNECT_TIMEOUT = _parse_timeout_env("SCHEDULER_MODEL_SYNC_CONNECT_TIMEOUT", 0.5)
+SCHEDULER_MODEL_SYNC_TIMEOUT = float(os.environ.get("SCHEDULER_MODEL_SYNC_TIMEOUT", "1.0"))
 
 DEFAULT_BROWSER_AGENT_BASES = (
     "http://browser-agent:5005",

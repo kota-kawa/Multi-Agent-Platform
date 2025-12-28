@@ -6,24 +6,60 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, Iterable, List
 
 import requests
+from requests.adapters import HTTPAdapter
 from flask import Response, jsonify, request
 
 from .config import (
     DEFAULT_SCHEDULER_AGENT_BASES,
     SCHEDULER_AGENT_CONNECT_TIMEOUT,
     SCHEDULER_AGENT_TIMEOUT,
+    SCHEDULER_MODEL_SYNC_CONNECT_TIMEOUT,
+    SCHEDULER_MODEL_SYNC_TIMEOUT,
 )
 from .errors import SchedulerAgentError
 
 _scheduler_agent_preferred_base: str | None = None
+_host_failure_cache: Dict[str, float] = {}
+_HOST_FAILURE_COOLDOWN = 60.0  # seconds
+
+def _is_host_down(base_url: str) -> bool:
+    """Check if the host is marked as down in the cache."""
+    last_failure = _host_failure_cache.get(base_url)
+    if last_failure is None:
+        return False
+    if time.time() - last_failure < _HOST_FAILURE_COOLDOWN:
+        return True
+    del _host_failure_cache[base_url]
+    return False
+
+def _mark_host_down(base_url: str):
+    """Mark the host as down."""
+    _host_failure_cache[base_url] = time.time()
+
+def _mark_host_up(base_url: str):
+    """Mark the host as up (remove from failure cache)."""
+    if base_url in _host_failure_cache:
+        del _host_failure_cache[base_url]
+
 _USE_SCHEDULER_AGENT_MCP = os.environ.get("SCHEDULER_AGENT_USE_MCP", "1").strip().lower() not in {"0", "false", "no", "off"}
 _SCHEDULER_AGENT_MCP_TOOL = os.environ.get("SCHEDULER_AGENT_MCP_TOOL", "manage_schedule").strip() or "manage_schedule"
 _SCHEDULER_AGENT_MCP_CONVERSATION_TOOL = (
     os.environ.get("SCHEDULER_AGENT_MCP_CONVERSATION_TOOL", "analyze_conversation").strip() or "analyze_conversation"
 )
+
+
+def _get_no_retry_session() -> requests.Session:
+    """Return a requests Session with max_retries=0 to fail fast."""
+    session = requests.Session()
+    adapter = HTTPAdapter(max_retries=0)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
 
 
 def _iter_scheduler_agent_bases() -> list[str]:
@@ -66,7 +102,10 @@ def _proxy_scheduler_agent_request(path: str) -> Response:
 
     bases = _iter_scheduler_agent_bases()
     if not bases:
-        return jsonify({"error": "Scheduler Agent の接続先が設定されていません。"}), 500
+        return jsonify({
+            "status": "unavailable",
+            "error": "Scheduler Agent の接続先が設定されていません。",
+        })
 
     if request.is_json:
         json_payload = request.get_json(silent=True)
@@ -85,31 +124,43 @@ def _proxy_scheduler_agent_request(path: str) -> Response:
 
     connection_errors: list[str] = []
     response = None
-    for base in bases:
-        url = _build_scheduler_agent_url(base, path)
-        try:
-            response = requests.request(
-                request.method,
-                url,
-                params=request.args,
-                json=json_payload,
-                data=body_payload if json_payload is None else None,
-                headers=forward_headers,
-                timeout=(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT),
-            )
-        except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
-            connection_errors.append(f"{url}: {exc}")
-            continue
-        else:
-            _scheduler_agent_preferred_base = base
-            break
+
+    # Filter out known down hosts, but if all are down, try them all to allow recovery.
+    candidates = [b for b in bases if not _is_host_down(b)]
+    if not candidates:
+        candidates = bases
+
+    with _get_no_retry_session() as session:
+        for base in candidates:
+            url = _build_scheduler_agent_url(base, path)
+            try:
+                response = session.request(
+                    request.method,
+                    url,
+                    params=request.args,
+                    json=json_payload,
+                    data=body_payload if json_payload is None else None,
+                    headers=forward_headers,
+                    timeout=(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT),
+                )
+            except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
+                _mark_host_down(base)
+                connection_errors.append(f"{url}: {exc}")
+                continue
+            else:
+                _mark_host_up(base)
+                _scheduler_agent_preferred_base = base
+                break
 
     if response is None:
         message_lines = ["Scheduler Agent への接続に失敗しました。"]
         if connection_errors:
             message_lines.append("試行した URL:")
             message_lines.extend(f"- {error}" for error in connection_errors)
-        return jsonify({"error": "\n".join(message_lines)}), 502
+        return jsonify({
+            "status": "unavailable",
+            "error": "\n".join(message_lines),
+        })
 
     proxy_response = Response(response.content, status=response.status_code)
     excluded_headers = {"content-encoding", "transfer-encoding", "connection", "content-length"}
@@ -121,9 +172,18 @@ def _proxy_scheduler_agent_request(path: str) -> Response:
 
 
 def _get_first_scheduler_agent_base() -> str | None:
-    """Return the first preferred Scheduler Agent base URL."""
+    """Return the first preferred Scheduler Agent base URL, prioritizing available ones."""
     bases = _iter_scheduler_agent_bases()
-    return bases[0] if bases else None
+    if not bases:
+        return None
+
+    # Try to find a base that is not marked as down
+    for base in bases:
+        if not _is_host_down(base):
+            return base
+
+    # If all are down, return the first one as a fallback
+    return bases[0]
 
 
 def _fetch_scheduler_model_selection() -> Dict[str, str] | None:
@@ -133,42 +193,51 @@ def _fetch_scheduler_model_selection() -> Dict[str, str] | None:
     if not bases:
         return None
 
-    for base in bases:
-        url = _build_scheduler_agent_url(base, "/api/models")
-        try:
-            response = requests.get(
-                url,
-                timeout=(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT),
-            )
-        except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
-            logging.info("Scheduler model sync attempt to %s skipped (%s)", url, exc)
-            continue
+    # Filter out known down hosts, but if all are down, try them all to allow recovery.
+    candidates = [b for b in bases if not _is_host_down(b)]
+    if not candidates:
+        candidates = bases
 
-        if not response.ok:
-            logging.info(
-                "Scheduler model sync attempt to %s failed: %s %s", url, response.status_code, response.text
-            )
-            continue
+    with _get_no_retry_session() as session:
+        for base in candidates:
+            url = _build_scheduler_agent_url(base, "/api/models")
+            try:
+                response = session.get(
+                    url,
+                    timeout=(SCHEDULER_MODEL_SYNC_CONNECT_TIMEOUT, SCHEDULER_MODEL_SYNC_TIMEOUT),
+                )
+            except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
+                _mark_host_down(base)
+                logging.debug("Scheduler model sync attempt to %s skipped (%s)", url, exc)
+                continue
+            else:
+                _mark_host_up(base)
 
-        try:
-            payload = response.json()
-        except ValueError:
-            logging.info("Scheduler model sync attempt to %s returned invalid JSON", url)
-            continue
+            if not response.ok:
+                logging.debug(
+                    "Scheduler model sync attempt to %s failed: %s %s", url, response.status_code, response.text
+                )
+                continue
 
-        current = payload.get("current") if isinstance(payload, dict) else None
-        if not isinstance(current, dict):
-            logging.info("Scheduler model sync attempt to %s missing current selection", url)
-            continue
+            try:
+                payload = response.json()
+            except ValueError:
+                logging.debug("Scheduler model sync attempt to %s returned invalid JSON", url)
+                continue
 
-        provider = str(current.get("provider") or "").strip()
-        model = str(current.get("model") or "").strip()
-        base_url = str(current.get("base_url") or "").strip()
-        if not provider or not model:
-            logging.info("Scheduler model sync attempt to %s missing provider/model", url)
-            continue
+            current = payload.get("current") if isinstance(payload, dict) else None
+            if not isinstance(current, dict):
+                logging.debug("Scheduler model sync attempt to %s missing current selection", url)
+                continue
 
-        return {"provider": provider, "model": model, "base_url": base_url}
+            provider = str(current.get("provider") or "").strip()
+            model = str(current.get("model") or "").strip()
+            base_url = str(current.get("base_url") or "").strip()
+            if not provider or not model:
+                logging.debug("Scheduler model sync attempt to %s missing provider/model", url)
+                continue
+
+            return {"provider": provider, "model": model, "base_url": base_url}
 
     return None
 
@@ -184,13 +253,14 @@ def _call_scheduler_agent(path: str, method: str = "GET", params: Dict[str, Any]
     headers = {"X-Platform-Propagation": "1"}  # Propagate a header if needed for agent logic
 
     try:
-        response = requests.request(
-            method,
-            url,
-            params=params,
-            headers=headers,
-            timeout=(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT),
-        )
+        with _get_no_retry_session() as session:
+            response = session.request(
+                method,
+                url,
+                params=params,
+                headers=headers,
+                timeout=(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT),
+            )
         response.raise_for_status()  # Raise an exception for HTTP errors
         try:
             return response.json()
@@ -211,13 +281,14 @@ def _post_scheduler_agent(path: str, payload: Dict[str, Any], *, method: str = "
     headers = {"Content-Type": "application/json", "X-Platform-Propagation": "1"}
 
     try:
-        response = requests.request(
-            method,
-            url,
-            json=payload,
-            headers=headers,
-            timeout=(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT),
-        )
+        with _get_no_retry_session() as session:
+            response = session.request(
+                method,
+                url,
+                json=payload,
+                headers=headers,
+                timeout=(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT),
+            )
     except requests.exceptions.RequestException as exc:
         raise SchedulerAgentError(f"Scheduler Agent への接続に失敗しました: {exc}") from exc
 
@@ -461,13 +532,14 @@ def _submit_day_form(date_str: str, form_data: Any) -> None:
         payload = dict(form_data or {})
 
     try:
-        response = requests.post(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            timeout=(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT),
-            allow_redirects=False,
-        )
+        with _get_no_retry_session() as session:
+            response = session.post(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT),
+                allow_redirects=False,
+            )
     except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
         raise ConnectionError(f"Failed to submit day form to Scheduler Agent at {url}: {exc}") from exc
 

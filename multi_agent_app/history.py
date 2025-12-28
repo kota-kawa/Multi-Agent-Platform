@@ -16,6 +16,7 @@ from .iot import _call_iot_agent_command, _call_iot_agent_conversation_review
 from .scheduler import _call_scheduler_agent_conversation_review
 from .settings import load_memory_settings
 from .memory_manager import MemoryManager, get_memory_llm
+from .agent_status import get_agent_availability
 
 _browser_history_supported = True
 _PRIMARY_CHAT_HISTORY_PATH = Path("chat_history.json")
@@ -363,6 +364,7 @@ def _handle_agent_responses(
         _append_agent_reply("Orchestrator", "了解です。今のところ追加のアクションは不要です。")
         return
 
+    availability = get_agent_availability()
     for request in action_requests:
         agent = request.get("agent")
         kind = request.get("kind")
@@ -370,10 +372,14 @@ def _handle_agent_responses(
 
         try:
             if kind == "browser_task":
+                if not availability.get("browser", True):
+                    continue
                 result = _call_browser_agent_chat(description)
                 summary = result.get("run_summary") if isinstance(result, dict) else None
                 message = summary or f"ブラウザエージェントに依頼しました: {description}"
             elif kind == "iot_commands":
+                if not availability.get("iot", True):
+                    continue
                 # Send a concise command to IoT agent chat; IoT agent will interpret.
                 prompt = f"以下のIoTアクションを実行してください: {description}"
                 result = _call_iot_agent_command(prompt)
@@ -381,6 +387,8 @@ def _handle_agent_responses(
                 if not message:
                     message = f"IoT Agentに実行を依頼しました: {description}"
             elif kind == "lifestyle_query":
+                if not availability.get("lifestyle", True):
+                    continue
                 result = _call_lifestyle(
                     "/agent_rag_answer",
                     method="POST",
@@ -422,20 +430,22 @@ def _send_recent_history_to_agents(history: List[Dict[str, str]]) -> None:
     response_order: List[str] = []
     had_reply = False
 
-    try:
-        lifestyle_response = _call_lifestyle(
-            "/analyze_conversation",
-            method="POST",
-            payload=payload,
-        )
-        responses["Life-Style"] = lifestyle_response if isinstance(lifestyle_response, dict) else {}
-        had_reply = _extract_reply("Life-Style", lifestyle_response) or had_reply
-        response_order.append("Life-Style")
-    except LifestyleAPIError as e:
-        logging.warning("Error sending history to Life-Style: %s", e)
+    availability = get_agent_availability()
+    if availability.get("lifestyle", True):
+        try:
+            lifestyle_response = _call_lifestyle(
+                "/analyze_conversation",
+                method="POST",
+                payload=payload,
+            )
+            responses["Life-Style"] = lifestyle_response if isinstance(lifestyle_response, dict) else {}
+            had_reply = _extract_reply("Life-Style", lifestyle_response) or had_reply
+            response_order.append("Life-Style")
+        except LifestyleAPIError as e:
+            logging.warning("Error sending history to Life-Style: %s", e)
 
     global _browser_history_supported
-    if _browser_history_supported:
+    if _browser_history_supported and availability.get("browser", True):
         try:
             browser_response = _call_browser_agent_history_check(normalized_history)
             responses["Browser"] = browser_response if isinstance(browser_response, dict) else {}
@@ -451,21 +461,23 @@ def _send_recent_history_to_agents(history: List[Dict[str, str]]) -> None:
             else:
                 logging.warning("Error sending history to browser agent: %s", e)
 
-    try:
-        iot_response = _call_iot_agent_conversation_review(normalized_history)
-        responses["IoT"] = iot_response if isinstance(iot_response, dict) else {}
-        had_reply = _extract_reply("IoT", iot_response) or had_reply
-        response_order.append("IoT")
-    except IotAgentError as e:
-        logging.warning("Error sending history to iot agent: %s", e)
+    if availability.get("iot", True):
+        try:
+            iot_response = _call_iot_agent_conversation_review(normalized_history)
+            responses["IoT"] = iot_response if isinstance(iot_response, dict) else {}
+            had_reply = _extract_reply("IoT", iot_response) or had_reply
+            response_order.append("IoT")
+        except IotAgentError as e:
+            logging.warning("Error sending history to iot agent: %s", e)
 
-    try:
-        scheduler_response = _call_scheduler_agent_conversation_review(normalized_history)
-        responses["Scheduler"] = scheduler_response if isinstance(scheduler_response, dict) else {}
-        had_reply = _extract_reply("Scheduler", scheduler_response) or had_reply
-        response_order.append("Scheduler")
-    except SchedulerAgentError as e:
-        logging.warning("Error sending history to scheduler agent: %s", e)
+    if availability.get("scheduler", True):
+        try:
+            scheduler_response = _call_scheduler_agent_conversation_review(normalized_history)
+            responses["Scheduler"] = scheduler_response if isinstance(scheduler_response, dict) else {}
+            had_reply = _extract_reply("Scheduler", scheduler_response) or had_reply
+            response_order.append("Scheduler")
+        except SchedulerAgentError as e:
+            logging.warning("Error sending history to scheduler agent: %s", e)
 
     _handle_agent_responses(responses, normalized_history, had_reply, response_order)
 

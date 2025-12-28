@@ -26,53 +26,16 @@ const modelSelectIot = $("#modelSelectIot");
 const modelSelectScheduler = $("#modelSelectScheduler");
 const modelSelectMemory = $("#modelSelectMemory");
 
-// Policy inputs
+// Policy inputs (Hidden in UI now, but keeping references for data binding)
 const shortTermTtlInput = $("#settingsShortTermTtl");
 const shortTermGraceInput = $("#settingsShortTermGrace");
 const shortTermActiveHoldInput = $("#settingsShortTermActiveHold");
 const shortTermPromoteScoreInput = $("#settingsShortTermPromoteScore");
 const shortTermPromoteImportanceInput = $("#settingsShortTermPromoteImportance");
 
-// Memory View Containers
+// Memory View Containers (Simplified)
 const longTermGrid = $("#settingsLongTermGrid");
 const shortTermGrid = $("#settingsShortTermGrid");
-const longTermEmpty = $("#settingsLongTermEmpty");
-const shortTermEmpty = $("#settingsShortTermEmpty");
-
-// New Views
-const longTermSlotsView = $("#settingsLongTermSlotsView");
-const longTermSlotsBody = $("#settingsLongTermSlotsBody");
-const longTermSlotsEmpty = $("#settingsLongTermSlotsEmpty");
-const longTermProfileView = $("#settingsLongTermProfileView");
-const longTermProfileFields = $("#settingsLongTermProfileFields");
-const longTermJsonView = $("#settingsLongTermJsonView");
-const longTermJsonTextarea = $("#settingsLongTermJson");
-
-const shortTermSlotsView = $("#settingsShortTermSlotsView");
-const shortTermSlotsBody = $("#settingsShortTermSlotsBody");
-const shortTermSlotsEmpty = $("#settingsShortTermSlotsEmpty");
-const shortTermContextView = $("#settingsShortTermContextView");
-const shortTermJsonView = $("#settingsShortTermJsonView");
-const shortTermJsonTextarea = $("#settingsShortTermJson");
-
-// Profile specific inputs
-const profileLikesInput = $("#settingsProfileLikes");
-const profileDislikesInput = $("#settingsProfileDislikes");
-
-// Context specific inputs
-const contextActiveTaskInput = $("#settingsContextActiveTask");
-const contextQuestionsInput = $("#settingsContextQuestions");
-const contextEmotionInput = $("#settingsContextEmotion");
-
-const longTermAddBtn = $("#settingsLongTermAdd");
-const shortTermAddBtn = $("#settingsShortTermAdd");
-const longTermAddSlotBtn = $("#settingsLongTermAddSlot");
-const shortTermAddSlotBtn = $("#settingsShortTermAddSlot");
-
-const longTermCardView = $("#settingsLongTermCardView");
-const shortTermCardView = $("#settingsShortTermCardView");
-
-const memoryTabs = $$("[data-memory-tab]");
 
 const agentToggleInputs = {
   browser: agentToggleBrowser,
@@ -97,48 +60,80 @@ const DEFAULT_AGENT_CONNECTIONS = {
   scheduler: true,
 };
 
+const DEFAULT_AGENT_STATUS = {
+  browser: { available: null, enabled: true },
+  lifestyle: { available: null, enabled: true },
+  iot: { available: null, enabled: true },
+  scheduler: { available: null, enabled: true },
+};
+
+// --- Configured Categories ---
+
+const LONG_TERM_CATEGORIES = [
+  'profile',
+  'preference',
+  'health',
+  'work',
+  'hobby',
+  'relationship',
+  'life',
+  'travel',
+  'food',
+  'general',
+];
+
+const SHORT_TERM_CATEGORIES = [
+  'active_task',
+  'pending_questions',
+  'recent_entities',
+  'emotional_context',
+  'general',
+];
+
 const CATEGORY_LABELS = {
-  general: "全体メモ",
-  profile: "プロフィール",
-  preference: "好み・こだわり",
-  health: "健康",
-  work: "仕事/学習",
-  hobby: "趣味",
-  relationship: "人間関係",
-  life: "生活リズム",
-  travel: "旅行/移動",
-  food: "食事",
+  // Long Term
+  profile: '基本情報',
+  preference: '好み・嗜好',
+  health: '健康',
+  work: '仕事・学業',
+  hobby: '趣味',
+  relationship: '人間関係',
+  life: '生活',
+  travel: '旅行',
+  food: '食事',
+  general: 'その他・メモ',
+
+  // Short Term
+  active_task: '現在進行中のタスク',
+  pending_questions: '未解決の質問',
+  recent_entities: '直近の話題・キーワード',
+  emotional_context: '現在の感情・雰囲気',
 };
 
-const DEFAULT_CATEGORY_ORDER = Object.keys(CATEGORY_LABELS);
+const PLACEHOLDER = {
+  profile: '例: 名前は山田太郎。東京在住。30代。エンジニアとして働いている。',
+  preference: '例: 返答は簡潔が好き。敬体が好み。長文より箇条書きが助かる。',
+  health: '例: 毎日朝にジョギング。カフェイン控えめを希望。',
+  work: '例: プロジェクトXの締切は毎週金曜。リモート勤務中心。',
+  hobby: '例: ロードバイクと写真が趣味。休日は多摩川沿いを走る。',
+  relationship: '例: 佐藤さんとは同僚。田中さんはメンター。',
+  life: '例: 早朝型。家事は週末にまとめて行う。',
+  travel: '例: 夏に北海道旅行を計画中。温泉が好き。',
+  food: '例: 和食とコーヒーが好き。辛すぎる料理は苦手。',
+  general: '例: 雑多なメモや、まだ分類できていない情報。',
 
-const CATEGORY_HINTS = {
-  profile: "例: 氏名・年齢・居住地などの基本情報。",
-  preference: "例: 敬体での返信が好み。辛すぎる料理は避けたい。",
-  health: "例: 高血圧のため減塩。アレルギーや服薬メモ。",
-  work: "例: 週次レポートが金曜締切。現在の担当プロジェクト。",
-  hobby: "例: 写真と俳句が趣味。週末は散策。",
-  relationship: "例: 家族構成やよく話す相手のメモ。",
-  life: "例: 早起き。午前中に散歩。生活リズムのメモ。",
-  travel: "例: 次の旅行計画・よく行く場所。",
-  food: "例: 減塩希望。蕎麦アレルギー。好きな料理。",
-  general: "例: 今日の気分や覚えておきたいトピック。",
-};
-
-const memoryViewState = {
-  long: "cards",
-  short: "cards",
+  active_task: '例: タスク: 旅行の計画を立てる (ステータス: 進行中)',
+  pending_questions: '例: 質問: 次回の会議はいつ？\n質問: あのレストランの名前は？',
+  recent_entities: '例: キーワード: React, Python, 温泉',
+  emotional_context: '例: 気分: 落ち着いている。少し急ぎ。',
 };
 
 const state = {
   loading: false,
   saving: false,
   modelOptions: [],
+  agentStatus: { ...DEFAULT_AGENT_STATUS },
   memoryValues: {
-    long: {},
-    short: {},
-  },
-  memoryTitles: {
     long: {},
     short: {},
   },
@@ -150,57 +145,36 @@ const state = {
 
 // --- Utilities ---
 
-function tryParseJSON(str) {
-  try {
-    const o = JSON.parse(str);
-    if (o && typeof o === "object") return o;
-  } catch (e) {}
-  return null;
-}
-
-function prettifyCategoryKey(key) {
-  if (!key) return "メモ";
-  const cleaned = key.replace(/[_-]+/g, " ").trim();
-  if (!cleaned) return "メモ";
-  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
-}
-
-function deriveCategoryTitle(category, titlesMap = {}) {
-  const stored = titlesMap?.[category];
-  if (stored && stored.trim()) return stored.trim();
-  if (CATEGORY_LABELS[category]) return CATEGORY_LABELS[category];
-  return prettifyCategoryKey(category);
-}
-
-function getMemoryElements(type) {
-  if (type === "short") {
-    return {
-      grid: shortTermGrid,
-      empty: shortTermEmpty,
-      cardView: shortTermCardView,
-      slotsView: shortTermSlotsView,
-      slotsBody: shortTermSlotsBody,
-      slotsEmpty: shortTermSlotsEmpty,
-      contextView: shortTermContextView,
-      jsonView: shortTermJsonView,
-      jsonTextarea: shortTermJsonTextarea,
-      addBtn: shortTermAddBtn,
-      addSlotBtn: shortTermAddSlotBtn,
-    };
+function formatShortTermValue(category, summaryText, fullMemory) {
+  // Logic mirrored from assets/memory.js
+  if (category === 'active_task') {
+    const task = fullMemory.active_task || {};
+    if (task.goal) {
+      return `タスク: ${task.goal}\nステータス: ${task.status || 'active'}`;
+    }
   }
-  return {
-    grid: longTermGrid,
-    empty: longTermEmpty,
-    cardView: longTermCardView,
-    slotsView: longTermSlotsView,
-    slotsBody: longTermSlotsBody,
-    slotsEmpty: longTermSlotsEmpty,
-    profileView: longTermProfileView,
-    jsonView: longTermJsonView,
-    jsonTextarea: longTermJsonTextarea,
-    addBtn: longTermAddBtn,
-    addSlotBtn: longTermAddSlotBtn,
-  };
+  if (category === 'pending_questions') {
+    const questions = fullMemory.pending_questions || [];
+    if (Array.isArray(questions) && questions.length > 0) {
+      return questions.map(q => `質問: ${q}`).join('\n');
+    }
+  }
+  if (category === 'recent_entities') {
+    const entities = fullMemory.recent_entities || [];
+    if (Array.isArray(entities) && entities.length > 0) {
+      const names = entities.map(e => e.name).filter(n => n);
+      if (names.length > 0) {
+        return `キーワード: ${names.join(', ')}`;
+      }
+    }
+  }
+  if (category === 'emotional_context') {
+    if (fullMemory.emotional_context) {
+      return `気分: ${fullMemory.emotional_context}`;
+    }
+  }
+
+  return summaryText || "";
 }
 
 // --- Data Fetching & State ---
@@ -212,12 +186,8 @@ async function fetchMemory() {
   }
   const data = await response.json();
   return {
-    longTerm: data?.long_term_memory ?? "",
-    shortTerm: data?.short_term_memory ?? "",
     longTermCategories: data?.long_term_categories ?? {},
     shortTermCategories: data?.short_term_categories ?? {},
-    longTermTitles: data?.long_term_titles ?? {},
-    shortTermTitles: data?.short_term_titles ?? {},
     longTermFull: data?.long_term_full ?? {},
     shortTermFull: data?.short_term_full ?? {},
     enabled: data?.enabled ?? true,
@@ -230,402 +200,77 @@ async function fetchMemory() {
   };
 }
 
-function setMemoryData(type, summaryText, categories, titles, fullData) {
-  // Legacy Summary State
-  state.memoryValues[type] = { ...categories };
-  state.memoryTitles[type] = { ...titles };
-  
-  // Full Structure State
-  state.memoryFull[type] = fullData || {};
-
-  // If summaries are missing but we have full data, maybe we should auto-generate?
-  // For now, trust what the API sends.
+function setMemoryData(longCategories, shortCategories, longFull, shortFull) {
+  state.memoryValues.long = { ...longCategories };
+  state.memoryValues.short = { ...shortCategories };
+  state.memoryFull.long = longFull || {};
+  state.memoryFull.short = shortFull || {};
 }
 
-// --- Rendering: Cards (Summary) ---
+// --- Rendering: Simplified Text Areas ---
 
-function createMemoryCardElement(type, category, rawValue = "", displayTitle = "") {
-  const friendlyTitle = displayTitle || deriveCategoryTitle(category, state.memoryTitles[type]);
-  const card = document.createElement("div");
-  card.className = "settings-memory-card";
-  card.dataset.memoryType = type;
-  card.dataset.category = category;
-
-  const header = document.createElement("div");
-  header.className = "settings-memory-card__header";
-
-  const badge = document.createElement("span");
-  badge.className = "settings-memory-card__badge";
-  badge.textContent = CATEGORY_LABELS[category] ? "推奨カテゴリ" : "カスタムカテゴリ";
-
-  const titleWrap = document.createElement("div");
-  titleWrap.className = "settings-memory-card__title-wrap";
+function renderMemoryGrid(type) {
+  const grid = type === "long" ? longTermGrid : shortTermGrid;
+  const categories = type === "long" ? LONG_TERM_CATEGORIES : SHORT_TERM_CATEGORIES;
+  const summaries = state.memoryValues[type] || {};
+  const fullMemory = state.memoryFull[type] || {};
   
-  const title = document.createElement("p");
-  title.className = "settings-memory-card__title";
-  title.textContent = friendlyTitle;
-  titleWrap.appendChild(title);
-
-  header.appendChild(badge);
-  header.appendChild(titleWrap);
-
-  const actions = document.createElement("div");
-  actions.className = "settings-memory-card__actions";
-  const removeBtn = document.createElement("button");
-  removeBtn.type = "button";
-  removeBtn.className = "settings-memory-card__remove";
-  removeBtn.textContent = "削除";
-  removeBtn.addEventListener("click", () => {
-    delete state.memoryValues[type][category];
-    if (state.memoryFull[type].category_summaries) {
-      delete state.memoryFull[type].category_summaries[category];
-    }
-    rebuildMemoryCards(type);
-  });
-  actions.appendChild(removeBtn);
-  header.appendChild(actions);
-
-  const displayField = document.createElement("label");
-  displayField.className = "settings-memory-card__display";
-  const displayInput = document.createElement("input");
-  displayInput.type = "text";
-  displayInput.value = friendlyTitle;
-  displayInput.addEventListener("input", () => {
-    state.memoryTitles[type][category] = displayInput.value;
-    title.textContent = displayInput.value || deriveCategoryTitle(category);
-  });
-  displayField.appendChild(document.createTextNode("表示名: "));
-  displayField.appendChild(displayInput);
-
-  const textarea = document.createElement("textarea");
-  textarea.className = "settings-memory-card__control";
-  textarea.placeholder = CATEGORY_HINTS[category] || "";
-  textarea.value = rawValue;
-  textarea.addEventListener("input", () => {
-    state.memoryValues[type][category] = textarea.value;
-    // Also update full structure if possible
-    if (!state.memoryFull[type].category_summaries) state.memoryFull[type].category_summaries = {};
-    state.memoryFull[type].category_summaries[category] = textarea.value;
-  });
-
-  card.appendChild(header);
-  card.appendChild(displayField);
-  card.appendChild(textarea);
-  return card;
-}
-
-function rebuildMemoryCards(type) {
-  const { grid, empty } = getMemoryElements(type);
   if (!grid) return;
-  clearElement(grid);
   
-  const values = state.memoryValues[type];
-  const titles = state.memoryTitles[type];
-  const keys = Object.keys(values);
-  
-  // Sort: Default categories first
-  const sortedKeys = [...keys].sort((a, b) => {
-    const idxA = DEFAULT_CATEGORY_ORDER.indexOf(a);
-    const idxB = DEFAULT_CATEGORY_ORDER.indexOf(b);
-    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-    if (idxA !== -1) return -1;
-    if (idxB !== -1) return 1;
-    return a.localeCompare(b);
-  });
-
-  sortedKeys.forEach(key => {
-    const card = createMemoryCardElement(type, key, values[key], titles[key]);
-    grid.appendChild(card);
-  });
-
-  if (empty) empty.hidden = keys.length > 0;
-}
-
-function addMemoryCategory(type) {
-  let idx = 1;
-  let key = `custom_${idx}`;
-  while (state.memoryValues[type][key]) {
-    idx++;
-    key = `custom_${idx}`;
+  // Clear existing
+  while (grid.firstChild) {
+    grid.removeChild(grid.firstChild);
   }
-  state.memoryValues[type][key] = "";
-  rebuildMemoryCards(type);
-}
 
-
-// --- Rendering: Slots (Facts) ---
-
-function renderSlotsView(type) {
-  const { slotsBody, slotsEmpty } = getMemoryElements(type);
-  if (!slotsBody) return;
-  
-  clearElement(slotsBody);
-  const slots = state.memoryFull[type]?.slots || [];
-  
-  if (slots.length === 0) {
-    if (slotsEmpty) slotsEmpty.hidden = false;
-    return;
-  }
-  if (slotsEmpty) slotsEmpty.hidden = true;
-
-  slots.forEach((slot, index) => {
-    const tr = document.createElement("tr");
+  categories.forEach(cat => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'settings-memory-card';
     
-    // Label Cell
-    const tdLabel = document.createElement("td");
-    const inputLabel = document.createElement("input");
-    inputLabel.className = "form-control form-control--sm";
-    inputLabel.value = slot.label || slot.id;
-    inputLabel.addEventListener("change", (e) => {
-      slot.label = e.target.value;
-      // Also update ID if it was auto-generated? No, ID should be stable ideally, but for manual edits it's tricky.
-      // Let's keep ID stable or update it if it matches old label.
-    });
-    tdLabel.appendChild(inputLabel);
-    tr.appendChild(tdLabel);
+    // Header
+    const label = document.createElement('label');
+    label.className = "settings-memory-label";
+    label.textContent = CATEGORY_LABELS[cat] || cat;
 
-    // Value Cell
-    const tdValue = document.createElement("td");
-    const inputValue = document.createElement("input");
-    inputValue.className = "form-control form-control--sm";
-    // Handle complex values by stringifying
-    if (typeof slot.current_value === 'object') {
-        inputValue.value = JSON.stringify(slot.current_value);
+    // Textarea
+    const textarea = document.createElement('textarea');
+    textarea.className = "form-control settings-memory-input";
+    textarea.rows = 3;
+    textarea.placeholder = PLACEHOLDER[cat] || '';
+    textarea.dataset.category = cat;
+    textarea.dataset.memoryType = type;
+    
+    // Determine initial value
+    let initialValue = "";
+    if (type === "short" && cat !== "general") {
+       initialValue = formatShortTermValue(cat, summaries[cat], fullMemory);
     } else {
-        inputValue.value = slot.current_value || "";
+       initialValue = summaries[cat] || "";
     }
-    inputValue.addEventListener("change", (e) => {
-       slot.current_value = e.target.value;
-       slot.last_updated = new Date().toISOString();
-    });
-    tdValue.appendChild(inputValue);
-    tr.appendChild(tdValue);
+    textarea.value = initialValue;
 
-    // Category Cell
-    const tdCat = document.createElement("td");
-    const selectCat = document.createElement("select");
-    selectCat.className = "form-control form-control--sm";
-    // Add default options + custom
-    const cats = new Set([...DEFAULT_CATEGORY_ORDER, slot.category || "general"]);
-    cats.forEach(c => {
-        const opt = document.createElement("option");
-        opt.value = c;
-        opt.textContent = CATEGORY_LABELS[c] || c;
-        if (c === slot.category) opt.selected = true;
-        selectCat.appendChild(opt);
-    });
-    selectCat.addEventListener("change", (e) => {
-        slot.category = e.target.value;
-    });
-    tdCat.appendChild(selectCat);
-    tr.appendChild(tdCat);
+    // Bind event
+    const updateValue = (e) => {
+      state.memoryValues[type][cat] = e.target.value;
+    };
+    // Use input so the latest text is captured even if the user saves without blurring.
+    textarea.addEventListener('input', updateValue);
+    textarea.addEventListener('change', updateValue);
 
-    // Action Cell
-    const tdAction = document.createElement("td");
-    const btnDel = document.createElement("button");
-    btnDel.className = "btn ghost sm text-danger";
-    btnDel.innerHTML = "&times;";
-    btnDel.title = "削除";
-    btnDel.addEventListener("click", () => {
-        slots.splice(index, 1);
-        renderSlotsView(type); // Re-render
-    });
-    tdAction.appendChild(btnDel);
-    tr.appendChild(tdAction);
-
-    slotsBody.appendChild(tr);
+    wrapper.appendChild(label);
+    wrapper.appendChild(textarea);
+    
+    grid.appendChild(wrapper);
   });
 }
 
-function addNewSlot(type) {
-    if (!state.memoryFull[type].slots) state.memoryFull[type].slots = [];
-    const id = `manual_${Date.now()}`;
-    state.memoryFull[type].slots.unshift({
-        id: id,
-        label: "新しい事実",
-        current_value: "",
-        category: "general",
-        confidence: 1.0,
-        source: "manual_editor",
-        last_updated: new Date().toISOString(),
-        verified: true
-    });
-    renderSlotsView(type);
-}
-
-
-// --- Rendering: Profile (Long Term) ---
-
-function renderProfileView() {
-    const container = longTermProfileFields;
-    if (!container) return;
-    clearElement(container);
-
-    const profile = state.memoryFull.long?.user_profile || {};
-    
-    // Standard fields
-    const fields = [
-        { key: "name", label: "名前" },
-        { key: "age", label: "年齢" },
-        { key: "location", label: "居住地" },
-        { key: "occupation", label: "職業" },
-        { key: "hobby", label: "趣味 (概要)" }
-    ];
-
-    fields.forEach(f => {
-        const div = document.createElement("div");
-        div.className = "form-row";
-        const label = document.createElement("label");
-        label.className = "form-label";
-        label.textContent = f.label;
-        const input = document.createElement("input");
-        input.className = "form-control";
-        input.value = profile[f.key] || "";
-        input.addEventListener("change", (e) => {
-            if (!state.memoryFull.long.user_profile) state.memoryFull.long.user_profile = {};
-            state.memoryFull.long.user_profile[f.key] = e.target.value;
-        });
-        div.appendChild(label);
-        div.appendChild(input);
-        container.appendChild(div);
-    });
-
-    // Preferences
-    const prefs = state.memoryFull.long?.preferences || {};
-    if (profileLikesInput) {
-        profileLikesInput.value = (prefs.likes || []).join("\n");
-        profileLikesInput.onchange = () => {
-             if (!state.memoryFull.long.preferences) state.memoryFull.long.preferences = {};
-             state.memoryFull.long.preferences.likes = profileLikesInput.value.split("\n").filter(x => x.trim());
-        };
-    }
-    if (profileDislikesInput) {
-        profileDislikesInput.value = (prefs.dislikes || []).join("\n");
-        profileDislikesInput.onchange = () => {
-             if (!state.memoryFull.long.preferences) state.memoryFull.long.preferences = {};
-             state.memoryFull.long.preferences.dislikes = profileDislikesInput.value.split("\n").filter(x => x.trim());
-        };
-    }
-}
-
-
-// --- Rendering: Context (Short Term) ---
-
-function renderContextView() {
-    const mem = state.memoryFull.short || {};
-    
-    if (contextActiveTaskInput) {
-        contextActiveTaskInput.value = JSON.stringify(mem.active_task || {}, null, 2);
-        contextActiveTaskInput.onchange = () => {
-            try {
-                mem.active_task = JSON.parse(contextActiveTaskInput.value);
-            } catch(e) {
-                // Ignore or warn
-            }
-        };
-    }
-
-    if (contextQuestionsInput) {
-        contextQuestionsInput.value = (mem.pending_questions || []).join("\n");
-        contextQuestionsInput.onchange = () => {
-            mem.pending_questions = contextQuestionsInput.value.split("\n").filter(x => x.trim());
-        };
-    }
-
-    if (contextEmotionInput) {
-        contextEmotionInput.value = mem.emotional_context || "";
-        contextEmotionInput.onchange = () => {
-            mem.emotional_context = contextEmotionInput.value;
-        };
-    }
-}
-
-
-// --- Rendering: JSON ---
-
-function renderJsonView(type) {
-    const { jsonTextarea } = getMemoryElements(type);
-    if (!jsonTextarea) return;
-    const data = state.memoryFull[type] || {};
-    jsonTextarea.value = JSON.stringify(data, null, 2);
-}
-
-function syncJsonFromTextarea(type) {
-    const { jsonTextarea } = getMemoryElements(type);
-    if (!jsonTextarea) return;
-    try {
-        const parsed = JSON.parse(jsonTextarea.value);
-        state.memoryFull[type] = parsed;
-        
-        // Also sync back to summaries/values for Cards view
-        if (parsed.category_summaries) {
-             state.memoryValues[type] = parsed.category_summaries;
-        }
-        if (parsed.category_titles) {
-             state.memoryTitles[type] = parsed.category_titles;
-        }
-
-    } catch (e) {
-        console.warn("Invalid JSON in textarea", e);
-    }
-}
-
-
-// --- View Switching ---
-
-function switchMemoryView(type, nextView) {
-    if (!type || !nextView) return;
-    
-    // 1. Sync FROM current view to State
-    const currentView = memoryViewState[type];
-    if (currentView === "json") {
-        syncJsonFromTextarea(type);
-    }
-    // Note: Slots, Profile, Context update state 'onchange', so no explicit sync needed here usually, 
-    // unless we want to force blur.
-
-    // 2. Hide all views for this type
-    const els = getMemoryElements(type);
-    if (els.cardView) els.cardView.hidden = true;
-    if (els.slotsView) els.slotsView.hidden = true;
-    if (els.profileView) els.profileView.hidden = true;
-    if (els.contextView) els.contextView.hidden = true;
-    if (els.jsonView) els.jsonView.hidden = true;
-    
-    // Hide buttons initially
-    if (els.addBtn) els.addBtn.hidden = true;
-    if (els.addSlotBtn) els.addSlotBtn.hidden = true;
-
-    // 3. Show target view & Render
-    if (nextView === "cards") {
-        if (els.cardView) els.cardView.hidden = false;
-        if (els.addBtn) els.addBtn.hidden = false;
-        rebuildMemoryCards(type);
-    } else if (nextView === "slots") {
-        if (els.slotsView) els.slotsView.hidden = false;
-        if (els.addSlotBtn) els.addSlotBtn.hidden = false;
-        renderSlotsView(type);
-    } else if (nextView === "profile") {
-        if (els.profileView) els.profileView.hidden = false;
-        renderProfileView();
-    } else if (nextView === "context") {
-        if (els.contextView) els.contextView.hidden = false;
-        renderContextView();
-    } else if (nextView === "json") {
-        if (els.jsonView) els.jsonView.hidden = false;
-        renderJsonView(type);
-    }
-
-    memoryViewState[type] = nextView;
-    setActiveMemoryTab(type, nextView);
-}
-
-function setActiveMemoryTab(type, view) {
-  memoryTabs.forEach((tab) => {
-    if (tab.dataset.memoryTab !== type) return;
-    const isActive = tab.dataset.view === view;
-    tab.classList.toggle("is-active", isActive);
-    tab.setAttribute("aria-selected", isActive ? "true" : "false");
+function syncMemoryValuesFromInputs() {
+  const inputs = document.querySelectorAll(".settings-memory-input[data-category]");
+  inputs.forEach((input) => {
+    const category = input.dataset.category;
+    if (!category) return;
+    const type = input.dataset.memoryType === "short" ? "short" : "long";
+    if (!state.memoryValues[type]) state.memoryValues[type] = {};
+    state.memoryValues[type][category] = input.value;
   });
 }
 
@@ -640,19 +285,21 @@ async function loadSettingsData() {
   if (refreshBtn) refreshBtn.disabled = true;
 
   try {
-    const [memoryResult, chatCountResult, agentResult, modelResult] = await Promise.allSettled([
-      fetchMemory(),
-      fetchChatCount(),
-      fetchAgentConnections(),
-      fetchModelSettings(),
-    ]);
+    const memoryPromise = fetchMemory();
+    const chatCountPromise = fetchChatCount();
+    const agentPromise = fetchAgentConnections();
+    const modelPromise = fetchModelSettings();
+    const agentStatusPromise = fetchAgentStatus();
+
+    const memoryResult = await memoryPromise
+      .then((value) => ({ status: "fulfilled", value }))
+      .catch((reason) => ({ status: "rejected", reason }));
 
     const errors = [];
 
     if (memoryResult.status === "fulfilled") {
         const m = memoryResult.value;
-        setMemoryData("long", m.longTerm, m.longTermCategories, m.longTermTitles, m.longTermFull);
-        setMemoryData("short", m.shortTerm, m.shortTermCategories, m.shortTermTitles, m.shortTermFull);
+        setMemoryData(m.longTermCategories, m.shortTermCategories, m.longTermFull, m.shortTermFull);
         
         if (memoryToggle) {
             memoryToggle.checked = m.enabled;
@@ -668,13 +315,19 @@ async function loadSettingsData() {
         if (shortTermPromoteScoreInput) shortTermPromoteScoreInput.value = m.shortTermPromoteScore ?? "";
         if (shortTermPromoteImportanceInput) shortTermPromoteImportanceInput.value = m.shortTermPromoteImportance ?? "";
 
-        // Refresh current views
-        switchMemoryView("long", memoryViewState.long);
-        switchMemoryView("short", memoryViewState.short);
+        renderMemoryGrid("long");
+        renderMemoryGrid("short");
 
     } else {
         errors.push(memoryResult.reason?.message || "メモリ取得エラー");
     }
+
+    const [chatCountResult, agentResult, modelResult, agentStatusResult] = await Promise.allSettled([
+      chatCountPromise,
+      agentPromise,
+      modelPromise,
+      agentStatusPromise,
+    ]);
 
     if (chatCountResult.status === "fulfilled") {
       updateChatCount(chatCountResult.value);
@@ -688,12 +341,20 @@ async function loadSettingsData() {
       setAgentConnections(DEFAULT_AGENT_CONNECTIONS);
     }
 
+    if (agentStatusResult.status === "fulfilled") {
+      applyAgentStatus(agentStatusResult.value);
+    } else {
+      applyAgentStatus({ agents: DEFAULT_AGENT_STATUS });
+    }
+
     if (modelResult.status === "fulfilled") {
       renderModelOptions(modelResult.value.options);
       setModelSelection(modelResult.value.selection);
     } else {
       renderModelOptions({ providers: [] });
     }
+
+    applyModelAvailability();
 
     if (errors.length) {
       setStatus(errors[0], "error");
@@ -712,15 +373,17 @@ async function loadSettingsData() {
 }
 
 async function saveMemory() {
-    // Sync JSON views if active
-    if (memoryViewState.long === "json") syncJsonFromTextarea("long");
-    if (memoryViewState.short === "json") syncJsonFromTextarea("short");
-
+    // Collect updated text values
+    // Note: state.memoryValues is updated on 'change' event of textareas.
+    syncMemoryValuesFromInputs();
+    // We strictly send the category map. The backend will parse it using `replace_with_user_payload` -> `_extract_manual_structure`.
+    // This allows natural language updates to structured fields (handled by `_apply_manual_short_term_updates` in backend).
+    
     const payload = {
         enabled: memoryToggle?.checked ?? true,
         history_sync_enabled: historySyncToggle?.checked ?? true,
-        long_term_full: state.memoryFull.long,
-        short_term_full: state.memoryFull.short
+        long_term_memory: state.memoryValues.long,
+        short_term_memory: state.memoryValues.short
     };
 
     // Policy fields
@@ -735,7 +398,7 @@ async function saveMemory() {
     const promoteImportance = readFloatInput(shortTermPromoteImportanceInput, { min: 0, max: 1, precision: 2 });
     if (typeof promoteImportance === "number") payload.short_term_promote_importance = promoteImportance;
 
-    const response = await fetch("/api/memory", {
+    const response = await fetchWithTimeout("/api/memory", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -747,9 +410,9 @@ async function saveMemory() {
 }
 
 
-// --- Generic Helpers ---
+// --- Generic Helpers (Reused) ---
 
-async function fetchChatCount() { /* ... reused ... */ 
+async function fetchChatCount() { 
   const response = await fetch("/chat_history", { method: "GET" });
   if (!response.ok) throw new Error("History fetch failed");
   const data = await response.json();
@@ -764,10 +427,36 @@ async function fetchAgentConnections() {
     return (data?.agents && typeof data.agents === "object") ? data.agents : data;
 }
 async function fetchModelSettings() {
-    const response = await fetch("/api/model_settings", { method: "GET" });
-    if (!response.ok) throw new Error("Model fetch failed");
-    const data = await response.json();
-    return { selection: data?.selection || {}, options: data?.options || {} };
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch("/api/model_settings", { method: "GET", signal: controller.signal });
+      if (!response.ok) throw new Error("Model fetch failed");
+      const data = await response.json();
+      return { selection: data?.selection || {}, options: data?.options || {} };
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+}
+async function fetchAgentStatus() {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch("/api/agent_status", { method: "GET", signal: controller.signal });
+      if (!response.ok) throw new Error("Agent status fetch failed");
+      return response.json();
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+}
+async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 function setStatus(message, kind = "muted") {
   if (!statusMessage) return;
@@ -790,14 +479,128 @@ function updateChatCount(count) {
     chatCountNote.textContent = "履歴の取得に失敗しました。";
   }
 }
-function clearElement(el) {
-  if (!el) return;
-  while (el.firstChild) {
-    el.removeChild(el.firstChild);
+function setAgentConnections(connections) {
+  const merged = { ...DEFAULT_AGENT_CONNECTIONS };
+  if (connections && typeof connections === "object") {
+    Object.keys(merged).forEach((key) => {
+      if (typeof connections[key] === "boolean") {
+        merged[key] = connections[key];
+      }
+    });
   }
+  Object.entries(agentToggleInputs).forEach(([agent, input]) => {
+    if (!input) return;
+    input.checked = merged[agent];
+    updateSwitchAria(input);
+  });
 }
+function readAgentConnections() {
+  const connections = {};
+  Object.entries(agentToggleInputs).forEach(([agent, input]) => {
+    if (!input) return;
+    connections[agent] = Boolean(input.checked);
+  });
+  return connections;
+}
+async function saveAgentConnections() {
+  const connections = readAgentConnections();
+  const response = await fetchWithTimeout("/api/agent_connections", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agents: connections }),
+  });
+  if (!response.ok) throw new Error(`接続設定の保存に失敗しました (${response.status})`);
+  return response.json();
+}
+async function saveModelSettings() {
+  const payload = readModelSelection();
+  const response = await fetchWithTimeout("/api/model_settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(`モデル設定の保存に失敗しました (${response.status})`);
+  return response.json();
+}
+async function saveSettings() {
+  const results = await Promise.allSettled([
+    saveMemory(),
+    saveAgentConnections(),
+    saveModelSettings(),
+  ]);
+  const rejected = results.filter((result) => result.status === "rejected");
+  const aborts = rejected.filter((result) => result.reason?.name === "AbortError");
+  const nonAbortErrors = rejected.filter((result) => result.reason?.name !== "AbortError");
 
-// ... Reused Helper Functions from original file (RenderModelOptions, etc) ...
+  if (nonAbortErrors.length) {
+    const errors = nonAbortErrors.map(
+      (result) => result.reason?.message || "保存に失敗しました。",
+    );
+    const error = new Error(errors[0]);
+    error.messages = errors;
+    throw error;
+  }
+
+  return { results, timedOut: aborts.length > 0 };
+}
+function applyAgentStatus(payload) {
+  const agents = payload?.agents && typeof payload.agents === "object" ? payload.agents : payload;
+  if (!agents || typeof agents !== "object") {
+    state.agentStatus = { ...DEFAULT_AGENT_STATUS };
+    return;
+  }
+  const nextStatus = { ...DEFAULT_AGENT_STATUS };
+  Object.keys(nextStatus).forEach((key) => {
+    const entry = agents[key];
+    if (!entry || typeof entry !== "object") return;
+    nextStatus[key] = {
+      available: entry.available ?? nextStatus[key].available,
+      enabled: entry.enabled ?? nextStatus[key].enabled,
+    };
+  });
+  state.agentStatus = nextStatus;
+}
+function ensureSelectStatusPlaceholder(select, message) {
+  if (!select) return;
+  const existing = Array.from(select.options || []).find(option => option.dataset?.status === "unavailable");
+  if (existing) {
+    existing.textContent = message;
+    select.value = existing.value;
+    return;
+  }
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = message;
+  placeholder.dataset.status = "unavailable";
+  select.prepend(placeholder);
+  select.value = "";
+}
+function clearSelectStatusPlaceholder(select) {
+  if (!select) return;
+  Array.from(select.options || []).forEach(option => {
+    if (option.dataset?.status === "unavailable") {
+      option.remove();
+    }
+  });
+}
+function applyModelAvailability() {
+  Object.entries(modelSelectInputs).forEach(([agent, select]) => {
+    if (!select) return;
+    if (agent === "orchestrator" || agent === "memory") {
+      return;
+    }
+    const status = state.agentStatus?.[agent];
+    if (status && status.available === false) {
+      ensureSelectStatusPlaceholder(select, "起動していません");
+      select.disabled = true;
+      return;
+    }
+    clearSelectStatusPlaceholder(select);
+    if (state.modelOptions.length) {
+      select.disabled = false;
+    }
+  });
+}
 function renderModelOptions(options) {
   state.modelOptions = Array.isArray(options?.providers) ? options.providers : [];
   Object.values(modelSelectInputs).forEach(select => {
@@ -857,6 +660,34 @@ function readModelSelection() {
   });
   return { selection };
 }
+function readIntInput(input, { min, max } = {}) {
+  if (!input) return null;
+  const val = parseInt(input.value, 10);
+  if (Number.isNaN(val)) return null;
+  if (min !== undefined && val < min) return min;
+  if (max !== undefined && val > max) return max;
+  return val;
+}
+function readFloatInput(input, { min, max, precision } = {}) {
+  if (!input) return null;
+  let val = parseFloat(input.value);
+  if (Number.isNaN(val)) return null;
+  if (min !== undefined && val < min) val = min;
+  if (max !== undefined && val > max) val = max;
+  if (precision !== undefined) {
+    const factor = Math.pow(10, precision);
+    val = Math.round(val * factor) / factor;
+  }
+  return val;
+}
+
+function closeDialog() {
+  if (!dialog) return;
+  if (dialog.open) {
+    dialog.close();
+  }
+  setStatus("", "muted");
+}
 
 // --- Initialization ---
 
@@ -877,19 +708,6 @@ export function initSettingsModal() {
     input.addEventListener("change", () => updateSwitchAria(input));
   });
 
-  memoryTabs.forEach((tab) => {
-    tab.addEventListener("click", () => {
-      const type = tab.dataset.memoryTab;
-      const view = tab.dataset.view;
-      switchMemoryView(type, view);
-    });
-  });
-
-  longTermAddBtn?.addEventListener("click", () => addMemoryCategory("long"));
-  shortTermAddBtn?.addEventListener("click", () => addMemoryCategory("short"));
-  longTermAddSlotBtn?.addEventListener("click", () => addNewSlot("long"));
-  shortTermAddSlotBtn?.addEventListener("click", () => addNewSlot("short"));
-
   settingsBtn.addEventListener("click", () => {
     if (!dialog.open) {
       dialog.showModal();
@@ -907,6 +725,7 @@ export function initSettingsModal() {
     event.preventDefault();
     if (state.saving) return;
     state.saving = true;
+    let savedOk = false;
     if (saveBtn) {
       saveBtn.disabled = true;
       saveBtn.textContent = "保存中…";
@@ -914,8 +733,16 @@ export function initSettingsModal() {
     setStatus("保存しています…", "muted");
 
     try {
-      await saveSettings();
-      setStatus("保存しました。", "success");
+      const saveResult = await saveSettings();
+      savedOk = true;
+      if (saveResult?.timedOut) {
+        setStatus("保存しました。（応答が遅延しました）", "success");
+      } else {
+        setStatus("保存しました。", "success");
+      }
+      if (saveBtn) {
+        saveBtn.textContent = "保存完了";
+      }
     } catch (error) {
       console.error("設定の保存に失敗しました:", error);
       const message = error?.messages?.[0] || error?.message || "保存に失敗しました。";
@@ -923,8 +750,16 @@ export function initSettingsModal() {
     } finally {
       state.saving = false;
       if (saveBtn) {
-        saveBtn.disabled = false;
-        saveBtn.textContent = "保存";
+        if (savedOk) {
+          window.setTimeout(() => {
+            if (state.saving) return;
+            saveBtn.disabled = false;
+            saveBtn.textContent = "保存";
+          }, 1200);
+        } else {
+          saveBtn.disabled = false;
+          saveBtn.textContent = "保存";
+        }
       }
     }
   });

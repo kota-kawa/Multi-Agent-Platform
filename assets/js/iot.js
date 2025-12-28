@@ -1,4 +1,5 @@
 import { $ } from "./dom-utils.js";
+import { markAgentAvailable, markAgentUnavailable } from "./agent-status.js";
 
 /* ---------- IoT Dashboard ---------- */
 
@@ -87,14 +88,20 @@ export async function iotAgentRequest(path, { method = "GET", headers = {}, body
     finalHeaders["Content-Type"] = "application/json";
   }
 
-  const response = await fetch(url, {
-    method,
-    headers: finalHeaders,
-    body,
-    signal,
-    mode: /^https?:/i.test(url) ? "cors" : "same-origin",
-    credentials: /^https?:/i.test(url) ? "include" : "same-origin",
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: finalHeaders,
+      body,
+      signal,
+      mode: /^https?:/i.test(url) ? "cors" : "same-origin",
+      credentials: /^https?:/i.test(url) ? "include" : "same-origin",
+    });
+  } catch (error) {
+    markAgentUnavailable("iot", error?.message || "接続に失敗しました。");
+    return { data: { status: "unavailable", message: "IoT エージェントに接続できません。", error: error?.message }, status: 0, unavailable: true };
+  }
 
   const contentType = response.headers.get("content-type") || "";
   const isJson = contentType.includes("application/json");
@@ -111,13 +118,23 @@ export async function iotAgentRequest(path, { method = "GET", headers = {}, body
       : (data && typeof data.error === "string")
         ? data.error
         : `${response.status} ${response.statusText}`;
+    if (response.status >= 500) {
+      markAgentUnavailable("iot", message);
+      return { data: { status: "unavailable", message: "IoT エージェントに接続できません。", error: message }, status: response.status, unavailable: true };
+    }
     const error = new Error(message);
     error.status = response.status;
     error.data = data;
     throw error;
   }
 
-  return { data: typeof data === "string" ? { message: data } : data, status: response.status };
+  const payload = typeof data === "string" ? { message: data } : data;
+  if (payload && payload.status === "unavailable") {
+    markAgentUnavailable("iot", payload.error || payload.message);
+    return { data: payload, status: response.status, unavailable: true };
+  }
+  markAgentAvailable("iot");
+  return { data: payload, status: response.status };
 }
 
 function showIotNotice(message, kind = "info") {
@@ -442,7 +459,15 @@ async function fetchIotDevices({ silent = false } = {}) {
   if (iotState.fetching) return;
   iotState.fetching = true;
   try {
-    const { data } = await iotAgentRequest("/api/devices");
+    const { data, unavailable } = await iotAgentRequest("/api/devices");
+    if (unavailable || data?.status === "unavailable") {
+      iotState.devices = [];
+      renderIotDevices();
+      if (!silent) {
+        showIotNotice(data?.message || "IoT エージェントに接続できません。", "error");
+      }
+      return;
+    }
     if (Array.isArray(data.devices)) {
       iotState.devices = data.devices;
     } else {
@@ -464,17 +489,25 @@ async function fetchIotDevices({ silent = false } = {}) {
 
 async function updateIotDeviceDisplayName(deviceId, displayName) {
   const payload = { display_name: displayName || null };
-  const { data } = await iotAgentRequest(`/api/devices/${encodeURIComponent(deviceId)}/name`, {
+  const { data, unavailable } = await iotAgentRequest(`/api/devices/${encodeURIComponent(deviceId)}/name`, {
     method: "PATCH",
     body: JSON.stringify(payload),
   });
+  if (unavailable || data?.status === "unavailable") {
+    showIotNotice(data?.message || "IoT エージェントに接続できません。", "error");
+    return null;
+  }
   return data?.device || null;
 }
 
 async function deleteIotDevice(deviceId) {
-  await iotAgentRequest(`/api/devices/${encodeURIComponent(deviceId)}`, {
+  const { data, unavailable } = await iotAgentRequest(`/api/devices/${encodeURIComponent(deviceId)}`, {
     method: "DELETE",
   });
+  if (unavailable || data?.status === "unavailable") {
+    showIotNotice(data?.message || "IoT エージェントに接続できません。", "error");
+    return;
+  }
 }
 
 function updateLocalDevice(updated) {
@@ -538,10 +571,14 @@ async function handleRegisterSubmit(event) {
   setRegisterMessage("サーバーへ登録しています…");
 
   try {
-    const { data } = await iotAgentRequest("/api/devices/register", {
+    const { data, unavailable } = await iotAgentRequest("/api/devices/register", {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    if (unavailable || data?.status === "unavailable") {
+      setRegisterMessage(data?.message || "IoT エージェントに接続できません。", "error");
+      return;
+    }
     const registeredId = typeof data?.device_id === "string" ? data.device_id : deviceId;
     const registeredDevice = data?.device && typeof data.device === "object" ? data.device : null;
     lastRegisteredDevice = {

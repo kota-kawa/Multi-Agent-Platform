@@ -1,4 +1,5 @@
 import { $ } from "./dom-utils.js";
+import { markAgentAvailable, markAgentUnavailable } from "./agent-status.js";
 
 const schedulerInline = $("#schedulerInline");
 const schedulerFallback = $("#schedulerCalendarFallback");
@@ -71,14 +72,20 @@ export async function schedulerAgentRequest(path, { method = "GET", headers = {}
     finalHeaders["Content-Type"] = "application/json";
   }
 
-  const response = await fetch(url, {
-    method,
-    headers: finalHeaders,
-    body,
-    signal,
-    mode: /^https?:/i.test(url) ? "cors" : "same-origin",
-    credentials: /^https?:/i.test(url) ? "include" : "same-origin",
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: finalHeaders,
+      body,
+      signal,
+      mode: /^https?:/i.test(url) ? "cors" : "same-origin",
+      credentials: /^https?:/i.test(url) ? "include" : "same-origin",
+    });
+  } catch (error) {
+    markAgentUnavailable("scheduler", error?.message || "接続に失敗しました。");
+    return { data: { status: "unavailable", message: "Scheduler エージェントに接続できません。", error: error?.message }, status: 0, unavailable: true };
+  }
 
   const contentType = response.headers.get("content-type") || "";
   const isJson = contentType.includes("application/json");
@@ -95,13 +102,23 @@ export async function schedulerAgentRequest(path, { method = "GET", headers = {}
       : (data && typeof data.error === "string")
         ? data.error
         : `${response.status} ${response.statusText}`;
+    if (response.status >= 500) {
+      markAgentUnavailable("scheduler", message);
+      return { data: { status: "unavailable", message: "Scheduler エージェントに接続できません。", error: message }, status: response.status, unavailable: true };
+    }
     const error = new Error(message);
     error.status = response.status;
     error.data = data;
     throw error;
   }
 
-  return { data: typeof data === "string" ? { message: data } : data, status: response.status };
+  const payload = typeof data === "string" ? { message: data } : data;
+  if (payload && payload.status === "unavailable") {
+    markAgentUnavailable("scheduler", payload.error || payload.message);
+    return { data: payload, status: response.status, unavailable: true };
+  }
+  markAgentAvailable("scheduler");
+  return { data: payload, status: response.status };
 }
 
 function showFallback(message) {
@@ -218,6 +235,16 @@ function formatDate(dateStr) {
 }
 
 function renderDayViewContent(data) {
+  if (data?.status === "unavailable") {
+    return `
+      <div class="scheduler-day-view__error">
+        <i class="bi bi-cloud-slash"></i>
+        <h4>接続できません</h4>
+        <p>${data.message || "Scheduler エージェントに接続できません。"}</p>
+        <button class="btn subtle" onclick="window.closeSchedulerDayView()">カレンダーに戻る</button>
+      </div>
+    `;
+  }
   const { date, timeline_items, completion_rate, day_log_content } = data;
   
   let timelineHtml = "";
@@ -320,7 +347,13 @@ async function fetchDayViewData(dateStr) {
     }
     throw new Error(errorMessage);
   }
-  return res.json();
+  const data = await res.json();
+  if (data?.status === "unavailable") {
+    markAgentUnavailable("scheduler", data.error || data.message);
+  } else {
+    markAgentAvailable("scheduler");
+  }
+  return data;
 }
 
 function showDayView() {
