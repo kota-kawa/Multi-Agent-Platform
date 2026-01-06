@@ -9,8 +9,9 @@ import time
 import asyncio
 from typing import Any, Dict, List
 
-import requests
-from flask import Response, jsonify, request
+import httpx
+from fastapi import Request
+from fastapi.responses import Response, JSONResponse
 from mcp.client.sse import sse_client
 from mcp import ClientSession
 
@@ -83,7 +84,7 @@ def _is_external_endpoint(base: str) -> bool:
     return False
 
 
-def _post_iot_agent(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+async def _post_iot_agent(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """Send a JSON payload to the IoT Agent and return the JSON response."""
 
     bases = _iter_iot_agent_bases()
@@ -92,17 +93,18 @@ def _post_iot_agent(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 
     connection_errors: list[str] = []
     last_exception: Exception | None = None
-    response = None
-    for base in bases:
-        url = _build_iot_agent_url(base, path)
-        try:
-            response = requests.post(url, json=payload, timeout=IOT_AGENT_TIMEOUT)
-        except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
-            connection_errors.append(f"{url}: {exc}")
-            last_exception = exc
-            continue
-        else:
-            break
+    response: httpx.Response | None = None
+    async with httpx.AsyncClient(timeout=IOT_AGENT_TIMEOUT) as client:
+        for base in bases:
+            url = _build_iot_agent_url(base, path)
+            try:
+                response = await client.post(url, json=payload)
+            except httpx.RequestError as exc:  # pragma: no cover - network failure
+                connection_errors.append(f"{url}: {exc}")
+                last_exception = exc
+                continue
+            else:
+                break
 
     if response is None:
         message_lines = ["IoT Agent API への接続に失敗しました。"]
@@ -116,10 +118,10 @@ def _post_iot_agent(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     except ValueError:
         data = None
 
-    if not response.ok:
+    if not response.is_success:
         message = data.get("error") if isinstance(data, dict) else None
         if not message:
-            message = response.text or f"{response.status_code} {response.reason}"
+            message = response.text or f"{response.status_code} {response.reason_phrase}"
         raise IotAgentError(message, status_code=response.status_code)
 
     if not isinstance(data, dict):
@@ -128,32 +130,33 @@ def _post_iot_agent(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
-def _fetch_iot_model_selection() -> Dict[str, str] | None:
+async def _fetch_iot_model_selection() -> Dict[str, str] | None:
     """Fetch the IoT Agent's current model selection for cross-app sync."""
 
     bases = _iter_iot_agent_bases()
     if not bases:
         return None
 
-    for base in bases:
-        url = _build_iot_agent_url(base, "/api/models")
-        try:
-            response = requests.get(url, timeout=IOT_MODEL_SYNC_TIMEOUT)
-        except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
-            logging.info("IoT model sync attempt to %s skipped (%s)", url, exc)
-            continue
+    async with httpx.AsyncClient(timeout=IOT_MODEL_SYNC_TIMEOUT) as client:
+        for base in bases:
+            url = _build_iot_agent_url(base, "/api/models")
+            try:
+                response = await client.get(url)
+            except httpx.RequestError as exc:  # pragma: no cover - network failure
+                logging.info("IoT model sync attempt to %s skipped (%s)", url, exc)
+                continue
 
-        if not response.ok:
-            logging.info(
-                "IoT model sync attempt to %s failed: %s %s", url, response.status_code, response.text
-            )
-            continue
+            if not response.is_success:
+                logging.info(
+                    "IoT model sync attempt to %s failed: %s %s", url, response.status_code, response.text
+                )
+                continue
 
-        try:
-            payload = response.json()
-        except ValueError:
-            logging.info("IoT model sync attempt to %s returned invalid JSON", url)
-            continue
+            try:
+                payload = response.json()
+            except ValueError:
+                logging.info("IoT model sync attempt to %s returned invalid JSON", url)
+                continue
 
         current = payload.get("current") if isinstance(payload, dict) else None
         if not isinstance(current, dict):
@@ -172,31 +175,32 @@ def _fetch_iot_model_selection() -> Dict[str, str] | None:
     return None
 
 
-def _count_iot_devices() -> int | None:
+async def _count_iot_devices() -> int | None:
     """Return the number of registered IoT devices, or None if unavailable."""
 
     bases = _iter_iot_agent_bases()
     if not bases:
         return None
 
-    for base in bases:
-        url = _build_iot_agent_url(base, "/api/devices")
-        try:
-            response = requests.get(url, timeout=IOT_DEVICE_CONTEXT_TIMEOUT)
-        except requests.exceptions.RequestException:
-            continue
+    async with httpx.AsyncClient(timeout=IOT_DEVICE_CONTEXT_TIMEOUT) as client:
+        for base in bases:
+            url = _build_iot_agent_url(base, "/api/devices")
+            try:
+                response = await client.get(url)
+            except httpx.RequestError:
+                continue
 
-        if not response.ok:
-            continue
+            if not response.is_success:
+                continue
 
-        try:
-            payload = response.json()
-        except ValueError:
-            continue
+            try:
+                payload = response.json()
+            except ValueError:
+                continue
 
-        devices = payload.get("devices") if isinstance(payload, dict) else None
-        if isinstance(devices, list):
-            return len(devices)
+            devices = payload.get("devices") if isinstance(payload, dict) else None
+            if isinstance(devices, list):
+                return len(devices)
 
     return None
 
@@ -311,7 +315,7 @@ def _format_device_context(devices: List[Dict[str, Any]]) -> str:
     return "\n".join(lines).strip()
 
 
-def _fetch_iot_device_context() -> str | None:
+async def _fetch_iot_device_context() -> str | None:
     """Fetch device information from the IoT Agent for orchestrator prompts.
     
     For external HTTPS endpoints, directly use HTTP API to avoid SSE connection issues.
@@ -366,19 +370,20 @@ def _fetch_iot_device_context() -> str | None:
                         logging.warning("Failed to read resource %s: %s", res.uri, exc)
                 return devices
 
-    def _fetch_via_http(base_url: str) -> list | None:
+    async def _fetch_via_http(base_url: str) -> list | None:
         """Fetch devices via HTTP API (more reliable for external endpoints)."""
         url = _build_iot_agent_url(base_url, "/api/devices")
         try:
-            response = requests.get(url, timeout=IOT_DEVICE_CONTEXT_TIMEOUT)
-            if response.ok:
-                payload = response.json()
-                devices = payload.get("devices") if isinstance(payload, dict) else None
-                if isinstance(devices, list):
-                    return devices
-        except requests.exceptions.Timeout:
+            async with httpx.AsyncClient(timeout=IOT_DEVICE_CONTEXT_TIMEOUT) as client:
+                response = await client.get(url)
+                if response.is_success:
+                    payload = response.json()
+                    devices = payload.get("devices") if isinstance(payload, dict) else None
+                    if isinstance(devices, list):
+                        return devices
+        except httpx.ReadTimeout:
             logging.debug("IoT device context fetch timed out for %s", url)
-        except requests.exceptions.RequestException as exc:
+        except httpx.RequestError as exc:
             logging.debug("IoT device context fetch failed for %s: %s", url, exc)
         return None
 
@@ -388,21 +393,20 @@ def _fetch_iot_device_context() -> str | None:
         # For external HTTPS endpoints, skip MCP and use HTTP directly
         if is_external and _SKIP_MCP_FOR_EXTERNAL:
             logging.debug("Using HTTP API for external IoT endpoint: %s", base)
-            devices = _fetch_via_http(base)
+            devices = await _fetch_via_http(base)
             if devices:
                 return _format_device_context(devices)
             continue
         
         # For local/docker endpoints, try MCP first with fallback to HTTP
         try:
-            devices = asyncio.run(asyncio.wait_for(_fetch_via_mcp(base), timeout=IOT_MCP_SSE_TIMEOUT))
+            devices = await asyncio.wait_for(_fetch_via_mcp(base), timeout=IOT_MCP_SSE_TIMEOUT)
             if devices:
                 return _format_device_context(devices)
         except Exception as exc:
             logging.debug("MCP device fetch failed for %s: %s. Falling back to HTTP API.", base, exc)
-            
-            # Fallback to HTTP API
-            devices = _fetch_via_http(base)
+
+            devices = await _fetch_via_http(base)
             if devices:
                 return _format_device_context(devices)
 
@@ -532,39 +536,24 @@ async def _execute_via_mcp(command: str, base_url: str) -> Dict[str, Any]:
             return {"reply": str(content)}
 
 
-def _execute_iot_agent_via_mcp_sync(command: str, base_url: str) -> Dict[str, Any]:
-    """Run the async MCP execution from sync Flask/LangGraph code."""
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(_execute_via_mcp(command, base_url))
-
-    new_loop = asyncio.new_event_loop()
-    try:
-        return new_loop.run_until_complete(_execute_via_mcp(command, base_url))
-    finally:
-        new_loop.close()
-
-
-def _execute_via_http_chat(command: str, base_url: str) -> Dict[str, Any]:
+async def _execute_via_http_chat(command: str, base_url: str) -> Dict[str, Any]:
     """Execute a command via the HTTP /api/chat endpoint (for external endpoints)."""
     url = _build_iot_agent_url(base_url, "/api/chat")
     try:
-        response = requests.post(
-            url,
-            json={"messages": [{"role": "user", "content": command}]},
-            timeout=IOT_AGENT_TIMEOUT,
-        )
-        if response.ok:
+        async with httpx.AsyncClient(timeout=IOT_AGENT_TIMEOUT) as client:
+            response = await client.post(
+                url,
+                json={"messages": [{"role": "user", "content": command}]},
+            )
+        if response.is_success:
             return response.json()
-        error_msg = response.text or f"{response.status_code} {response.reason}"
+        error_msg = response.text or f"{response.status_code} {response.reason_phrase}"
         raise IotAgentError(f"HTTP API エラー: {error_msg}", status_code=response.status_code)
-    except requests.exceptions.RequestException as exc:
+    except httpx.RequestError as exc:
         raise IotAgentError(f"HTTP API 接続エラー: {exc}") from exc
 
 
-def _call_iot_agent_command(command: str) -> Dict[str, Any]:
+async def _call_iot_agent_command(command: str) -> Dict[str, Any]:
     """Send a command to the IoT Agent.
     
     For external HTTPS endpoints, use HTTP API directly for reliability.
@@ -584,7 +573,7 @@ def _call_iot_agent_command(command: str) -> Dict[str, Any]:
         if is_external and _SKIP_MCP_FOR_EXTERNAL:
             logging.debug("Using HTTP API for external IoT command: %s", base)
             try:
-                return _execute_via_http_chat(command, base)
+                return await _execute_via_http_chat(command, base)
             except IotAgentError as exc:
                 message = f"{base} (HTTP): {exc}"
                 errors.append(message)
@@ -593,7 +582,7 @@ def _call_iot_agent_command(command: str) -> Dict[str, Any]:
         
         # For local/docker endpoints, try MCP first
         try:
-            return _execute_iot_agent_via_mcp_sync(command, base)
+            return await _execute_via_mcp(command, base)
         except IotAgentError as exc:
             message = f"{base} (MCP): {exc}"
             errors.append(message)
@@ -612,13 +601,13 @@ def _call_iot_agent_command(command: str) -> Dict[str, Any]:
     raise IotAgentError("IoT Agent コマンドを実行できませんでした。\n" + details)
 
 
-def _call_iot_agent_chat(command: str) -> Dict[str, Any]:
+async def _call_iot_agent_chat(command: str) -> Dict[str, Any]:
     """Backward-compatible alias for `_call_iot_agent_command`."""
 
-    return _call_iot_agent_command(command)
+    return await _call_iot_agent_command(command)
 
 
-def _call_iot_agent_conversation_review(
+async def _call_iot_agent_conversation_review(
     conversation_history: List[Dict[str, str]]
 ) -> Dict[str, Any]:
     """Send conversation history to the IoT Agent review endpoint."""
@@ -626,12 +615,12 @@ def _call_iot_agent_conversation_review(
     mcp_result: Dict[str, Any] | None = None
     mcp_errors: list[str] = []
 
-    mcp_result, mcp_errors = _call_iot_agent_conversation_review_via_mcp(conversation_history)
+    mcp_result, mcp_errors = await _call_iot_agent_conversation_review_via_mcp(conversation_history)
     if mcp_result is not None:
         return mcp_result
 
     try:
-        return _post_iot_agent(
+        return await _post_iot_agent(
             "/api/conversations/review",
             {"history": conversation_history},
         )
@@ -685,7 +674,7 @@ async def _call_iot_agent_conversation_review_async(
             return _parse_iot_history_mcp_result(result)
 
 
-def _call_iot_agent_conversation_review_via_mcp(
+async def _call_iot_agent_conversation_review_via_mcp(
     conversation_history: List[Dict[str, str]],
 ) -> tuple[Dict[str, Any] | None, list[str]]:
     """Best-effort MCP call for conversation review with fallback to HTTP.
@@ -703,24 +692,12 @@ def _call_iot_agent_conversation_review_via_mcp(
         return None, ["IoT Agent API の接続先が設定されていません。"]
 
     for base in bases:
-        # Skip MCP for external endpoints - let HTTP fallback handle it
         if _is_external_endpoint(base) and _SKIP_MCP_FOR_EXTERNAL:
             logging.debug("Skipping MCP for external endpoint %s in conversation review", base)
             continue
-            
+
         try:
-            try:
-                asyncio.get_running_loop()
-            except RuntimeError:
-                result = asyncio.run(_call_iot_agent_conversation_review_async(conversation_history, base))
-            else:
-                new_loop = asyncio.new_event_loop()
-                try:
-                    result = new_loop.run_until_complete(
-                        _call_iot_agent_conversation_review_async(conversation_history, base)
-                    )
-                finally:
-                    new_loop.close()
+            result = await _call_iot_agent_conversation_review_async(conversation_history, base)
             return result, errors
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{base}: {exc}")
@@ -729,22 +706,25 @@ def _call_iot_agent_conversation_review_via_mcp(
     return None, errors
 
 
-def _proxy_iot_agent_request(path: str) -> Response:
+async def _proxy_iot_agent_request(request: Request, path: str) -> Response:
     """Proxy the incoming request to the configured IoT Agent API."""
 
     bases = _iter_iot_agent_bases()
     if not bases:
-        return jsonify({
-            "status": "unavailable",
-            "error": "IoT Agent API の接続先が設定されていません。",
-        })
+        return JSONResponse(
+            {"status": "unavailable", "error": "IoT Agent API の接続先が設定されていません。"}
+        )
 
-    if request.is_json:
-        json_payload = request.get_json(silent=True)
-        body_payload = None
-    else:
-        json_payload = None
-        body_payload = request.get_data(cache=False) if request.method in {"POST", "PUT", "PATCH", "DELETE"} else None
+    json_payload = None
+    body_payload = None
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        try:
+            json_payload = await request.json()
+        except Exception:
+            json_payload = None
+    elif request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        body_payload = await request.body()
 
     forward_headers: Dict[str, str] = {}
     for header, value in request.headers.items():
@@ -753,36 +733,33 @@ def _proxy_iot_agent_request(path: str) -> Response:
             forward_headers[header] = value
 
     connection_errors: list[str] = []
-    response = None
-    for base in bases:
-        url = _build_iot_agent_url(base, path)
-        try:
-            response = requests.request(
-                request.method,
-                url,
-                params=request.args,
-                json=json_payload,
-                data=body_payload if json_payload is None else None,
-                headers=forward_headers,
-                timeout=IOT_AGENT_TIMEOUT,
-            )
-        except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
-            connection_errors.append(f"{url}: {exc}")
-            continue
-        else:
-            break
+    response: httpx.Response | None = None
+    async with httpx.AsyncClient(timeout=IOT_AGENT_TIMEOUT) as client:
+        for base in bases:
+            url = _build_iot_agent_url(base, path)
+            try:
+                response = await client.request(
+                    request.method,
+                    url,
+                    params=request.query_params,
+                    json=json_payload,
+                    content=body_payload if json_payload is None else None,
+                    headers=forward_headers,
+                )
+            except httpx.RequestError as exc:  # pragma: no cover - network failure
+                connection_errors.append(f"{url}: {exc}")
+                continue
+            else:
+                break
 
     if response is None:
         message_lines = ["IoT Agent API への接続に失敗しました。"]
         if connection_errors:
             message_lines.append("試行した URL:")
             message_lines.extend(f"- {error}" for error in connection_errors)
-        return jsonify({
-            "status": "unavailable",
-            "error": "\n".join(message_lines),
-        })
+        return JSONResponse({"status": "unavailable", "error": "\n".join(message_lines)})
 
-    proxy_response = Response(response.content, status=response.status_code)
+    proxy_response = Response(response.content, status_code=response.status_code)
     excluded_headers = {"content-encoding", "transfer-encoding", "connection", "content-length"}
     for header, value in response.headers.items():
         if header.lower() in excluded_headers:

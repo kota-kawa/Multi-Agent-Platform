@@ -8,7 +8,7 @@ import logging
 import os
 from typing import Any, Dict, List
 
-import requests
+import httpx
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 
@@ -61,20 +61,7 @@ def _first_text_content(contents: list[Any]) -> str | None:
     return None
 
 
-def _run_coroutine(coro_factory):
-    """Run an async coroutine from sync contexts."""
-
-    try:
-        return asyncio.run(asyncio.wait_for(coro_factory(), timeout=LIFESTYLE_TIMEOUT))
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(asyncio.wait_for(coro_factory(), timeout=LIFESTYLE_TIMEOUT))
-        finally:
-            loop.close()
-
-
-def _call_lifestyle_tool_via_mcp(
+async def _call_lifestyle_tool_via_mcp(
     bases: list[str], tool_name: str, arguments: Dict[str, Any]
 ) -> tuple[Dict[str, Any] | None, list[str]]:
     """Best-effort MCP call for Life-Style tools, with detailed error capture."""
@@ -100,7 +87,7 @@ def _call_lifestyle_tool_via_mcp(
 
     for base in bases:
         try:
-            result = _run_coroutine(lambda: _call_tool(base))
+            result = await asyncio.wait_for(_call_tool(base), timeout=LIFESTYLE_TIMEOUT)
             return result, errors
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{base}: {exc}")
@@ -109,7 +96,7 @@ def _call_lifestyle_tool_via_mcp(
     return None, errors
 
 
-def _call_lifestyle(path: str, *, method: str = "GET", payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
+async def _call_lifestyle(path: str, *, method: str = "GET", payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Call the upstream Life-Style API and return the JSON payload."""
 
     bases = _iter_lifestyle_bases()
@@ -134,23 +121,24 @@ def _call_lifestyle(path: str, *, method: str = "GET", payload: Dict[str, Any] |
             tool_args = {"conversation_history": history_payload}
 
         if tool_name:
-            result, mcp_errors = _call_lifestyle_tool_via_mcp(bases, tool_name, tool_args)
+            result, mcp_errors = await _call_lifestyle_tool_via_mcp(bases, tool_name, tool_args)
             if result is not None:
                 return result
 
     connection_errors: list[str] = []
     last_exception: Exception | None = None
-    response = None
-    for base in bases:
-        url = _build_lifestyle_url(base, path)
-        try:
-            response = requests.request(method, url, json=payload, timeout=LIFESTYLE_TIMEOUT)
-        except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
-            connection_errors.append(f"{url}: {exc}")
-            last_exception = exc
-            continue
-        else:
-            break
+    response: httpx.Response | None = None
+    async with httpx.AsyncClient(timeout=LIFESTYLE_TIMEOUT) as client:
+        for base in bases:
+            url = _build_lifestyle_url(base, path)
+            try:
+                response = await client.request(method, url, json=payload)
+            except httpx.RequestError as exc:  # pragma: no cover - network failure
+                connection_errors.append(f"{url}: {exc}")
+                last_exception = exc
+                continue
+            else:
+                break
 
     if response is None:
         message_lines = ["Life-Styleエージェント API への接続に失敗しました。"]
@@ -168,10 +156,10 @@ def _call_lifestyle(path: str, *, method: str = "GET", payload: Dict[str, Any] |
     except ValueError:  # pragma: no cover - unexpected upstream response
         data = {"error": response.text or "Unexpected response from Life-Styleエージェント API."}
 
-    if not response.ok:
+    if not response.is_success:
         message = data.get("error") if isinstance(data, dict) else None
         if not message:
-            message = response.text or f"{response.status_code} {response.reason}"
+            message = response.text or f"{response.status_code} {response.reason_phrase}"
         raise LifestyleAPIError(message, status_code=response.status_code)
 
     if not isinstance(data, dict):

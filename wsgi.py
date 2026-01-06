@@ -1,4 +1,4 @@
-"""WSGI entrypoint for running under a server like gunicorn."""
+"""ASGI entrypoint for running under a server like uvicorn/gunicorn."""
 
 from __future__ import annotations
 

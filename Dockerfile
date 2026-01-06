@@ -9,6 +9,6 @@ COPY . .
 
 EXPOSE 5050
 
-ENV FLASK_APP=app.py
+ENV UVICORN_RELOAD=1
 
-CMD ["flask", "run", "--host=0.0.0.0", "--port=5050", "--reload"]
+CMD ["uvicorn", "app:app", "--host=0.0.0.0", "--port=5050", "--reload"]

@@ -1,15 +1,15 @@
 # Repository Guidelines
 
 ## Overview
-- `multi_agent_app/` packages the Flask blueprint, LangGraph orchestrator, and Browser/IoT/Life-Assistant bridges; `app.py`, `app_module.py`, and `wsgi.py` are thin entrypoints that import `create_app()` from this package.
+- `multi_agent_app/` packages the FastAPI router, LangGraph orchestrator, and Browser/IoT/Life-Assistant bridges; `app.py`, `app_module.py`, and `wsgi.py` are thin entrypoints that import `create_app()` from this package.
 - LangGraph + `ChatOpenAI` drive `MultiAgentOrchestrator`, which plans, executes, and reviews up to `ORCHESTRATOR_MAX_TASKS` tasks via `/orchestrator/chat`.
 - Front-end bundles in `assets/` implement the general/dashboard/browser/chat UI, orchestrator sidebar, and memory editor; HTML templates live in `templates/`.
 - Runtime JSON (`chat_history.json`, `short_term_memory.json`, `long_term_memory.json`) act as lightweight stores for transcripts and memories—treat them as ephemeral and avoid noisy diffs.
 
 ## Key Modules & Files
-- `app.py`, `app_module.py`, `wsgi.py`: runtime entrypoints (Flask CLI, local dev, WSGI) that all call `multi_agent_app.create_app()`.
-- `multi_agent_app/__init__.py`: application factory wiring templates/static paths and registering the blueprint from `routes.py`.
-- `multi_agent_app/routes.py`: Flask blueprint + HTTP routes (SPA shell, orchestrator SSE endpoint, Life-Assistant/Browser/IoT proxies, chat-history + memory APIs).
+- `app.py`, `app_module.py`, `wsgi.py`: runtime entrypoints (local dev, ASGI) that all call `multi_agent_app.create_app()`.
+- `multi_agent_app/__init__.py`: application factory wiring templates/static paths and registering the router from `routes.py`.
+- `multi_agent_app/routes.py`: FastAPI router + HTTP routes (SPA shell, orchestrator SSE endpoint, Life-Assistant/Browser/IoT proxies, chat-history + memory APIs).
 - `multi_agent_app/orchestrator.py`: LangGraph-based planner/executor/reviewer plus supporting TypedDicts that define orchestrator state.
 - `multi_agent_app/browser.py`, `multi_agent_app/iot.py`, `multi_agent_app/lifestyle.py`, `multi_agent_app/scheduler.py`, `multi_agent_app/history.py`, `multi_agent_app/config.py`: helper modules for upstream calls, env/config parsing, chat history propagation, and timeout constants.
 - `assets/app.js`: SPA logic (view switching, orchestrator SSE client, Browser Agent stream mirroring, IoT dashboard widgets, shared sidebar chat).
@@ -42,7 +42,7 @@
 ## Development Workflow
 - `python -m venv .venv && source .venv/bin/activate`
 - `pip install -r requirements.txt`
-- `flask --app app run --debug --port 5050` to serve the SPA + orchestrator locally.
+- `uvicorn app:app --host 0.0.0.0 --port 5050 --reload` to serve the SPA + orchestrator locally.
 - `docker compose up --build web` binds to port 5050 and injects service URLs for the Life-Assistantエージェント/Browser Agent. Ensure the shared `multi_agent_platform_net` exists or set `MULTI_AGENT_NETWORK`.
 - The Browser Agent iframe URL exposed to the UI defaults to the embedded noVNC endpoint; override `BROWSER_EMBED_URL` for remote deployments.
 
@@ -76,7 +76,7 @@
 
 ## Testing Guidelines
 - Add `pytest` suites under `tests/` (create it if missing). Mirror module/function names eg. `test_orchestrator.py`, `test_browser_proxy.py`.
-- Mock external HTTP calls (`requests.request`) and LangChain clients in tests; exercise success paths, network failures, timeout fallbacks, and SSE formatting helpers such as `_format_sse_event`.
+- Mock external HTTP calls (`httpx.AsyncClient`) and LangChain clients in tests; exercise success paths, network failures, timeout fallbacks, and SSE formatting helpers such as `_format_sse_event`.
 - Include regression tests for `_send_recent_history_to_agents`, `_iter_*_bases` normalizers, and orchestrator plan/execution logic when making changes.
 - Run `pytest -q` (or `pytest`) before raising a PR. Document any required external services or env vars for deterministic runs.
 
@@ -89,7 +89,7 @@
 - Add new agent constants and defaults near the other `DEFAULT_*` sections in `app.py`, wire them into `_AGENT_ALIASES`, `_AGENT_DISPLAY_NAMES`, and CLI/env overrides.
 - Update `docker-compose.yml` to surface new agent URLs via environment variables so containerized runs stay reproducible.
 - Extend the SPA mappings (`AGENT_TO_VIEW_MAP`, `GENERAL_PROXY_AGENT_LABELS`, etc.) plus any status text to surface the new agent’s activity.
-- Validate connectivity with `requests` helpers before exposing routes, log warnings instead of crashing, and avoid blocking Flask threads—use background threads like `_send_recent_history_to_agents` when broadcasting updates.
+- Validate connectivity with `httpx` helpers before exposing routes, log warnings instead of crashing, and avoid blocking the FastAPI event loop—use background threads like `_send_recent_history_to_agents` when broadcasting updates.
 - Whenever you change SSE payloads or Browser/IoT bridge contracts, update both backend helpers and `assets/app.js` handlers in the same commit to keep the UI responsive.
 
 ## Critical Instruction / 重要指示

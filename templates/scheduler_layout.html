@@ -82,15 +82,13 @@
         <!-- 右：既存のページ -->
         <main class="main">
             <div class="container main__container">
-                {% with messages = get_flashed_messages() %}
-                    {% if messages %}
-                        <div class="alert alert-info border-0 shadow-sm rounded-3 mb-4">
-                            {% for message in messages %}
-                                <div><i class="bi bi-info-circle me-2"></i>{{ message }}</div>
-                            {% endfor %}
-                        </div>
-                    {% endif %}
-                {% endwith %}
+                {% if flash_messages %}
+                    <div class="alert alert-info border-0 shadow-sm rounded-3 mb-4">
+                        {% for message in flash_messages %}
+                            <div><i class="bi bi-info-circle me-2"></i>{{ message }}</div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
 
                 {% block content %}{% endblock %}
             </div>

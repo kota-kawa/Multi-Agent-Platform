@@ -1,30 +1,23 @@
-"""Flask blueprint and HTTP routes for Polyphony."""
+"""FastAPI router and HTTP routes for Polyphony."""
 
 from __future__ import annotations
 
 import datetime
 import json
 import logging
-from typing import Any, Dict, Iterator
-from concurrent.futures import ThreadPoolExecutor
+import asyncio
+from urllib.parse import quote
+from typing import Any, Dict, AsyncIterator
 
-from flask import (
-    Blueprint,
+from fastapi import APIRouter, Request
+from fastapi.responses import (
     Response,
-    current_app,
-    flash,
-    g,
-    has_request_context,
-    jsonify,
-    redirect,
-    render_template,
-    request,
-    send_from_directory,
-    stream_with_context,
-    url_for,
+    JSONResponse,
+    StreamingResponse,
+    RedirectResponse,
+    FileResponse,
 )
-
-import requests
+import httpx
 
 from .browser import (
     _build_browser_agent_url,
@@ -67,8 +60,9 @@ from .settings import (
 from .orchestrator import _get_orchestrator
 from .agent_status import get_agent_status
 from .memory_manager import MemoryManager
+from .request_context import set_browser_agent_bases, reset_browser_agent_bases
 
-bp = Blueprint("multi_agent_app", __name__)
+router = APIRouter()
 
 
 def _format_sse_event(payload: Dict[str, Any]) -> str:
@@ -79,7 +73,14 @@ def _format_sse_event(payload: Dict[str, Any]) -> str:
     return f"event: {event_type}\ndata: {data}\n\n"
 
 
-def _broadcast_model_settings(selection: Dict[str, Any]) -> None:
+def _flash_messages(request: Request) -> list[str]:
+    message = request.query_params.get("flash")
+    if message:
+        return [message]
+    return []
+
+
+async def _broadcast_model_settings(selection: Dict[str, Any]) -> None:
     """Best-effort propagation of model settings to downstream agents without restart."""
 
     agent_payloads = {
@@ -98,37 +99,44 @@ def _broadcast_model_settings(selection: Dict[str, Any]) -> None:
 
     headers = {"X-Platform-Propagation": "1"}
 
-    for agent, payload in agent_payloads.items():
-        if not payload or not isinstance(payload, dict):
-            continue
-        iter_bases, build_url = target_builders.get(agent, (None, None))
-        if not iter_bases or not build_url:
-            continue
-        for base in iter_bases():
-            if not base or base.startswith("/"):
+    async with httpx.AsyncClient(timeout=2.0) as client:
+        for agent, payload in agent_payloads.items():
+            if not payload or not isinstance(payload, dict):
                 continue
-            # Skip localhost URLs when running in Docker (they won't resolve)
-            if "localhost" in base or "127.0.0.1" in base:
+            iter_bases, build_url = target_builders.get(agent, (None, None))
+            if not iter_bases or not build_url:
                 continue
-            url = build_url(base, "model_settings")
-            try:
-                resp = requests.post(url, json=payload, timeout=2.0, headers=headers)
-                if not resp.ok:
-                    logging.warning("Model settings push to %s failed: %s %s", url, resp.status_code, resp.text)
-            except requests.exceptions.RequestException as exc:
-                logging.warning("Model settings push to %s skipped (%s)", url, exc)
-            except Exception as exc:  # noqa: BLE001
-                logging.warning("Model settings push to %s failed: %s", url, exc)
+            for base in iter_bases():
+                if not base or base.startswith("/"):
+                    continue
+                if "localhost" in base or "127.0.0.1" in base:
+                    continue
+                url = build_url(base, "model_settings")
+                try:
+                    resp = await client.post(url, json=payload, headers=headers)
+                    if not resp.is_success:
+                        logging.warning(
+                            "Model settings push to %s failed: %s %s", url, resp.status_code, resp.text
+                        )
+                except httpx.RequestError as exc:
+                    logging.warning("Model settings push to %s skipped (%s)", url, exc)
+                except Exception as exc:  # noqa: BLE001
+                    logging.warning("Model settings push to %s failed: %s", url, exc)
 
 
-@bp.route("/orchestrator/chat", methods=["POST"])
-def orchestrator_chat() -> Any:
+@router.post("/orchestrator/chat", name="multi_agent_app.orchestrator_chat")
+async def orchestrator_chat(request: Request) -> Response:
     """Handle orchestrator chat requests originating from the General view."""
 
-    payload = request.get_json(silent=True) or {}
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
     message = (payload.get("message") or "").strip()
     if not message:
-        return jsonify({"error": "メッセージを入力してください。"}), 400
+        return JSONResponse({"error": "メッセージを入力してください。"}, status_code=400)
+
     view_name = str(payload.get("view") or payload.get("source_view") or "").strip().lower()
     log_history_requested = payload.get("log_history") is True
     log_history = log_history_requested or view_name == "general"
@@ -140,8 +148,6 @@ def orchestrator_chat() -> Any:
     service_default = _canonicalise_browser_agent_base("http://browser-agent:5005")
     if service_default and service_default not in overrides:
         overrides.append(service_default)
-    if has_request_context():
-        g.browser_agent_bases = overrides
 
     try:
         orchestrator = _get_orchestrator()
@@ -149,18 +155,19 @@ def orchestrator_chat() -> Any:
         logging.exception("Orchestrator initialisation failed: %s", exc)
         error_message = str(exc)
 
-        def _error_stream(message: str) -> Iterator[str]:
-            yield _format_sse_event({"event": "error", "error": message})
+        async def _error_stream(message_text: str) -> AsyncIterator[str]:
+            yield _format_sse_event({"event": "error", "error": message_text})
 
-        return Response(
-            stream_with_context(_error_stream(error_message)),
-            mimetype="text/event-stream",
+        return StreamingResponse(
+            _error_stream(error_message),
+            media_type="text/event-stream",
             headers={"Cache-Control": "no-cache"},
         )
 
-    def _stream() -> Iterator[str]:
+    async def _stream() -> AsyncIterator[str]:
+        token = set_browser_agent_bases(overrides)
         try:
-            for event in orchestrator.run_stream(message, log_history=log_history):
+            async for event in orchestrator.run_stream(message, log_history=log_history):
                 yield _format_sse_event(event)
         except OrchestratorError as exc:  # pragma: no cover - defensive
             logging.exception("Orchestrator execution failed: %s", exc)
@@ -168,141 +175,181 @@ def orchestrator_chat() -> Any:
         except Exception as exc:  # noqa: BLE001
             logging.exception("Unexpected orchestrator failure: %s", exc)
             yield _format_sse_event({"event": "error", "error": "内部エラーが発生しました。"})
+        finally:
+            reset_browser_agent_bases(token)
 
-    return Response(
-        stream_with_context(_stream()),
-        mimetype="text/event-stream",
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
 
 
-@bp.route("/rag_answer", methods=["POST"])
-def rag_answer() -> Any:
+@router.post("/rag_answer", name="multi_agent_app.rag_answer")
+async def rag_answer(request: Request) -> Any:
     """Proxy the rag_answer endpoint to the Life-Style backend."""
 
-    payload = request.get_json(silent=True) or {}
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
     question = (payload.get("question") or "").strip()
     if not question:
-        return jsonify({"error": "質問を入力してください。"}), 400
+        return JSONResponse({"error": "質問を入力してください。"}, status_code=400)
 
-    status = get_agent_status()
+    status = await get_agent_status()
     lifestyle_status = (status.get("agents") or {}).get("lifestyle", {})
     if not lifestyle_status.get("available", True):
         message = "Life-Styleエージェントに接続できないため回答できません。"
-        return jsonify({"status": "unavailable", "answer": "", "message": message, "error": lifestyle_status.get("error")})
+        return {
+            "status": "unavailable",
+            "answer": "",
+            "message": message,
+            "error": lifestyle_status.get("error"),
+        }
 
     try:
-        data = _call_lifestyle("/rag_answer", method="POST", payload={"question": question})
+        data = await _call_lifestyle("/rag_answer", method="POST", payload={"question": question})
     except LifestyleAPIError as exc:
         logging.exception("Life-Style rag_answer failed: %s", exc)
         message = "Life-Styleエージェントに接続できないため回答できません。"
-        return jsonify({"status": "unavailable", "answer": "", "message": message, "error": str(exc)})
+        return {"status": "unavailable", "answer": "", "message": message, "error": str(exc)}
 
-    return jsonify(data)
+    return data
 
 
-@bp.route("/conversation_history", methods=["GET"])
-def conversation_history() -> Any:
+@router.get("/conversation_history", name="multi_agent_app.conversation_history")
+async def conversation_history() -> Any:
     """Fetch the conversation history from the Life-Style backend."""
 
-    status = get_agent_status()
+    status = await get_agent_status()
     lifestyle_status = (status.get("agents") or {}).get("lifestyle", {})
     if not lifestyle_status.get("available", True):
         message = "Life-Styleエージェントに接続できないため履歴を取得できません。"
-        return jsonify({"status": "unavailable", "conversation_history": [], "message": message, "error": lifestyle_status.get("error")})
+        return {
+            "status": "unavailable",
+            "conversation_history": [],
+            "message": message,
+            "error": lifestyle_status.get("error"),
+        }
 
     try:
-        data = _call_lifestyle("/conversation_history")
+        data = await _call_lifestyle("/conversation_history")
     except LifestyleAPIError as exc:
         logging.exception("Life-Style conversation_history failed: %s", exc)
         message = "Life-Styleエージェントに接続できないため履歴を取得できません。"
-        return jsonify({"status": "unavailable", "conversation_history": [], "message": message, "error": str(exc)})
+        return {"status": "unavailable", "conversation_history": [], "message": message, "error": str(exc)}
 
-    return jsonify(data)
+    return data
 
 
-@bp.route("/conversation_summary", methods=["GET"])
-def conversation_summary() -> Any:
+@router.get("/conversation_summary", name="multi_agent_app.conversation_summary")
+async def conversation_summary() -> Any:
     """Fetch the conversation summary from the Life-Style backend."""
 
-    status = get_agent_status()
+    status = await get_agent_status()
     lifestyle_status = (status.get("agents") or {}).get("lifestyle", {})
     if not lifestyle_status.get("available", True):
         message = "Life-Styleエージェントに接続できないため要約を取得できません。"
-        return jsonify({"status": "unavailable", "summary": "", "message": message, "error": lifestyle_status.get("error")})
+        return {
+            "status": "unavailable",
+            "summary": "",
+            "message": message,
+            "error": lifestyle_status.get("error"),
+        }
 
     try:
-        data = _call_lifestyle("/conversation_summary")
+        data = await _call_lifestyle("/conversation_summary")
     except LifestyleAPIError as exc:
         logging.exception("Life-Style conversation_summary failed: %s", exc)
         message = "Life-Styleエージェントに接続できないため要約を取得できません。"
-        return jsonify({"status": "unavailable", "summary": "", "message": message, "error": str(exc)})
+        return {"status": "unavailable", "summary": "", "message": message, "error": str(exc)}
 
-    return jsonify(data)
+    return data
 
 
-@bp.route("/reset_history", methods=["POST"])
-def reset_history() -> Any:
+@router.post("/reset_history", name="multi_agent_app.reset_history")
+async def reset_history() -> Any:
     """Request the Life-Style backend to clear the conversation history."""
 
-    status = get_agent_status()
+    status = await get_agent_status()
     lifestyle_status = (status.get("agents") or {}).get("lifestyle", {})
     if not lifestyle_status.get("available", True):
         message = "Life-Styleエージェントに接続できないため履歴をリセットできません。"
-        return jsonify({"status": "unavailable", "message": message, "error": lifestyle_status.get("error")})
+        return {"status": "unavailable", "message": message, "error": lifestyle_status.get("error")}
 
     try:
-        data = _call_lifestyle("/reset_history", method="POST")
+        data = await _call_lifestyle("/reset_history", method="POST")
     except LifestyleAPIError as exc:
         logging.exception("Life-Style reset_history failed: %s", exc)
         message = "Life-Styleエージェントに接続できないため履歴をリセットできません。"
-        return jsonify({"status": "unavailable", "message": message, "error": str(exc)})
+        return {"status": "unavailable", "message": message, "error": str(exc)}
 
-    return jsonify(data)
+    return data
 
 
-@bp.route("/iot_agent", defaults={"path": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-@bp.route("/iot_agent/<path:path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-def proxy_iot_agent(path: str) -> Response:
+@router.api_route(
+    "/iot_agent",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    name="multi_agent_app.proxy_iot_agent",
+)
+@router.api_route(
+    "/iot_agent/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    name="multi_agent_app.proxy_iot_agent",
+)
+async def proxy_iot_agent(request: Request, path: str = "") -> Response:
     """Forward IoT Agent API requests to the configured upstream service."""
 
-    return _proxy_iot_agent_request(path)
+    return await _proxy_iot_agent_request(request, path)
 
 
-@bp.route("/scheduler_agent", defaults={"path": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-@bp.route("/scheduler_agent/<path:path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-def proxy_scheduler_agent(path: str) -> Response:
+@router.api_route(
+    "/scheduler_agent",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    name="multi_agent_app.proxy_scheduler_agent",
+)
+@router.api_route(
+    "/scheduler_agent/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    name="multi_agent_app.proxy_scheduler_agent",
+)
+async def proxy_scheduler_agent(request: Request, path: str = "") -> Response:
     """Forward Scheduler Agent traffic to the upstream service."""
 
-    return _proxy_scheduler_agent_request(path)
+    return await _proxy_scheduler_agent_request(request, path)
 
 
-@bp.route("/chat_history", methods=["GET"])
-def chat_history() -> Any:
+@router.get("/chat_history", name="multi_agent_app.chat_history")
+async def chat_history() -> Any:
     """Fetch the entire chat history."""
-    return jsonify(_read_chat_history())
+    return _read_chat_history()
 
 
-@bp.route("/reset_chat_history", methods=["POST"])
-def reset_chat_history() -> Any:
+@router.post("/reset_chat_history", name="multi_agent_app.reset_chat_history")
+async def reset_chat_history() -> Any:
     """Clear the chat history."""
     _reset_chat_history()
-    return jsonify({"message": "Chat history cleared successfully."})
+    return {"message": "Chat history cleared successfully."}
 
 
-@bp.route("/memory")
-def serve_memory_page() -> Any:
+@router.get("/memory", name="multi_agent_app.serve_memory_page")
+async def serve_memory_page(request: Request) -> Response:
     """Serve the memory management page."""
-    return render_template("memory.html")
+    templates = request.app.state.templates
+    return templates.TemplateResponse("memory.html", {"request": request})
 
 
-@bp.route("/api/memory", methods=["GET", "POST"])
-def api_memory() -> Any:
+@router.api_route("/api/memory", methods=["GET", "POST"], name="multi_agent_app.api_memory")
+async def api_memory(request: Request) -> Any:
     """Handle memory file operations and settings."""
     if request.method == "POST":
-        data = request.get_json()
+        try:
+            data = await request.json()
+        except Exception:
+            data = None
         if data is None:
-            return jsonify({"error": "Invalid JSON"}), 400
+            return JSONResponse({"error": "Invalid JSON"}, status_code=400)
         
         try:
             # Full structure update (preferred for new UI)
@@ -338,10 +385,10 @@ def api_memory() -> Any:
                 "short_term_promote_importance": data.get("short_term_promote_importance"),
             })
             
-            return jsonify({"message": "Memory saved successfully."})
+            return {"message": "Memory saved successfully."}
         except Exception as exc:
             logging.exception("Failed to save memory: %s", exc)
-            return jsonify({"error": "Failed to save memory."}), 500
+            return JSONResponse({"error": "Failed to save memory."}, status_code=500)
 
     try:
         lt_mgr = MemoryManager("long_term_memory.json")
@@ -370,7 +417,7 @@ def api_memory() -> Any:
 
     settings = load_memory_settings()
 
-    return jsonify({
+    return {
         "long_term_full": lt_mem,
         "short_term_full": st_mem,
         "long_term_memory": long_term_memory,
@@ -386,57 +433,62 @@ def api_memory() -> Any:
         "short_term_active_task_hold_minutes": settings.get("short_term_active_task_hold_minutes"),
         "short_term_promote_score": settings.get("short_term_promote_score"),
         "short_term_promote_importance": settings.get("short_term_promote_importance"),
-    })
+    }
 
 
-@bp.route("/api/agent_connections", methods=["GET", "POST"])
-def api_agent_connections() -> Any:
+@router.api_route("/api/agent_connections", methods=["GET", "POST"], name="multi_agent_app.api_agent_connections")
+async def api_agent_connections(request: Request) -> Any:
     """Load or persist the agent connection toggles."""
     if request.method == "GET":
-        return jsonify(load_agent_connections())
+        return load_agent_connections()
 
-    data = request.get_json(silent=True)
+    try:
+        data = await request.json()
+    except Exception:
+        data = None
     if not isinstance(data, dict):
-        return jsonify({"error": "Invalid JSON"}), 400
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
     try:
         saved = save_agent_connections(data)
     except Exception as exc:  # noqa: BLE001
         logging.exception("Failed to save agent connection settings: %s", exc)
-        return jsonify({"error": "設定の保存に失敗しました。"}), 500
+        return JSONResponse({"error": "設定の保存に失敗しました。"}, status_code=500)
 
-    return jsonify(saved)
+    return saved
 
 
-@bp.route("/api/agent_status", methods=["GET"])
-def api_agent_status() -> Any:
+@router.get("/api/agent_status", name="multi_agent_app.api_agent_status")
+async def api_agent_status() -> Any:
     """Return the latest agent connectivity status."""
-    return jsonify(get_agent_status(force=True))
+    return await get_agent_status(force=True)
 
 
-@bp.route("/api/model_settings", methods=["GET", "POST"])
-def api_model_settings() -> Any:
+@router.api_route("/api/model_settings", methods=["GET", "POST"], name="multi_agent_app.api_model_settings")
+async def api_model_settings(request: Request) -> Any:
     """Expose and persist LLM model preferences per agent."""
 
     if request.method == "GET":
         selection = load_model_settings()
         updates: Dict[str, Dict[str, str]] = {}
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_iot = executor.submit(_fetch_iot_model_selection)
-            future_scheduler = executor.submit(_fetch_scheduler_model_selection)
+        iot_result, scheduler_result = await asyncio.gather(
+            _fetch_iot_model_selection(),
+            _fetch_scheduler_model_selection(),
+            return_exceptions=True,
+        )
 
-            try:
-                iot_selection = future_iot.result()
-            except Exception as exc:  # noqa: BLE001
-                logging.info("Skipping IoT model pull during settings fetch: %s", exc)
-                iot_selection = None
+        iot_selection = None
+        scheduler_selection = None
+        if isinstance(iot_result, Exception):
+            logging.info("Skipping IoT model pull during settings fetch: %s", iot_result)
+        else:
+            iot_selection = iot_result
 
-            try:
-                scheduler_selection = future_scheduler.result()
-            except Exception as exc:  # noqa: BLE001
-                logging.info("Skipping Scheduler model pull during settings fetch: %s", exc)
-                scheduler_selection = None
+        if isinstance(scheduler_result, Exception):
+            logging.info("Skipping Scheduler model pull during settings fetch: %s", scheduler_result)
+        else:
+            scheduler_selection = scheduler_result
 
         if iot_selection and selection.get("iot") != iot_selection:
             updates["iot"] = iot_selection
@@ -448,42 +500,58 @@ def api_model_settings() -> Any:
             except Exception as exc:  # noqa: BLE001
                 logging.warning("Failed to persist agent model sync: %s", exc)
 
-        return jsonify({"selection": selection, "options": get_llm_options()})
+        return {"selection": selection, "options": get_llm_options()}
 
-    data = request.get_json(silent=True)
+    try:
+        data = await request.json()
+    except Exception:
+        data = None
     if not isinstance(data, dict):
-        return jsonify({"error": "Invalid JSON"}), 400
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
     try:
         saved = save_model_settings(data)
-        _broadcast_model_settings(saved)
+        await _broadcast_model_settings(saved)
     except Exception as exc:  # noqa: BLE001
         logging.exception("Failed to save model settings: %s", exc)
-        return jsonify({"error": "モデル設定の保存に失敗しました。"}), 500
+        return JSONResponse({"error": "モデル設定の保存に失敗しました。"}, status_code=500)
 
-    return jsonify({"selection": saved, "options": get_llm_options()})
+    return {"selection": saved, "options": get_llm_options()}
 
 
 
 # Scheduler Agent UI Routes
-@bp.route("/scheduler-ui")
-def scheduler_index():
+@router.get("/scheduler-ui", name="multi_agent_app.scheduler_index")
+async def scheduler_index(request: Request) -> Response:
     today = datetime.date.today()
-    year = request.args.get('year', today.year, type=int)
-    month = request.args.get('month', today.month, type=int)
+    try:
+        year = int(request.query_params.get("year", today.year))
+    except (TypeError, ValueError):
+        year = today.year
+    try:
+        month = int(request.query_params.get("month", today.month))
+    except (TypeError, ValueError):
+        month = today.month
+
+    templates = request.app.state.templates
+    flash_messages = _flash_messages(request)
 
     try:
-        data = _fetch_calendar_data(year, month)
+        data = await _fetch_calendar_data(year, month)
     except ConnectionError as exc:
         logging.info("Scheduler calendar fetch skipped (agent unavailable): %s", exc)
         status_message = "Scheduler エージェントに接続できないためカレンダーを表示できません。"
-        return render_template(
+        return templates.TemplateResponse(
             "scheduler_index.html",
-            calendar_data=[],
-            year=year,
-            month=month,
-            today=datetime.date.today(),
-            status_message=status_message,
+            {
+                "request": request,
+                "calendar_data": [],
+                "year": year,
+                "month": month,
+                "today": datetime.date.today(),
+                "status_message": status_message,
+                "flash_messages": flash_messages,
+            },
         )
     
     # Convert ISO format date strings back to datetime.date objects for Jinja
@@ -492,23 +560,35 @@ def scheduler_index():
             day_data['date'] = datetime.date.fromisoformat(day_data['date'])
     data['today'] = datetime.date.fromisoformat(data['today'])
     
-    return render_template(
+    return templates.TemplateResponse(
         "scheduler_index.html",
-        calendar_data=data['calendar_data'],
-        year=data['year'],
-        month=data['month'],
-        today=data['today'],
-        status_message=None,
+        {
+            "request": request,
+            "calendar_data": data["calendar_data"],
+            "year": data["year"],
+            "month": data["month"],
+            "today": data["today"],
+            "status_message": None,
+            "flash_messages": flash_messages,
+        },
     )
 
-@bp.route("/scheduler-ui/calendar_partial")
-def scheduler_calendar_partial():
+@router.get("/scheduler-ui/calendar_partial", name="multi_agent_app.scheduler_calendar_partial")
+async def scheduler_calendar_partial(request: Request) -> Response:
     today = datetime.date.today()
-    year = request.args.get('year', today.year, type=int)
-    month = request.args.get('month', today.month, type=int)
+    try:
+        year = int(request.query_params.get("year", today.year))
+    except (TypeError, ValueError):
+        year = today.year
+    try:
+        month = int(request.query_params.get("month", today.month))
+    except (TypeError, ValueError):
+        month = today.month
+
+    templates = request.app.state.templates
 
     try:
-        data = _fetch_calendar_data(year, month)
+        data = await _fetch_calendar_data(year, month)
         
         if not isinstance(data, dict):
              raise ValueError("Invalid response format")
@@ -526,33 +606,44 @@ def scheduler_calendar_partial():
     except (ConnectionError, ValueError, KeyError, TypeError) as exc:
         logging.info("Scheduler calendar partial fetch skipped (agent unavailable): %s", exc)
         status_message = "Scheduler エージェントに接続できないためカレンダーを表示できません。"
-        return render_template(
+        return templates.TemplateResponse(
             "scheduler_calendar_partial.html",
-            calendar_data=[],
-            today=datetime.date.today(),
-            status_message=status_message,
+            {
+                "request": request,
+                "calendar_data": [],
+                "today": datetime.date.today(),
+                "status_message": status_message,
+            },
         )
     
-    return render_template(
+    return templates.TemplateResponse(
         "scheduler_calendar_partial.html",
-        calendar_data=data.get('calendar_data', []),
-        today=data['today'],
-        status_message=None,
+        {
+            "request": request,
+            "calendar_data": data.get("calendar_data", []),
+            "today": data["today"],
+            "status_message": None,
+        },
     )
 
-@bp.route("/scheduler-ui/day/<date_str>", methods=["GET", "POST"])
-def scheduler_day_view(date_str):
+@router.api_route("/scheduler-ui/day/{date_str}", methods=["GET", "POST"], name="multi_agent_app.scheduler_day_view")
+async def scheduler_day_view(request: Request, date_str: str) -> Response:
+    templates = request.app.state.templates
+    flash_messages = _flash_messages(request)
+
     if request.method == "POST":
         try:
-            _submit_day_form(date_str, request.form)
-            flash("変更を保存しました。")
+            form_data = await request.form()
+            await _submit_day_form(date_str, form_data)
+            message = "変更を保存しました。"
         except ConnectionError as exc:
             logging.error("Failed to submit day form for %s: %s", date_str, exc)
-            flash("変更の保存に失敗しました。Scheduler Agent を確認してください。")
-        return redirect(url_for("multi_agent_app.scheduler_day_view", date_str=date_str))
+            message = "変更の保存に失敗しました。Scheduler Agent を確認してください。"
+        redirect_url = f"/scheduler-ui/day/{date_str}?flash={quote(message)}"
+        return RedirectResponse(redirect_url, status_code=303)
 
     try:
-        data = _fetch_day_view_data(date_str)
+        data = await _fetch_day_view_data(date_str)
         
         if not isinstance(data, dict):
              raise ValueError("Invalid response format")
@@ -564,7 +655,7 @@ def scheduler_day_view(date_str):
 
     except (ConnectionError, ValueError, KeyError, TypeError) as exc:
         logging.error("Failed to fetch day view data for %s: %s", date_str, exc)
-        return jsonify({"error": str(exc)}), 502
+        return JSONResponse({"error": str(exc)}, status_code=502)
     
     # Convert timeline item dates if necessary (though they are usually just strings)
     for item in data.get('timeline_items', []):
@@ -574,18 +665,23 @@ def scheduler_day_view(date_str):
         if item.get('is_done') is None:
             item['is_done'] = False
 
-    return render_template(
+    return templates.TemplateResponse(
         "scheduler_day.html",
-        date=data['date'],
-        timeline_items=data.get('timeline_items', []),
-        day_log={'content': data.get('day_log_content')} if data.get('day_log_content') else None,
-        completion_rate=data.get('completion_rate', 0)
+        {
+            "request": request,
+            "date": data["date"],
+            "timeline_items": data.get("timeline_items", []),
+            "day_log": {"content": data.get("day_log_content")} if data.get("day_log_content") else None,
+            "completion_rate": data.get("completion_rate", 0),
+            "flash_messages": flash_messages,
+        },
     )
 
-@bp.route("/scheduler-ui/day/<date_str>/timeline")
-def scheduler_day_view_timeline(date_str):
+@router.get("/scheduler-ui/day/{date_str}/timeline", name="multi_agent_app.scheduler_day_view_timeline")
+async def scheduler_day_view_timeline(request: Request, date_str: str) -> Response:
+    templates = request.app.state.templates
     try:
-        data = _fetch_day_view_data(date_str)
+        data = await _fetch_day_view_data(date_str)
 
         if not isinstance(data, dict):
              raise ValueError("Invalid response format")
@@ -597,7 +693,7 @@ def scheduler_day_view_timeline(date_str):
              
     except (ConnectionError, ValueError, KeyError, TypeError) as exc:
         logging.error("Failed to fetch day view timeline data for %s: %s", date_str, exc)
-        return jsonify({"error": str(exc)}), 502
+        return JSONResponse({"error": str(exc)}, status_code=502)
     
     for item in data.get('timeline_items', []):
         if item.get('log_memo') is None:
@@ -605,75 +701,98 @@ def scheduler_day_view_timeline(date_str):
         if item.get('is_done') is None:
             item['is_done'] = False
 
-    return render_template(
+    return templates.TemplateResponse(
         "scheduler_timeline_partial.html",
-        date=data['date'],
-        timeline_items=data.get('timeline_items', []),
-        completion_rate=data.get('completion_rate', 0)
+        {
+            "request": request,
+            "date": data["date"],
+            "timeline_items": data.get("timeline_items", []),
+            "completion_rate": data.get("completion_rate", 0),
+        },
     )
 
-@bp.route("/scheduler-ui/day/<date_str>/log_partial")
-def scheduler_day_view_log_partial(date_str):
+@router.get("/scheduler-ui/day/{date_str}/log_partial", name="multi_agent_app.scheduler_day_view_log_partial")
+async def scheduler_day_view_log_partial(request: Request, date_str: str) -> Response:
+    templates = request.app.state.templates
     try:
-        data = _fetch_day_view_data(date_str)
+        data = await _fetch_day_view_data(date_str)
         if not isinstance(data, dict):
-             raise ValueError("Invalid response format")
+            raise ValueError("Invalid response format")
     except (ConnectionError, ValueError, KeyError, TypeError) as exc:
         logging.error("Failed to fetch day view log partial data for %s: %s", date_str, exc)
-        return jsonify({"error": str(exc)}), 502
-    
-    return render_template(
+        return JSONResponse({"error": str(exc)}, status_code=502)
+
+    return templates.TemplateResponse(
         "scheduler_log_partial.html",
-        day_log={'content': data.get('day_log_content')} if data.get('day_log_content') else None
+        {
+            "request": request,
+            "day_log": {"content": data.get("day_log_content")} if data.get("day_log_content") else None,
+        },
     )
 
-@bp.route("/scheduler-ui/routines")
-def scheduler_routines_list():
+@router.get("/scheduler-ui/routines", name="multi_agent_app.scheduler_routines_list")
+async def scheduler_routines_list(request: Request) -> Response:
+    templates = request.app.state.templates
+    flash_messages = _flash_messages(request)
     try:
-        data = _fetch_routines_data()
+        data = await _fetch_routines_data()
         if not isinstance(data, dict):
-             raise ValueError("Invalid response format")
+            raise ValueError("Invalid response format")
     except (ConnectionError, ValueError, KeyError, TypeError) as exc:
         logging.error("Failed to fetch routines data: %s", exc)
-        return jsonify({"error": str(exc)}), 502
+        return JSONResponse({"error": str(exc)}, status_code=502)
 
-    return render_template("scheduler_routines.html", routines=data.get('routines', []))
+    return templates.TemplateResponse(
+        "scheduler_routines.html",
+        {"request": request, "routines": data.get("routines", []), "flash_messages": flash_messages},
+    )
 
-@bp.route("/")
-def serve_index() -> Any:
+@router.get("/", name="multi_agent_app.serve_index")
+async def serve_index(request: Request) -> Response:
     """Serve the main single-page application."""
 
+    templates = request.app.state.templates
     browser_embed_url = _resolve_browser_embed_url()
     browser_agent_client_base = _resolve_browser_agent_client_base()
 
-    # Preload scheduler calendar data so the Scheduler view can render without the embedded iframe.
     today = datetime.date.today()
-    scheduler_year = request.args.get("year", today.year, type=int)
-    scheduler_month = request.args.get("month", today.month, type=int)
+    try:
+        scheduler_year = int(request.query_params.get("year", today.year))
+    except (TypeError, ValueError):
+        scheduler_year = today.year
+    try:
+        scheduler_month = int(request.query_params.get("month", today.month))
+    except (TypeError, ValueError):
+        scheduler_month = today.month
     scheduler_calendar_data = None
     scheduler_today = today
     scheduler_error = None
 
-    # NOTE: Server-side preloading is disabled to prevent blocking if Scheduler Agent is down.
-    # The frontend (scheduler.js) will fetch data asynchronously.
-
-    return render_template(
+    return templates.TemplateResponse(
         "index.html",
-        browser_embed_url=browser_embed_url,
-        browser_agent_client_base=browser_agent_client_base,
-        scheduler_calendar_data=scheduler_calendar_data,
-        scheduler_year=scheduler_year,
-        scheduler_month=scheduler_month,
-        scheduler_today=scheduler_today,
-        scheduler_error=scheduler_error,
+        {
+            "request": request,
+            "browser_embed_url": browser_embed_url,
+            "browser_agent_client_base": browser_agent_client_base,
+            "scheduler_calendar_data": scheduler_calendar_data,
+            "scheduler_year": scheduler_year,
+            "scheduler_month": scheduler_month,
+            "scheduler_today": scheduler_today,
+            "scheduler_error": scheduler_error,
+        },
     )
 
 
-@bp.route("/<path:path>")
-def serve_file(path: str) -> Any:
+@router.get("/{path:path}", name="multi_agent_app.serve_file")
+async def serve_file(request: Request, path: str) -> Response:
     """Serve any additional static files that live alongside index.html."""
 
     if path == "index.html":
-        return serve_index()
-    base_path = current_app.config.get("APP_BASE_PATH", current_app.root_path)
-    return send_from_directory(base_path, path)
+        return await serve_index(request)
+    base_path = request.app.state.base_dir
+    candidate = (base_path / path).resolve()
+    if not str(candidate).startswith(str(base_path.resolve())):
+        return JSONResponse({"error": "Not Found"}, status_code=404)
+    if not candidate.exists() or not candidate.is_file():
+        return JSONResponse({"error": "Not Found"}, status_code=404)
+    return FileResponse(candidate)

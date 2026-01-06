@@ -10,8 +10,7 @@ import time
 from typing import Any, Dict, Iterable, List, Tuple
 from urllib.parse import urlparse, urlunparse
 
-import requests
-from flask import g, has_request_context
+import httpx
 
 from .config import (
     BROWSER_AGENT_CHAT_TIMEOUT,
@@ -22,6 +21,7 @@ from .config import (
     DEFAULT_BROWSER_AGENT_BASES,
 )
 from .errors import BrowserAgentError
+from .request_context import get_browser_agent_bases
 
 _USE_BROWSER_AGENT_MCP = os.environ.get("BROWSER_AGENT_USE_MCP", "0").strip().lower() not in {"0", "false", "no", "off"}
 _BROWSER_AGENT_MCP_TOOL = os.environ.get("BROWSER_AGENT_MCP_TOOL", "retry_with_browser_use_agent").strip()
@@ -50,8 +50,8 @@ def _running_inside_container() -> bool:
         return False
 
 
-def _browser_agent_timeout(read_timeout: float | None) -> tuple[float, float | None]:
-    return (BROWSER_AGENT_CONNECT_TIMEOUT, read_timeout)
+def _browser_agent_timeout(read_timeout: float | None) -> httpx.Timeout:
+    return httpx.Timeout(connect=BROWSER_AGENT_CONNECT_TIMEOUT, read=read_timeout)
 
 
 def _expand_browser_agent_base(base: str) -> Iterable[str]:
@@ -170,19 +170,6 @@ def _normalise_browser_base_values(values: Any) -> list[str]:
     return cleaned
 
 
-def _run_with_event_loop(coro_factory):
-    """Run an async coroutine with a timeout, even when already inside a loop."""
-
-    try:
-        return asyncio.run(asyncio.wait_for(coro_factory(), timeout=BROWSER_AGENT_TIMEOUT))
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(asyncio.wait_for(coro_factory(), timeout=BROWSER_AGENT_TIMEOUT))
-        finally:
-            loop.close()
-
-
 def _select_browser_mcp_tool(tools: Iterable[Any]) -> Any | None:
     """Pick a Browser Agent MCP tool that accepts a free-form task string."""
 
@@ -250,7 +237,7 @@ def _format_browser_mcp_result(result: Any) -> Dict[str, Any]:
     return {"run_summary": summary, "messages": [{"role": "assistant", "content": summary}]}
 
 
-def _call_browser_agent_chat_via_mcp(prompt: str) -> Tuple[Dict[str, Any] | None, List[str]]:
+async def _call_browser_agent_chat_via_mcp(prompt: str) -> Tuple[Dict[str, Any] | None, List[str]]:
     """Best-effort MCP call to the Browser Agent, returning payload + errors."""
 
     errors: list[str] = []
@@ -285,7 +272,7 @@ def _call_browser_agent_chat_via_mcp(prompt: str) -> Tuple[Dict[str, Any] | None
 
     for base in bases:
         try:
-            result = _run_with_event_loop(lambda: _call_tool(base))
+            result = await asyncio.wait_for(_call_tool(base), timeout=BROWSER_AGENT_TIMEOUT)
             return result, errors
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{base}: {exc}")
@@ -299,18 +286,17 @@ def _iter_browser_agent_bases() -> list[str]:
 
     configured = os.environ.get("BROWSER_AGENT_API_BASE", "")
     candidates: list[str] = []
-    if has_request_context():
-        overrides = getattr(g, "browser_agent_bases", None)
-        if overrides:
-            if isinstance(overrides, list):
-                for value in overrides:
-                    if not isinstance(value, str):
-                        continue
-                    canonical = _canonicalise_browser_agent_base(value)
-                    if canonical:
-                        candidates.append(canonical)
-            else:  # Defensive fallback
-                candidates.extend(_normalise_browser_base_values(overrides))
+    overrides = get_browser_agent_bases()
+    if overrides:
+        if isinstance(overrides, list):
+            for value in overrides:
+                if not isinstance(value, str):
+                    continue
+                canonical = _canonicalise_browser_agent_base(value)
+                if canonical:
+                    candidates.append(canonical)
+        else:  # Defensive fallback
+            candidates.extend(_normalise_browser_base_values(overrides))
     if configured:
         for part in configured.split(","):
             canonical = _canonicalise_browser_agent_base(part)
@@ -355,7 +341,7 @@ def _build_browser_agent_url(base: str, path: str) -> str:
     return f"{base}{path}"
 
 
-def _extract_browser_error_message(response: requests.Response, default_message: str) -> str:
+def _extract_browser_error_message(response: httpx.Response, default_message: str) -> str:
     try:
         payload = response.json()
     except ValueError:
@@ -380,28 +366,29 @@ def _extract_browser_error_message(response: requests.Response, default_message:
                 return error_message
     if response.text:
         return response.text
-    if response.reason:
-        return f"{response.status_code} {response.reason}"
+    if response.reason_phrase:
+        return f"{response.status_code} {response.reason_phrase}"
     return default_message
 
 
-def _post_browser_agent(path: str, payload: Dict[str, Any], *, timeout: float | tuple[float, float | None]):
+async def _post_browser_agent(path: str, payload: Dict[str, Any], *, timeout: httpx.Timeout):
     """Send a JSON payload to the Browser Agent and return JSON response."""
 
     connection_errors: list[str] = []
     last_exception: Exception | None = None
-    response: requests.Response | None = None
+    response: httpx.Response | None = None
 
-    for base in _iter_browser_agent_bases():
-        url = _build_browser_agent_url(base, path)
-        try:
-            response = requests.post(url, json=payload, timeout=timeout)
-        except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
-            connection_errors.append(f"{url}: {exc}")
-            last_exception = exc
-            continue
-        else:
-            break
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for base in _iter_browser_agent_bases():
+            url = _build_browser_agent_url(base, path)
+            try:
+                response = await client.post(url, json=payload)
+            except httpx.RequestError as exc:  # pragma: no cover - network failure
+                connection_errors.append(f"{url}: {exc}")
+                last_exception = exc
+                continue
+            else:
+                break
 
     if response is None:
         message_lines = ["ブラウザエージェント API への接続に失敗しました。"]
@@ -415,7 +402,7 @@ def _post_browser_agent(path: str, payload: Dict[str, Any], *, timeout: float | 
     except ValueError:
         data = None
 
-    if not response.ok:
+    if not response.is_success:
         message = _extract_browser_error_message(
             response,
             "ブラウザエージェントでエラーが発生しました。",
@@ -428,19 +415,19 @@ def _post_browser_agent(path: str, payload: Dict[str, Any], *, timeout: float | 
     return data
 
 
-def _call_browser_agent_history_check(history: Iterable[Dict[str, str]]) -> Dict[str, Any]:
+async def _call_browser_agent_history_check(history: Iterable[Dict[str, str]]) -> Dict[str, Any]:
     """Call the Browser Agent history check endpoint."""
 
     mcp_result: Dict[str, Any] | None = None
     mcp_errors: list[str] = []
 
-    mcp_result, mcp_errors = _call_browser_agent_history_check_via_mcp(history)
+    mcp_result, mcp_errors = await _call_browser_agent_history_check_via_mcp(history)
     if mcp_result is not None:
         return mcp_result
 
     payload = {"history": list(history)}
     try:
-        return _post_browser_agent(
+        return await _post_browser_agent(
             "/api/conversations/review",
             payload,
             timeout=_browser_agent_timeout(BROWSER_AGENT_TIMEOUT),
@@ -471,7 +458,7 @@ def _parse_browser_history_result_from_mcp(result: Any) -> Dict[str, Any]:
     raise BrowserAgentError("ブラウザエージェント MCP analyze_conversation から有効な内容が返りませんでした。")
 
 
-def _call_browser_agent_history_check_via_mcp(
+async def _call_browser_agent_history_check_via_mcp(
     history: Iterable[Dict[str, str]],
 ) -> Tuple[Dict[str, Any] | None, List[str]]:
     """Best-effort MCP call to analyze recent history, with HTTP fallback support."""
@@ -512,7 +499,7 @@ def _call_browser_agent_history_check_via_mcp(
 
     for base in bases:
         try:
-            result = _run_with_event_loop(lambda: _call_tool(base))
+            result = await asyncio.wait_for(_call_tool(base), timeout=BROWSER_AGENT_TIMEOUT)
             return result, errors
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{base}: {exc}")
@@ -561,7 +548,7 @@ def _latest_message_id(messages: Any) -> int:
     return latest
 
 
-def _poll_browser_history_for_completion(
+async def _poll_browser_history_for_completion(
     base: str,
     timeout: float = 900.0,
     interval: float = 2.0,
@@ -572,36 +559,36 @@ def _poll_browser_history_for_completion(
     latest_summary = ""
     last_seen = -1
 
-    while time.monotonic() < deadline:
-        try:
-            response = requests.get(history_url, timeout=_browser_agent_timeout(10.0))
-            if not response.ok:
-                break
-            data = response.json()
-        except Exception as exc:
-            logging.debug("Browser history poll failed: %s", exc)
-            time.sleep(interval)
-            continue
+    async with httpx.AsyncClient(timeout=_browser_agent_timeout(10.0)) as client:
+        while time.monotonic() < deadline:
+            try:
+                response = await client.get(history_url)
+                if not response.is_success:
+                    break
+                data = response.json()
+            except Exception as exc:
+                logging.debug("Browser history poll failed: %s", exc)
+                await asyncio.sleep(interval)
+                continue
+            messages = data.get("messages") if isinstance(data, dict) else None
+            summary = _summarise_browser_messages(messages)
+            latest_id = _latest_message_id(messages)
 
-        messages = data.get("messages") if isinstance(data, dict) else None
-        summary = _summarise_browser_messages(messages)
-        latest_id = _latest_message_id(messages)
+            if summary:
+                if _has_browser_final_marker(summary):
+                    return summary
+                if latest_id > last_seen or summary != latest_summary:
+                    latest_summary = summary
 
-        if summary:
-            if _has_browser_final_marker(summary):
-                return summary
-            if latest_id > last_seen or summary != latest_summary:
-                latest_summary = summary
+            if latest_id > last_seen:
+                last_seen = latest_id
 
-        if latest_id > last_seen:
-            last_seen = latest_id
-
-        time.sleep(interval)
+            await asyncio.sleep(interval)
 
     return latest_summary
 
 
-def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
+async def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
     """Call the Browser Agent agent-relay endpoint or MCP tool.
 
     This uses /api/agent-relay which executes synchronously and returns
@@ -613,12 +600,12 @@ def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
     mcp_errors: list[str] = []
 
     if _USE_BROWSER_AGENT_MCP:
-        mcp_result, mcp_errors = _call_browser_agent_chat_via_mcp(prompt)
+        mcp_result, mcp_errors = await _call_browser_agent_chat_via_mcp(prompt)
         if mcp_result is not None:
             return mcp_result
 
     try:
-        result = _post_browser_agent(
+        result = await _post_browser_agent(
             "/api/agent-relay",
             {"prompt": prompt},
             timeout=_browser_agent_timeout(BROWSER_AGENT_CHAT_TIMEOUT),
@@ -633,7 +620,7 @@ def _call_browser_agent_chat(prompt: str) -> Dict[str, Any]:
                 bases = _iter_browser_agent_bases()
                 if bases:
                     try:
-                        poll_summary = _poll_browser_history_for_completion(
+                        poll_summary = await _poll_browser_history_for_completion(
                             bases[0],
                             timeout=900.0,  # 15 minutes
                             interval=2.0,

@@ -8,4 +8,8 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5050)
+    import os
+    import uvicorn
+
+    reload_enabled = os.environ.get("UVICORN_RELOAD", "").lower() in {"1", "true", "yes", "on"}
+    uvicorn.run("app:app", host="0.0.0.0", port=5050, reload=reload_enabled)

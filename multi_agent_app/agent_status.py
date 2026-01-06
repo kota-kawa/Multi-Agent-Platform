@@ -7,7 +7,7 @@ import time
 import logging
 from typing import Any, Dict, Tuple
 
-import requests
+import httpx
 
 from .browser import _build_browser_agent_url, _iter_browser_agent_bases
 from .iot import _build_iot_agent_url, _iter_iot_agent_bases
@@ -21,19 +21,20 @@ _STATUS_TIMEOUT_SECONDS = float(os.environ.get("AGENT_STATUS_TIMEOUT_SECONDS", "
 _status_cache: Dict[str, Any] = {"ts": 0.0, "payload": None}
 
 
-def _probe_base(build_url, base: str) -> Tuple[bool, str | None]:
+async def _probe_base(client: httpx.AsyncClient, build_url, base: str) -> Tuple[bool, str | None]:
     url = build_url(base, "/")
     try:
-        response = requests.get(url, timeout=_STATUS_TIMEOUT_SECONDS)
-    except requests.exceptions.RequestException as exc:
+        response = await client.get(url)
+    except httpx.RequestError as exc:
         return False, str(exc)
     return True, f"{response.status_code}"
 
 
-def _resolve_agent_status(
+async def _resolve_agent_status(
     agent: str,
     bases: list[str],
     build_url,
+    client: httpx.AsyncClient,
 ) -> Dict[str, Any]:
     if not bases:
         return {
@@ -44,7 +45,7 @@ def _resolve_agent_status(
 
     last_error = None
     for base in bases:
-        ok, detail = _probe_base(build_url, base)
+        ok, detail = await _probe_base(client, build_url, base)
         if ok:
             return {
                 "available": True,
@@ -60,7 +61,7 @@ def _resolve_agent_status(
     }
 
 
-def get_agent_status(*, force: bool = False) -> Dict[str, Any]:
+async def get_agent_status(*, force: bool = False) -> Dict[str, Any]:
     """Return cached agent availability and connection details."""
 
     now = time.monotonic()
@@ -69,10 +70,19 @@ def get_agent_status(*, force: bool = False) -> Dict[str, Any]:
         return cached
 
     try:
-        lifestyle_status = _resolve_agent_status("lifestyle", _iter_lifestyle_bases(), _build_lifestyle_url)
-        browser_status = _resolve_agent_status("browser", _iter_browser_agent_bases(), _build_browser_agent_url)
-        iot_status = _resolve_agent_status("iot", _iter_iot_agent_bases(), _build_iot_agent_url)
-        scheduler_status = _resolve_agent_status("scheduler", _iter_scheduler_agent_bases(), _build_scheduler_agent_url)
+        async with httpx.AsyncClient(timeout=_STATUS_TIMEOUT_SECONDS) as client:
+            lifestyle_status = await _resolve_agent_status(
+                "lifestyle", _iter_lifestyle_bases(), _build_lifestyle_url, client
+            )
+            browser_status = await _resolve_agent_status(
+                "browser", _iter_browser_agent_bases(), _build_browser_agent_url, client
+            )
+            iot_status = await _resolve_agent_status(
+                "iot", _iter_iot_agent_bases(), _build_iot_agent_url, client
+            )
+            scheduler_status = await _resolve_agent_status(
+                "scheduler", _iter_scheduler_agent_bases(), _build_scheduler_agent_url, client
+            )
     except Exception as exc:  # noqa: BLE001 - defensive
         logging.warning("Failed to compute agent status: %s", exc)
         # Return a safe fallback with unknown status to avoid crashing the UI.
@@ -102,8 +112,8 @@ def get_agent_status(*, force: bool = False) -> Dict[str, Any]:
     return payload
 
 
-def get_agent_availability(*, force: bool = False) -> Dict[str, bool]:
-    status = get_agent_status(force=force)
+async def get_agent_availability(*, force: bool = False) -> Dict[str, bool]:
+    status = await get_agent_status(force=force)
     agents = status.get("agents", {}) if isinstance(status, dict) else {}
     availability: Dict[str, bool] = {}
     for agent_key, entry in agents.items():

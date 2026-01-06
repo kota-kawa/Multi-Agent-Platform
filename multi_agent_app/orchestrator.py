@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import logging
-import queue
 import re
 import threading
 import time
-from typing import Any, Dict, Iterable, Iterator, List, Literal, TypedDict, cast
+from typing import Any, Dict, Iterable, List, Literal, TypedDict, cast, AsyncIterator
 
-import requests
+import httpx
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -338,21 +338,45 @@ class MultiAgentOrchestrator:
 
     def _build_graph(self) -> Any:
         graph: StateGraph[OrchestratorState] = StateGraph(OrchestratorState)
-        graph.add_node("plan", self._plan_node)
-        graph.add_node("execute", self._execute_node)
-        graph.add_node("review", self._review_node)
+        graph.add_node("plan", self._plan_node_sync)
+        graph.add_node("execute", self._execute_node_sync)
+        graph.add_node("review", self._review_node_sync)
         graph.add_edge("plan", "execute")
         graph.add_edge("execute", "review")
         graph.add_conditional_edges("review", self._continue_or_end, {"continue": "execute", "end": END})
         graph.set_entry_point("plan")
         return graph.compile()
 
+    @staticmethod
+    def _run_async(coro):
+        """Run an async coroutine from sync contexts."""
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def _plan_node_sync(self, state: OrchestratorState, *, incremental: bool = False) -> OrchestratorState:
+        return self._run_async(self._plan_node(state, incremental=incremental))
+
+    def _execute_node_sync(self, state: OrchestratorState) -> OrchestratorState:
+        return self._run_async(self._execute_node(state))
+
+    def _review_node_sync(self, state: OrchestratorState) -> OrchestratorState:
+        return self._run_async(self._review_node(state))
+
     def _continue_or_end(self, state: OrchestratorState) -> str:
         tasks = state.get("tasks") or []
         index = state.get("current_index", 0)
         return "continue" if index < len(tasks) else "end"
 
-    def _review_node(self, state: OrchestratorState) -> OrchestratorState:
+    async def _review_node(self, state: OrchestratorState) -> OrchestratorState:
         executions = list(state.get("executions") or [])
         if not executions:
             return state
@@ -377,7 +401,7 @@ class MultiAgentOrchestrator:
         messages = [SystemMessage(content=prompt)]
 
         try:
-            response = self._llm.invoke(messages)
+            response = await asyncio.to_thread(self._llm.invoke, messages)
             review_text = self._extract_text(response.content)
             review_data = self._parse_plan(review_text)
         except (OrchestratorError, Exception) as exc:  # noqa: BLE001
@@ -420,13 +444,13 @@ class MultiAgentOrchestrator:
             lines.append(f"{idx}. [{agent_label}] {header}\n   {outcome}")
         return "\n".join(lines)
 
-    def _plan_node(self, state: OrchestratorState, *, incremental: bool = False) -> OrchestratorState:
+    async def _plan_node(self, state: OrchestratorState, *, incremental: bool = False) -> OrchestratorState:
         user_input = state.get("user_input", "")
         if not user_input:
             raise OrchestratorError("オーケストレーターに渡された入力が空でした。")
 
         agent_connections = state.get("agent_connections") or load_agent_connections()
-        availability = get_agent_availability()
+        availability = await get_agent_availability()
         enabled_agents = [
             agent for agent, enabled in agent_connections.items()
             if enabled and availability.get(agent, True)
@@ -444,7 +468,7 @@ class MultiAgentOrchestrator:
         device_context: str | None = None
         if agent_connections.get("iot"):
             try:
-                device_context = _fetch_iot_device_context()
+                device_context = await _fetch_iot_device_context()
             except Exception as exc:  # noqa: BLE001 - best-effort enrichment
                 logging.info("Failed to fetch IoT device context for planner prompt: %s", exc)
 
@@ -500,7 +524,7 @@ class MultiAgentOrchestrator:
         last_plan_text: str | None = None
         for attempt in range(3):
             try:
-                response = self._llm.invoke(messages)
+                response = await asyncio.to_thread(self._llm.invoke, messages)
                 raw_content = response.content
                 plan_text = self._extract_text(raw_content)
                 last_plan_text = plan_text
@@ -552,7 +576,7 @@ class MultiAgentOrchestrator:
             "agent_connections": agent_connections,
         }
 
-    def _execute_node(self, state: OrchestratorState) -> OrchestratorState:
+    async def _execute_node(self, state: OrchestratorState) -> OrchestratorState:
         tasks = state.get("tasks") or []
         index = state.get("current_index", 0)
         executions = list(state.get("executions") or [])
@@ -561,7 +585,7 @@ class MultiAgentOrchestrator:
             return {"executions": executions, "current_index": index}
 
         task = tasks[index]
-        result = self._execute_task(task)
+        result = await self._execute_task(task)
         executions.append(result)
 
         return {"executions": executions, "current_index": index + 1, "tasks": tasks}
@@ -753,7 +777,7 @@ class MultiAgentOrchestrator:
                 latest = message_id
         return latest
 
-    def _poll_browser_history_summary(
+    async def _poll_browser_history_summary(
         self,
         base: str,
         since_id: int | None = None,
@@ -771,32 +795,32 @@ class MultiAgentOrchestrator:
         last_seen = since_id if isinstance(since_id, int) else -1
         latest_summary = ""
 
-        while time.monotonic() < deadline:
-            try:
-                response = requests.get(history_url, timeout=_browser_agent_timeout(10.0))
-                if not response.ok:
-                    break
-                data = response.json()
-            except Exception as exc:  # noqa: BLE001
-                logging.debug("Browser history poll failed: %s", exc)
-                time.sleep(interval)
-                continue
+        async with httpx.AsyncClient(timeout=_browser_agent_timeout(10.0)) as client:
+            while time.monotonic() < deadline:
+                try:
+                    response = await client.get(history_url)
+                    if not response.is_success:
+                        break
+                    data = response.json()
+                except Exception as exc:  # noqa: BLE001
+                    logging.debug("Browser history poll failed: %s", exc)
+                    await asyncio.sleep(interval)
+                    continue
 
-            messages = data.get("messages") if isinstance(data, dict) else None
-            summary = self._summarise_browser_messages(messages)
-            latest_id = self._latest_message_id(messages)
+                messages = data.get("messages") if isinstance(data, dict) else None
+                summary = self._summarise_browser_messages(messages)
+                latest_id = self._latest_message_id(messages)
 
-            if summary:
-                if self._has_browser_final_marker(summary):
-                    return summary
-                # Keep the newest non-final summary while polling for the final marker.
-                if latest_id > last_seen or summary != latest_summary:
-                    latest_summary = summary
+                if summary:
+                    if self._has_browser_final_marker(summary):
+                        return summary
+                    if latest_id > last_seen or summary != latest_summary:
+                        latest_summary = summary
 
-            if latest_id > last_seen:
-                last_seen = latest_id
+                if latest_id > last_seen:
+                    last_seen = latest_id
 
-            time.sleep(interval)
+                await asyncio.sleep(interval)
 
         # Timed out without a final marker; return the latest summary we observed (if any).
         return latest_summary
@@ -856,7 +880,7 @@ class MultiAgentOrchestrator:
             "finalized": finalized,
         }
 
-    def _augment_browser_payload_with_history(self, payload: Dict[str, Any], *, timeout: float = 900.0) -> str:
+    async def _augment_browser_payload_with_history(self, payload: Dict[str, Any], *, timeout: float = 900.0) -> str:
         """Fetch the latest history summary as a fallback when the payload lacks a final marker."""
 
         try:
@@ -872,7 +896,7 @@ class MultiAgentOrchestrator:
             return ""
 
         # Use the first reachable base; polling already returns quickly when history is short.
-        return self._poll_browser_history_summary(bases[0], timeout=timeout, interval=1.0)
+        return await self._poll_browser_history_summary(bases[0], timeout=timeout, interval=1.0)
 
     def _browser_error_result(self, command: str, error: Exception) -> ExecutionResult:
         return {
@@ -902,7 +926,7 @@ class MultiAgentOrchestrator:
         lowered = command.lower()
         return any(keyword in lowered or keyword in command for keyword in self._BROWSER_RISK_KEYWORDS)
 
-    def _assess_actionability(self, task: TaskSpec) -> Dict[str, str]:
+    async def _assess_actionability(self, task: TaskSpec) -> Dict[str, str]:
         """Ask the LLM whether the given task is actionable for the target agent."""
 
         agent = task.get("agent")
@@ -913,7 +937,7 @@ class MultiAgentOrchestrator:
         if agent == "iot":
             # IoT は「迷いなく実行」を優先。デバイスが複数でも基本は実行に進む。
             try:
-                device_count = _count_iot_devices()
+                device_count = await _count_iot_devices()
             except Exception as exc:  # noqa: BLE001 - best-effort
                 logging.debug("Failed to count IoT devices for actionability check: %s", exc)
                 device_count = None
@@ -936,7 +960,7 @@ class MultiAgentOrchestrator:
         ]
 
         try:
-            response = self._llm.invoke(messages)
+            response = await asyncio.to_thread(self._llm.invoke, messages)
             text = self._extract_text(response.content)
             data = self._parse_plan(text)
         except Exception as exc:  # noqa: BLE001
@@ -952,10 +976,10 @@ class MultiAgentOrchestrator:
             status = "ok"
         return {"status": status, "message": message}
 
-    def _maybe_request_clarification(self, task: TaskSpec) -> ExecutionResult | None:
+    async def _maybe_request_clarification(self, task: TaskSpec) -> ExecutionResult | None:
         """Return a clarification result when the task is not actionable."""
 
-        assessment = self._assess_actionability(task)
+        assessment = await self._assess_actionability(task)
         if assessment.get("status") != "needs_info":
             return None
 
@@ -971,15 +995,15 @@ class MultiAgentOrchestrator:
             "finalized": True,
         }
 
-    def _execute_task(self, task: TaskSpec) -> ExecutionResult:
+    async def _execute_task(self, task: TaskSpec) -> ExecutionResult:
         agent = task["agent"]
         command = task["command"]
 
-        clarification = self._maybe_request_clarification(task)
+        clarification = await self._maybe_request_clarification(task)
         if clarification is not None:
             return clarification
 
-        availability = get_agent_availability()
+        availability = await get_agent_availability()
         if not availability.get(agent, True):
             agent_label = self._AGENT_DISPLAY_NAMES.get(agent, agent)
             return {
@@ -993,7 +1017,7 @@ class MultiAgentOrchestrator:
 
         if agent == "lifestyle":
             try:
-                data = _call_lifestyle("/agent_rag_answer", method="POST", payload={"question": command})
+                data = await _call_lifestyle("/agent_rag_answer", method="POST", payload={"question": command})
             except LifestyleAPIError as exc:
                 return {
                     "agent": agent,
@@ -1013,7 +1037,7 @@ class MultiAgentOrchestrator:
 
         if agent == "browser":
             try:
-                data = _call_browser_agent_chat(command)
+                data = await _call_browser_agent_chat(command)
             except BrowserAgentError as exc:
                 return self._browser_error_result(command, exc)
             # agent-relay returns synchronous results, no need for additional polling
@@ -1021,7 +1045,7 @@ class MultiAgentOrchestrator:
 
         if agent == "iot":
             try:
-                data = _call_iot_agent_command(command)
+                data = await _call_iot_agent_command(command)
             except IotAgentError as exc:
                 return {
                     "agent": agent,
@@ -1043,7 +1067,7 @@ class MultiAgentOrchestrator:
 
         if agent == "scheduler":
             try:
-                data = _call_scheduler_agent_chat(command)
+                data = await _call_scheduler_agent_chat(command)
             except SchedulerAgentError as exc:
                 return {
                     "agent": agent,
@@ -1071,18 +1095,15 @@ class MultiAgentOrchestrator:
             "error": f"未対応のエージェント種別です: {agent}",
         }
 
-    def _execute_browser_task_with_progress(self, task: TaskSpec) -> Iterator[Dict[str, Any]]:
+    async def _execute_browser_task_with_progress(self, task: TaskSpec) -> AsyncIterator[Dict[str, Any]]:
         command = task["command"]
 
-        clarification = self._maybe_request_clarification(task)
+        clarification = await self._maybe_request_clarification(task)
         if clarification is not None:
-            yield {
-                "type": "result",
-                "result": clarification,
-            }
+            yield {"type": "result", "result": clarification}
             return
 
-        availability = get_agent_availability()
+        availability = await get_agent_availability()
         if not availability.get("browser", True):
             agent_label = self._AGENT_DISPLAY_NAMES.get("browser", "browser")
             yield {
@@ -1099,9 +1120,9 @@ class MultiAgentOrchestrator:
             return
 
         if _USE_BROWSER_AGENT_MCP:
-            mcp_result, mcp_errors = _call_browser_agent_chat_via_mcp(command)
+            mcp_result, mcp_errors = await _call_browser_agent_chat_via_mcp(command)
             if mcp_result is not None:
-                fallback_summary = self._augment_browser_payload_with_history(mcp_result, timeout=60.0)
+                fallback_summary = await self._augment_browser_payload_with_history(mcp_result, timeout=60.0)
                 yield {
                     "type": "result",
                     "result": self._browser_result_from_payload(command, mcp_result, fallback_summary=fallback_summary),
@@ -1110,31 +1131,27 @@ class MultiAgentOrchestrator:
             if mcp_errors:
                 logging.info("Browser Agent MCP execution failed, falling back to HTTP: %s", "; ".join(mcp_errors))
 
-        # Try streaming first, then fallback to synchronous agent-relay endpoint
         try:
-            yield from self._iter_browser_agent_progress(command)
+            async for event in self._iter_browser_agent_progress(command):
+                yield event
         except BrowserAgentError as exc:
             logging.warning("Streaming browser execution failed, falling back to summary only: %s", exc)
             try:
-                data = _call_browser_agent_chat(command)
+                data = await _call_browser_agent_chat(command)
             except BrowserAgentError as fallback_exc:
-                yield {
-                    "type": "result",
-                    "result": self._browser_error_result(command, fallback_exc),
-                }
+                yield {"type": "result", "result": self._browser_error_result(command, fallback_exc)}
             else:
-                # agent-relay returns synchronously with full results
                 yield {
                     "type": "result",
                     "result": self._browser_result_from_payload(command, data, fallback_summary=""),
                 }
             return
 
-    def _iter_browser_agent_progress(self, command: str) -> Iterator[Dict[str, Any]]:
+    async def _iter_browser_agent_progress(self, command: str) -> AsyncIterator[Dict[str, Any]]:
         last_error: BrowserAgentError | None = None
         for base in _iter_browser_agent_bases():
             try:
-                for event in self._iter_browser_agent_progress_for_base(base, command):
+                async for event in self._iter_browser_agent_progress_for_base(base, command):
                     yield event
                 return
             except BrowserAgentError as exc:
@@ -1146,97 +1163,69 @@ class MultiAgentOrchestrator:
             raise last_error
         raise BrowserAgentError("ブラウザエージェントへの接続に失敗しました。")
 
-    def _iter_browser_agent_progress_for_base(
+    async def _iter_browser_agent_progress_for_base(
         self,
         base: str,
         command: str,
-    ) -> Iterator[Dict[str, Any]]:
-        event_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
-        stop_event = threading.Event()
-        stream_ready = threading.Event()
+    ) -> AsyncIterator[Dict[str, Any]]:
+        event_queue: "asyncio.Queue[Dict[str, Any]]" = asyncio.Queue()
+        stop_event = asyncio.Event()
+        stream_ready = asyncio.Event()
         stream_status: Dict[str, Any] = {"ok": False, "error": None}
-        response_holder: Dict[str, requests.Response] = {}
 
         stream_url = _build_browser_agent_url(base, "/api/stream")
         chat_url = _build_browser_agent_url(base, "/api/chat")
 
-        def _stream_worker() -> None:
-            response: requests.Response | None = None
+        async def _stream_worker() -> None:
             try:
-                response = requests.get(
-                    stream_url,
-                    stream=True,
-                    timeout=_browser_agent_timeout(BROWSER_AGENT_STREAM_TIMEOUT),
-                )
-            except requests.exceptions.RequestException as exc:
+                async with httpx.AsyncClient(timeout=_browser_agent_timeout(BROWSER_AGENT_STREAM_TIMEOUT)) as client:
+                    async with client.stream("GET", stream_url) as response:
+                        if not response.is_success:
+                            stream_status["error"] = BrowserAgentError(
+                                _extract_browser_error_message(
+                                    response,
+                                    "ブラウザエージェントのイベントストリームへの接続に失敗しました。",
+                                ),
+                                status_code=response.status_code,
+                            )
+                            stream_ready.set()
+                            await event_queue.put({"kind": "stream_error", "error": stream_status["error"]})
+                            return
+
+                        stream_status["ok"] = True
+                        stream_ready.set()
+
+                        event_type = "message"
+                        data_lines: list[str] = []
+                        async for raw_line in response.aiter_lines():
+                            if stop_event.is_set():
+                                break
+                            if raw_line == "":
+                                if data_lines:
+                                    data_text = "\n".join(data_lines)
+                                    await event_queue.put(
+                                        {"kind": "stream_data", "event": event_type, "data": data_text}
+                                    )
+                                    data_lines = []
+                                    event_type = "message"
+                                continue
+                            if raw_line.startswith(":"):
+                                continue
+                            if raw_line.startswith("event:"):
+                                event_type = raw_line[6:].strip() or "message"
+                            elif raw_line.startswith("data:"):
+                                data_lines.append(raw_line[5:].lstrip())
+            except httpx.RequestError as exc:
                 stream_status["error"] = BrowserAgentError(
                     f"ブラウザエージェントのイベントストリームに接続できませんでした: {exc}",
                 )
                 stream_ready.set()
-                return
-
-            response_holder["response"] = response
-            if not response.ok:
-                stream_status["error"] = BrowserAgentError(
-                    _extract_browser_error_message(
-                        response,
-                        "ブラウザエージェントのイベントストリームへの接続に失敗しました。",
-                    ),
-                    status_code=response.status_code,
-                )
-                stream_ready.set()
-                response.close()
-                return
-
-            stream_status["ok"] = True
-            stream_ready.set()
-
-            event_type = "message"
-            data_lines: list[str] = []
-            try:
-                for raw_line in response.iter_lines(decode_unicode=True):
-                    if stop_event.is_set():
-                        break
-                    if raw_line == "":
-                        if data_lines:
-                            data_text = "\n".join(data_lines)
-                            event_queue.put({"kind": "stream_data", "event": event_type, "data": data_text})
-                            data_lines = []
-                            event_type = "message"
-                        continue
-                    if raw_line.startswith(":"):
-                        continue
-                    if raw_line.startswith("event:"):
-                        event_type = raw_line[6:].strip() or "message"
-                    elif raw_line.startswith("data:"):
-                        data_lines.append(raw_line[5:].lstrip())
-            except requests.exceptions.RequestException as exc:
-                event_queue.put(
-                    {
-                        "kind": "stream_error",
-                        "error": BrowserAgentError(
-                            f"ブラウザエージェントのイベントストリームでエラーが発生しました: {exc}",
-                        ),
-                    }
-                )
-            except AttributeError as exc:
-                # requests may surface "'NoneType' object has no attribute 'read'" when the SSE
-                # connection is closed abruptly after the response object is cleaned up.
-                # Treat this as a graceful close instead of an error to avoid noisy warnings.
-                if "read" in str(exc):
-                    logging.debug("Browser agent stream ended due to closed underlying reader: %s", exc)
-                else:
-                    event_queue.put(
-                        {
-                            "kind": "stream_error",
-                            "error": BrowserAgentError(
-                                f"ブラウザエージェントのイベントストリームでエラーが発生しました: {exc}",
-                            ),
-                        }
-                    )
+                await event_queue.put({"kind": "stream_error", "error": stream_status["error"]})
+            except asyncio.CancelledError:
+                pass
             except Exception as exc:  # noqa: BLE001
                 logging.exception("Unexpected error while consuming browser agent stream: %s", exc)
-                event_queue.put(
+                await event_queue.put(
                     {
                         "kind": "stream_error",
                         "error": BrowserAgentError(
@@ -1245,22 +1234,17 @@ class MultiAgentOrchestrator:
                     }
                 )
             finally:
-                event_queue.put({"kind": "stream_closed"})
-                if response is not None:
-                    try:
-                        response.close()
-                    except Exception:  # noqa: BLE001
-                        pass
+                await event_queue.put({"kind": "stream_closed"})
 
-        def _chat_worker() -> None:
+        async def _chat_worker() -> None:
             try:
-                response = requests.post(
-                    chat_url,
-                    json={"prompt": command, "new_task": True, "skip_conversation_review": True},
-                    timeout=_browser_agent_timeout(BROWSER_AGENT_CHAT_TIMEOUT),
-                )
-            except requests.exceptions.RequestException as exc:
-                event_queue.put(
+                async with httpx.AsyncClient(timeout=_browser_agent_timeout(BROWSER_AGENT_CHAT_TIMEOUT)) as client:
+                    response = await client.post(
+                        chat_url,
+                        json={"prompt": command, "new_task": True, "skip_conversation_review": True},
+                    )
+            except httpx.RequestError as exc:
+                await event_queue.put(
                     {
                         "kind": "chat_error",
                         "error": BrowserAgentError(
@@ -1268,7 +1252,7 @@ class MultiAgentOrchestrator:
                         ),
                     }
                 )
-                event_queue.put({"kind": "chat_complete"})
+                await event_queue.put({"kind": "chat_complete"})
                 return
 
             try:
@@ -1276,22 +1260,22 @@ class MultiAgentOrchestrator:
             except ValueError:
                 data = None
 
-            if not response.ok:
+            if not response.is_success:
                 message = _extract_browser_error_message(
                     response,
                     "ブラウザエージェントの呼び出しに失敗しました。",
                 )
-                event_queue.put(
+                await event_queue.put(
                     {
                         "kind": "chat_error",
                         "error": BrowserAgentError(message, status_code=response.status_code),
                     }
                 )
-                event_queue.put({"kind": "chat_complete"})
+                await event_queue.put({"kind": "chat_complete"})
                 return
 
             if not isinstance(data, dict):
-                event_queue.put(
+                await event_queue.put(
                     {
                         "kind": "chat_error",
                         "error": BrowserAgentError(
@@ -1300,30 +1284,28 @@ class MultiAgentOrchestrator:
                         ),
                     }
                 )
-                event_queue.put({"kind": "chat_complete"})
+                await event_queue.put({"kind": "chat_complete"})
                 return
 
-            event_queue.put({"kind": "chat_result", "data": data})
-            event_queue.put({"kind": "chat_complete"})
+            await event_queue.put({"kind": "chat_result", "data": data})
+            await event_queue.put({"kind": "chat_complete"})
 
-        chat_thread = threading.Thread(target=_chat_worker, daemon=True)
-        stream_thread = threading.Thread(target=_stream_worker, daemon=True)
-        stream_thread.start()
-        chat_thread.start()
+        stream_task = asyncio.create_task(_stream_worker())
+        chat_task = asyncio.create_task(_chat_worker())
 
-        # Wait briefly for the stream handshake, but never block chat execution.
         stream_init_timeout = min(BROWSER_AGENT_CONNECT_TIMEOUT or 10.0, 6.0)
         stream_pre_failed = False
-        if not stream_ready.wait(timeout=stream_init_timeout):
+        try:
+            await asyncio.wait_for(stream_ready.wait(), timeout=stream_init_timeout)
+        except asyncio.TimeoutError:
             stream_status["error"] = BrowserAgentError("ブラウザエージェントのイベントストリーム初期化がタイムアウトしました。")
             stream_pre_failed = True
         if stream_status.get("error"):
             stream_pre_failed = True
         if stream_pre_failed:
             stop_event.set()
-            stored_response = response_holder.get("response")
-            if stored_response is not None:
-                stored_response.close()
+            if not stream_task.done():
+                stream_task.cancel()
 
         progress_messages: Dict[Any, str] = {}
         anon_counter = 0
@@ -1338,25 +1320,20 @@ class MultiAgentOrchestrator:
 
         def _stop_stream() -> None:
             stop_event.set()
-            stored = response_holder.get("response")
-            if stored is not None:
-                try:
-                    stored.close()
-                except Exception:  # pragma: no cover - defensive close
-                    pass
+            if not stream_task.done():
+                stream_task.cancel()
 
         try:
             while True:
                 try:
-                    item = event_queue.get(timeout=0.5)
-                except queue.Empty:
+                    item = await asyncio.wait_for(event_queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
                     if chat_finished and (stream_finished or stream_failed):
                         break
                     if chat_finished and not stream_finished and not stream_failed:
                         if chat_finished_at is None:
                             chat_finished_at = time.monotonic()
                         elif time.monotonic() - chat_finished_at > 5.0:
-                            # Give the stream up to 5 seconds to receive the final status event
                             logging.warning(
                                 "Browser agent stream did not terminate after chat completion; forcing shutdown."
                             )
@@ -1426,7 +1403,6 @@ class MultiAgentOrchestrator:
                     chat_result = item.get("data") or {}
                     chat_finished = True
                     chat_finished_at = chat_finished_at or time.monotonic()
-                    # Don't stop stream yet - wait for final status event with run_summary
                 elif kind == "chat_error":
                     error = item.get("error")
                     chat_error = error if isinstance(error, BrowserAgentError) else BrowserAgentError(str(error))
@@ -1436,7 +1412,6 @@ class MultiAgentOrchestrator:
                 elif kind == "chat_complete":
                     chat_finished = True
                     chat_finished_at = chat_finished_at or time.monotonic()
-                    # Don't stop stream yet - wait for final status event with run_summary
 
                 if chat_error is not None:
                     break
@@ -1444,20 +1419,17 @@ class MultiAgentOrchestrator:
                     break
         finally:
             if chat_result is not None:
-                # If streaming failed or did not yield a definitive final marker, poll history as fallback.
                 need_poll = stream_failed or not self._has_browser_final_marker(latest_summary)
                 if need_poll:
                     base_last_id = self._latest_message_id(chat_result.get("messages"))
-                    # Use longer timeout for polling since browser tasks can take several minutes
-                    history_poll_summary = self._poll_browser_history_summary(
+                    history_poll_summary = await self._poll_browser_history_summary(
                         base,
                         since_id=base_last_id,
-                        timeout=900.0,  # 15 minutes
+                        timeout=900.0,
                         interval=2.0,
                     )
             _stop_stream()
-            stream_thread.join(timeout=1.0)
-            chat_thread.join(timeout=1.0)
+            await asyncio.gather(stream_task, chat_task, return_exceptions=True)
 
         if chat_error is not None:
             raise chat_error
@@ -1465,7 +1437,6 @@ class MultiAgentOrchestrator:
         if chat_result is None or not isinstance(chat_result, dict):
             raise BrowserAgentError("ブラウザエージェントからの応答を取得できませんでした。")
 
-        # Log for debugging when final summary is missing
         http_run_summary = str(chat_result.get("run_summary") or "").strip()
         fallback_summary = history_poll_summary or latest_summary
         if not http_run_summary and not latest_summary and not history_poll_summary:
@@ -1810,7 +1781,7 @@ class MultiAgentOrchestrator:
             daemon=True,
         ).start()
 
-    def run_stream(self, user_input: str, *, log_history: bool = False) -> Iterator[Dict[str, Any]]:
+    async def run_stream(self, user_input: str, *, log_history: bool = False) -> AsyncIterator[Dict[str, Any]]:
         session_history = self._initial_session_history(user_input, log_history)
         agent_connections = load_agent_connections()
         state: OrchestratorState = {
@@ -1824,7 +1795,7 @@ class MultiAgentOrchestrator:
             "session_history": session_history,
         }
 
-        plan_state = self._plan_node(state)
+        plan_state = await self._plan_node(state)
         state.update(plan_state)
         state["tasks"] = list(state.get("tasks") or [])
         state["executions"] = list(state.get("executions") or [])
@@ -1876,7 +1847,7 @@ class MultiAgentOrchestrator:
                     history_context=history_context,
                 )
 
-                for event in self._execute_browser_task_with_progress(task_spec):
+                async for event in self._execute_browser_task_with_progress(task_spec):
                     etype = event.get("type")
                     if etype == "progress":
                         yield self._event_payload(
@@ -1898,7 +1869,7 @@ class MultiAgentOrchestrator:
                         BrowserAgentError("ブラウザエージェントからの結果を取得できませんでした。"),
                     )
             else:
-                result = self._execute_task(task_spec)
+                result = await self._execute_task(task_spec)
 
             executions.append(result)
             state["executions"] = executions
@@ -1949,7 +1920,7 @@ class MultiAgentOrchestrator:
                 "agent_connections": agent_connections,
                 "session_history": state.get("session_history") or [],
             }
-            replan_state = self._plan_node(replan_input, incremental=True)
+            replan_state = await self._plan_node(replan_input, incremental=True)
             state.update(replan_state)
             state["executions"] = executions
             state["current_index"] = 0
@@ -2018,9 +1989,9 @@ class MultiAgentOrchestrator:
             assistant_messages=assistant_messages,
         )
 
-    def run(self, user_input: str, *, log_history: bool = False) -> Dict[str, Any]:
+    async def run(self, user_input: str, *, log_history: bool = False) -> Dict[str, Any]:
         final_event: Dict[str, Any] | None = None
-        for event in self.run_stream(user_input, log_history=log_history):
+        async for event in self.run_stream(user_input, log_history=log_history):
             final_event = event
 
         if not final_event or final_event.get("event") != "complete":

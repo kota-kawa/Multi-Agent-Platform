@@ -9,9 +9,9 @@ import os
 import time
 from typing import Any, Dict, Iterable, List
 
-import requests
-from requests.adapters import HTTPAdapter
-from flask import Response, jsonify, request
+import httpx
+from fastapi import Request
+from fastapi.responses import Response, JSONResponse
 
 from .config import (
     DEFAULT_SCHEDULER_AGENT_BASES,
@@ -52,16 +52,6 @@ _SCHEDULER_AGENT_MCP_CONVERSATION_TOOL = (
 )
 
 
-def _get_no_retry_session() -> requests.Session:
-    """Return a requests Session with max_retries=0 to fail fast."""
-    session = requests.Session()
-    adapter = HTTPAdapter(max_retries=0)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    return session
-
-
-
 def _iter_scheduler_agent_bases() -> list[str]:
     """Return configured Scheduler Agent base URLs in priority order."""
 
@@ -95,24 +85,27 @@ def _build_scheduler_agent_url(base: str, path: str) -> str:
     return f"{base}{path}"
 
 
-def _proxy_scheduler_agent_request(path: str) -> Response:
+async def _proxy_scheduler_agent_request(request: Request, path: str) -> Response:
     """Proxy the incoming request to the configured Scheduler Agent."""
 
     global _scheduler_agent_preferred_base
 
     bases = _iter_scheduler_agent_bases()
     if not bases:
-        return jsonify({
-            "status": "unavailable",
-            "error": "Scheduler Agent の接続先が設定されていません。",
-        })
+        return JSONResponse(
+            {"status": "unavailable", "error": "Scheduler Agent の接続先が設定されていません。"}
+        )
 
-    if request.is_json:
-        json_payload = request.get_json(silent=True)
-        body_payload = None
-    else:
-        json_payload = None
-        body_payload = request.get_data(cache=False) if request.method in {"POST", "PUT", "PATCH", "DELETE"} else None
+    json_payload = None
+    body_payload = None
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        try:
+            json_payload = await request.json()
+        except Exception:
+            json_payload = None
+    elif request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        body_payload = await request.body()
 
     forward_headers: Dict[str, str] = {}
     # Forward auth and content-related headers plus a prefix hint so the Scheduler Agent can build correct URLs.
@@ -123,27 +116,27 @@ def _proxy_scheduler_agent_request(path: str) -> Response:
             forward_headers[header] = value
 
     connection_errors: list[str] = []
-    response = None
+    response: httpx.Response | None = None
 
     # Filter out known down hosts, but if all are down, try them all to allow recovery.
     candidates = [b for b in bases if not _is_host_down(b)]
     if not candidates:
         candidates = bases
 
-    with _get_no_retry_session() as session:
+    timeout = httpx.Timeout(connect=SCHEDULER_AGENT_CONNECT_TIMEOUT, read=SCHEDULER_AGENT_TIMEOUT)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         for base in candidates:
             url = _build_scheduler_agent_url(base, path)
             try:
-                response = session.request(
+                response = await client.request(
                     request.method,
                     url,
-                    params=request.args,
+                    params=request.query_params,
                     json=json_payload,
-                    data=body_payload if json_payload is None else None,
+                    content=body_payload if json_payload is None else None,
                     headers=forward_headers,
-                    timeout=(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT),
                 )
-            except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
+            except httpx.RequestError as exc:  # pragma: no cover - network failure
                 _mark_host_down(base)
                 connection_errors.append(f"{url}: {exc}")
                 continue
@@ -157,12 +150,9 @@ def _proxy_scheduler_agent_request(path: str) -> Response:
         if connection_errors:
             message_lines.append("試行した URL:")
             message_lines.extend(f"- {error}" for error in connection_errors)
-        return jsonify({
-            "status": "unavailable",
-            "error": "\n".join(message_lines),
-        })
+        return JSONResponse({"status": "unavailable", "error": "\n".join(message_lines)})
 
-    proxy_response = Response(response.content, status=response.status_code)
+    proxy_response = Response(response.content, status_code=response.status_code)
     excluded_headers = {"content-encoding", "transfer-encoding", "connection", "content-length"}
     for header, value in response.headers.items():
         if header.lower() in excluded_headers:
@@ -186,7 +176,7 @@ def _get_first_scheduler_agent_base() -> str | None:
     return bases[0]
 
 
-def _fetch_scheduler_model_selection() -> Dict[str, str] | None:
+async def _fetch_scheduler_model_selection() -> Dict[str, str] | None:
     """Fetch the Scheduler Agent's current model selection for cross-app sync."""
 
     bases = _iter_scheduler_agent_bases()
@@ -198,22 +188,20 @@ def _fetch_scheduler_model_selection() -> Dict[str, str] | None:
     if not candidates:
         candidates = bases
 
-    with _get_no_retry_session() as session:
+    timeout = httpx.Timeout(connect=SCHEDULER_MODEL_SYNC_CONNECT_TIMEOUT, read=SCHEDULER_MODEL_SYNC_TIMEOUT)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         for base in candidates:
             url = _build_scheduler_agent_url(base, "/api/models")
             try:
-                response = session.get(
-                    url,
-                    timeout=(SCHEDULER_MODEL_SYNC_CONNECT_TIMEOUT, SCHEDULER_MODEL_SYNC_TIMEOUT),
-                )
-            except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
+                response = await client.get(url)
+            except httpx.RequestError as exc:  # pragma: no cover - network failure
                 _mark_host_down(base)
                 logging.debug("Scheduler model sync attempt to %s skipped (%s)", url, exc)
                 continue
             else:
                 _mark_host_up(base)
 
-            if not response.ok:
+            if not response.is_success:
                 logging.debug(
                     "Scheduler model sync attempt to %s failed: %s %s", url, response.status_code, response.text
                 )
@@ -242,7 +230,7 @@ def _fetch_scheduler_model_selection() -> Dict[str, str] | None:
     return None
 
 
-def _call_scheduler_agent(path: str, method: str = "GET", params: Dict[str, Any] | None = None) -> Dict[str, Any]:
+async def _call_scheduler_agent(path: str, method: str = "GET", params: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Make a direct call to the Scheduler Agent API."""
     base = _get_first_scheduler_agent_base()
     if not base:
@@ -252,25 +240,23 @@ def _call_scheduler_agent(path: str, method: str = "GET", params: Dict[str, Any]
     
     headers = {"X-Platform-Propagation": "1"}  # Propagate a header if needed for agent logic
 
+    timeout = httpx.Timeout(connect=SCHEDULER_AGENT_CONNECT_TIMEOUT, read=SCHEDULER_AGENT_TIMEOUT)
     try:
-        with _get_no_retry_session() as session:
-            response = session.request(
-                method,
-                url,
-                params=params,
-                headers=headers,
-                timeout=(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT),
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.request(method, url, params=params, headers=headers)
+        if not response.is_success:
+            raise ConnectionError(
+                f"Scheduler Agent API returned {response.status_code} {response.reason_phrase}"
             )
-        response.raise_for_status()  # Raise an exception for HTTP errors
         try:
             return response.json()
         except ValueError as exc:
             raise ConnectionError(f"Scheduler Agent at {url} returned invalid JSON") from exc
-    except requests.exceptions.RequestException as exc:
+    except httpx.RequestError as exc:
         raise ConnectionError(f"Failed to call Scheduler Agent API at {url}: {exc}") from exc
 
 
-def _post_scheduler_agent(path: str, payload: Dict[str, Any], *, method: str = "POST") -> Dict[str, Any]:
+async def _post_scheduler_agent(path: str, payload: Dict[str, Any], *, method: str = "POST") -> Dict[str, Any]:
     """Send a JSON request to the Scheduler Agent and parse the response or raise a helpful error."""
 
     base = _get_first_scheduler_agent_base()
@@ -280,44 +266,28 @@ def _post_scheduler_agent(path: str, payload: Dict[str, Any], *, method: str = "
     url = _build_scheduler_agent_url(base, path)
     headers = {"Content-Type": "application/json", "X-Platform-Propagation": "1"}
 
+    timeout = httpx.Timeout(connect=SCHEDULER_AGENT_CONNECT_TIMEOUT, read=SCHEDULER_AGENT_TIMEOUT)
     try:
-        with _get_no_retry_session() as session:
-            response = session.request(
-                method,
-                url,
-                json=payload,
-                headers=headers,
-                timeout=(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT),
-            )
-    except requests.exceptions.RequestException as exc:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.request(method, url, json=payload, headers=headers)
+    except httpx.RequestError as exc:
         raise SchedulerAgentError(f"Scheduler Agent への接続に失敗しました: {exc}") from exc
 
-    if not response.ok:
+    if not response.is_success:
         try:
             data = response.json()
             detail = data.get("error") if isinstance(data, dict) else None
         except ValueError:
             detail = None
-        message = detail or f"Scheduler Agent からエラー応答を受け取りました: {response.status_code} {response.reason}"
+        message = detail or (
+            f"Scheduler Agent からエラー応答を受け取りました: {response.status_code} {response.reason_phrase}"
+        )
         raise SchedulerAgentError(message, status_code=response.status_code)
 
     try:
         return response.json()
     except ValueError as exc:  # pragma: no cover - defensive
         raise SchedulerAgentError("Scheduler Agent からの応答を JSON として解析できませんでした。") from exc
-
-
-def _run_scheduler_mcp_with_timeout(coro_factory):
-    """Run an async MCP coroutine with a timeout, even when already inside a loop."""
-
-    try:
-        return asyncio.run(asyncio.wait_for(coro_factory(), timeout=SCHEDULER_AGENT_TIMEOUT))
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(asyncio.wait_for(coro_factory(), timeout=SCHEDULER_AGENT_TIMEOUT))
-        finally:
-            loop.close()
 
 
 def _format_scheduler_mcp_result(result: Any) -> Dict[str, Any]:
@@ -337,7 +307,7 @@ def _format_scheduler_mcp_result(result: Any) -> Dict[str, Any]:
     return {"reply": reply}
 
 
-def _call_scheduler_agent_chat_via_mcp(command: str) -> tuple[Dict[str, Any] | None, list[str]]:
+async def _call_scheduler_agent_chat_via_mcp(command: str) -> tuple[Dict[str, Any] | None, list[str]]:
     """Best-effort MCP call to the Scheduler Agent."""
 
     errors: list[str] = []
@@ -372,31 +342,32 @@ def _call_scheduler_agent_chat_via_mcp(command: str) -> tuple[Dict[str, Any] | N
                 return _format_scheduler_mcp_result(result)
 
     try:
-        return _run_scheduler_mcp_with_timeout(_call_tool), errors
+        result = await asyncio.wait_for(_call_tool(), timeout=SCHEDULER_AGENT_TIMEOUT)
+        return result, errors
     except Exception as exc:  # noqa: BLE001
         errors.append(f"{base}: {exc}")
         return None, errors
 
 
-def _call_scheduler_agent_chat_via_http(command: str) -> Dict[str, Any]:
+async def _call_scheduler_agent_chat_via_http(command: str) -> Dict[str, Any]:
     """Fallback HTTP call to Scheduler Agent chat endpoint."""
 
     payload = {"messages": [{"role": "user", "content": command}]}
-    return _post_scheduler_agent("/api/chat", payload)
+    return await _post_scheduler_agent("/api/chat", payload)
 
 
-def _call_scheduler_agent_chat(command: str) -> Dict[str, Any]:
+async def _call_scheduler_agent_chat(command: str) -> Dict[str, Any]:
     """Send a single-shot chat command to the Scheduler Agent via MCP with HTTP fallback."""
 
     mcp_result: Dict[str, Any] | None = None
     mcp_errors: list[str] = []
 
-    mcp_result, mcp_errors = _call_scheduler_agent_chat_via_mcp(command)
+    mcp_result, mcp_errors = await _call_scheduler_agent_chat_via_mcp(command)
     if mcp_result is not None:
         return mcp_result
 
     try:
-        return _call_scheduler_agent_chat_via_http(command)
+        return await _call_scheduler_agent_chat_via_http(command)
     except SchedulerAgentError as exc:
         if mcp_errors:
             message_lines = [str(exc), "MCP 経由での呼び出しも失敗しました:"]
@@ -408,7 +379,7 @@ def _call_scheduler_agent_chat(command: str) -> Dict[str, Any]:
         raise
 
 
-def _call_scheduler_agent_conversation_review(
+async def _call_scheduler_agent_conversation_review(
     conversation_history: List[Dict[str, str]],
 ) -> Dict[str, Any]:
     """Send recent conversation turns to the Scheduler Agent for analysis."""
@@ -416,12 +387,12 @@ def _call_scheduler_agent_conversation_review(
     mcp_result: Dict[str, Any] | None = None
     mcp_errors: list[str] = []
 
-    mcp_result, mcp_errors = _call_scheduler_agent_conversation_review_via_mcp(conversation_history)
+    mcp_result, mcp_errors = await _call_scheduler_agent_conversation_review_via_mcp(conversation_history)
     if mcp_result is not None:
         return mcp_result
 
     try:
-        return _post_scheduler_agent(
+        return await _post_scheduler_agent(
             "/api/conversations/review",
             {"history": conversation_history},
         )
@@ -454,7 +425,7 @@ def _parse_scheduler_history_mcp_result(result: Any) -> Dict[str, Any]:
     raise SchedulerAgentError("Scheduler Agent MCP analyze_conversation が空の応答を返しました。")
 
 
-def _call_scheduler_agent_conversation_review_via_mcp(
+async def _call_scheduler_agent_conversation_review_via_mcp(
     conversation_history: List[Dict[str, str]],
 ) -> tuple[Dict[str, Any] | None, list[str]]:
     """Best-effort MCP call for conversation review."""
@@ -492,7 +463,7 @@ def _call_scheduler_agent_conversation_review_via_mcp(
 
     for base in bases:
         try:
-            result = _run_scheduler_mcp_with_timeout(lambda: _call_tool(base))
+            result = await asyncio.wait_for(_call_tool(base), timeout=SCHEDULER_AGENT_TIMEOUT)
             return result, errors
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{base}: {exc}")
@@ -501,22 +472,22 @@ def _call_scheduler_agent_conversation_review_via_mcp(
     return None, errors
 
 
-def _fetch_calendar_data(year: int, month: int) -> Dict[str, Any]:
+async def _fetch_calendar_data(year: int, month: int) -> Dict[str, Any]:
     """Fetch calendar data from Scheduler Agent."""
-    return _call_scheduler_agent("/api/calendar", params={"year": year, "month": month})
+    return await _call_scheduler_agent("/api/calendar", params={"year": year, "month": month})
 
 
-def _fetch_day_view_data(date_str: str) -> Dict[str, Any]:
+async def _fetch_day_view_data(date_str: str) -> Dict[str, Any]:
     """Fetch day view data from Scheduler Agent."""
-    return _call_scheduler_agent(f"/api/day/{date_str}")
+    return await _call_scheduler_agent(f"/api/day/{date_str}")
 
 
-def _fetch_routines_data() -> Dict[str, Any]:
+async def _fetch_routines_data() -> Dict[str, Any]:
     """Fetch routines data from Scheduler Agent."""
-    return _call_scheduler_agent("/api/routines")
+    return await _call_scheduler_agent("/api/routines")
 
 
-def _submit_day_form(date_str: str, form_data: Any) -> None:
+async def _submit_day_form(date_str: str, form_data: Any) -> None:
     """Submit a day form (tasks/logs) to the Scheduler Agent without leaking its URL."""
 
     base = _get_first_scheduler_agent_base()
@@ -526,28 +497,30 @@ def _submit_day_form(date_str: str, form_data: Any) -> None:
     url = _build_scheduler_agent_url(base, f"/day/{date_str}")
 
     if hasattr(form_data, "to_dict"):
-        # Preserve multi-value fields if any
+        # Preserve multi-value fields if any (Flask/Werkzeug)
         payload: Dict[str, Iterable[str] | str] = form_data.to_dict(flat=False)  # type: ignore[assignment]
+    elif hasattr(form_data, "multi_items"):
+        payload = {}
+        for key, value in form_data.multi_items():  # type: ignore[attr-defined]
+            payload.setdefault(key, []).append(value)
     else:
         payload = dict(form_data or {})
 
+    timeout = httpx.Timeout(connect=SCHEDULER_AGENT_CONNECT_TIMEOUT, read=SCHEDULER_AGENT_TIMEOUT)
     try:
-        with _get_no_retry_session() as session:
-            response = session.post(
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            response = await client.post(
                 url,
                 data=payload,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
-                timeout=(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT),
-                allow_redirects=False,
             )
-    except requests.exceptions.RequestException as exc:  # pragma: no cover - network failure
+    except httpx.RequestError as exc:  # pragma: no cover - network failure
         raise ConnectionError(f"Failed to submit day form to Scheduler Agent at {url}: {exc}") from exc
 
     if response.status_code in {301, 302, 303, 307, 308}:
-        # Scheduler Agent responds with a redirect back to its own page; ignore and let the UI refresh locally.
         return
 
-    if not response.ok:
+    if not response.is_success:
         raise ConnectionError(
-            f"Scheduler Agent form submission failed: {response.status_code} {response.reason}"
+            f"Scheduler Agent form submission failed: {response.status_code} {response.reason_phrase}"
         )

@@ -1,20 +1,20 @@
 # Project Context: Polyphony
 
 ## Overview
-This project is **Polyphony** built with **Flask**, **LangGraph**, and **OpenAI**. It serves as an orchestrator that coordinates tasks across specialized agents:
+This project is **Polyphony** built with **FastAPI**, **LangGraph**, and **OpenAI**. It serves as an orchestrator that coordinates tasks across specialized agents:
 *   **Life-Style Agent** (Lifestyle/schedule management)
 *   **Browser Agent** (Web automation via Selenium/Playwright/etc.)
 *   **IoT Agent** (Smart home control)
 
-The core application is a Flask web server providing a Single Page Application (SPA) frontend and an SSE-based API for the orchestrator.
+The core application is a FastAPI web server providing a Single Page Application (SPA) frontend and an SSE-based API for the orchestrator.
 
 ## Architecture
-*   **Backend:** Python 3, Flask (Blueprint in `multi_agent_app`).
+*   **Backend:** Python 3, FastAPI (Router in `multi_agent_app`).
 *   **Orchestrator:** LangGraph based (`multi_agent_app/orchestrator.py`). It plans, executes, and reviews tasks.
 *   **Frontend:** Vanilla JS + HTML/CSS (`assets/`, `templates/`). No build step required.
 *   **Communication:**
     *   **Client-Server:** REST + Server-Sent Events (SSE).
-    *   **Inter-Agent:** HTTP requests (proxied by the Flask backend).
+    *   **Inter-Agent:** HTTP requests (proxied by the FastAPI backend).
 *   **State:**
     *   **Ephemeral:** `chat_history.json`, `short_term_memory.json`, `long_term_memory.json`. These are runtime artifacts and should generally be ignored in git commits.
     *   **Configuration:** `secrets.env` (API keys), Environment variables (Service URLs).
@@ -46,7 +46,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 # 3. Run the application (default port 5050)
-flask --app app run --debug --port 5050
+uvicorn app:app --host 0.0.0.0 --port 5050 --reload
 ```
 
 ### Docker
@@ -69,7 +69,7 @@ Important variables defined in `multi_agent_app/config.py` and `docker-compose.y
 *   `LIFESTYLE_API_BASE`: URL for the Life-Style Agent.
 *   `BROWSER_AGENT_API_BASE`: URL for the Browser Agent.
 *   `IOT_AGENT_API_BASE`: URL for the IoT Agent.
-*   `FLASK_DEBUG`: Set to "1" for debug mode.
+*   `UVICORN_RELOAD`: Set to "1" for auto-reload in development.
 
 ## Critical Instruction / 重要指示
 どれだけ時間とコストをかけてもよいので、確実に目標が達成されるようにしてほしい。

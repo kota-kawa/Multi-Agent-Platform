@@ -3,8 +3,8 @@
 <img src="assets/icons/Polyphony-Logo.png" width="800px">
 
 
-Flask と LangGraph を組み合わせ、計画・実行・レビューを行うマルチエージェントタスクをシングルページ UI へ逐次配信するリファレンススタックです。オーケストレーター、Browser/IoT/Life-Assistant ブリッジ、各種ダッシュボードを同梱しています。
-This project combines Flask and LangGraph to plan, execute, and review multi-agent tasks while streaming their progress to a single-page UI. It bundles the orchestrator, Browser/IoT/Life-Assistant bridges, and dashboards into one reference stack.
+FastAPI と LangGraph を組み合わせ、計画・実行・レビューを行うマルチエージェントタスクをシングルページ UI へ逐次配信するリファレンススタックです。オーケストレーター、Browser/IoT/Life-Assistant ブリッジ、各種ダッシュボードを同梱しています。
+This project combines FastAPI and LangGraph to plan, execute, and review multi-agent tasks while streaming their progress to a single-page UI. It bundles the orchestrator, Browser/IoT/Life-Assistant bridges, and dashboards into one reference stack.
 
 ## 目次 / Table of Contents
 1. 概要 / Overview
@@ -21,8 +21,8 @@ This project combines Flask and LangGraph to plan, execute, and review multi-age
 12. トラブルシューティング / Troubleshooting & Tips
 
 ## 概要 / Overview
-Polyphony は `multi_agent_app` Flask ブループリントを中心に、LangGraph + ChatOpenAI で動作するオーケストレーターと Browser/IoT/Life-Assistant ブリッジを提供します。`assets/` と `templates/` に格納された SPA がオーケストレーターイベントを可視化し、Browser Agent 埋め込み、IoT ウィジェット、共有チャット、メモリエディタを提供します。
-Polyphony exposes the `multi_agent_app` Flask blueprint that hosts a LangGraph + ChatOpenAI orchestrator plus Browser/IoT/Life-Assistant bridges. The SPA bundles in `assets/` and `templates/` mirror orchestrator events, embed the Browser Agent, and surface IoT widgets, shared chat, and memory editors.
+Polyphony は `multi_agent_app` FastAPI ルーターを中心に、LangGraph + ChatOpenAI で動作するオーケストレーターと Browser/IoT/Life-Assistant ブリッジを提供します。`assets/` と `templates/` に格納された SPA がオーケストレーターイベントを可視化し、Browser Agent 埋め込み、IoT ウィジェット、共有チャット、メモリエディタを提供します。
+Polyphony exposes the `multi_agent_app` FastAPI router that hosts a LangGraph + ChatOpenAI orchestrator plus Browser/IoT/Life-Assistant bridges. The SPA bundles in `assets/` and `templates/` mirror orchestrator events, embed the Browser Agent, and surface IoT widgets, shared chat, and memory editors.
 
 ## 特長 / Features
 - LangGraph 駆動の `MultiAgentOrchestrator` が `plan → execute → review` ループと SSE (`plan`, `before_execution`, `browser_init`, `execution_progress`, `after_execution`, `complete`) を提供します。
@@ -42,9 +42,9 @@ Polyphony exposes the `multi_agent_app` Flask blueprint that hosts a LangGraph +
 - `app.py` / `app_module.py` / `wsgi.py`: いずれも `multi_agent_app.create_app()` を呼び出す各種エントリポイントです。
 - `app.py`, `app_module.py`, `wsgi.py`: thin entry points that import `multi_agent_app.create_app()` for CLI/local/WSGI.
 - `multi_agent_app/__init__.py`: アプリケーションファクトリでテンプレート/アセットパスを配線し、ブループリントを登録します。
-- `multi_agent_app/__init__.py`: application factory wiring template/static paths and registering the blueprint.
-- `multi_agent_app/routes.py`: Flask ブループリント、SSE、Browser/IoT/Life-Assistant プロキシ、チャット履歴/メモリ API を定義します。
-- `multi_agent_app/routes.py`: defines the Flask blueprint, SSE endpoints, Browser/IoT/Life-Assistant proxies, and chat-history/memory APIs.
+- `multi_agent_app/__init__.py`: application factory wiring template/static paths and registering the router.
+- `multi_agent_app/routes.py`: FastAPI ルーター、SSE、Browser/IoT/Life-Assistant プロキシ、チャット履歴/メモリ API を定義します。
+- `multi_agent_app/routes.py`: defines the FastAPI router, SSE endpoints, Browser/IoT/Life-Assistant proxies, and chat-history/memory APIs.
 - `multi_agent_app/orchestrator.py`: LangGraph プランナー/実行/レビューワーとオーケストレータ状態 TypedDict を管理します。
 - `multi_agent_app/orchestrator.py`: houses the LangGraph planner/executor/reviewer and orchestrator state TypedDicts.
 - `multi_agent_app/browser.py`, `iot.py`, `lifestyle.py`, `scheduler.py`, `history.py`, `config.py`: 各エージェントブリッジ・上流ヘルパー・設定解析・タイムアウト定義です。
@@ -63,10 +63,10 @@ Polyphony exposes the `multi_agent_app` Flask blueprint that hosts a LangGraph +
 - `chat_history.json`, `short_term_memory.json`, `long_term_memory.json`: runtime data files; avoid noisy diffs.
 
 ## アーキテクチャ / Architecture
-### バックエンド (Flask + LangGraph)
-### Backend (Flask + LangGraph)
+### バックエンド (FastAPI + LangGraph)
+### Backend (FastAPI + LangGraph)
 - `create_app()` が `routes.py` のブループリントを公開し、SPA と JSON API を提供します。
-- `create_app()` exposes the blueprint from `routes.py`, serving the SPA and JSON APIs.
+- `create_app()` exposes the router from `routes.py`, serving the SPA and JSON APIs.
 - `MultiAgentOrchestrator` は LangGraph + `ChatOpenAI` を用い、`ORCHESTRATOR_MAX_TASKS` とエージェントオーバーライドを尊重してタスクを管理します。
 - `MultiAgentOrchestrator` uses LangGraph + `ChatOpenAI` to manage tasks while honoring `ORCHESTRATOR_MAX_TASKS` and agent overrides.
 - SSE エンドポイントがライフサイクルイベントをストリームし、UI はプラン/実行/レビューをリアルタイムに描画します。
@@ -114,10 +114,10 @@ Polyphony exposes the `multi_agent_app` Flask blueprint that hosts a LangGraph +
    Install dependencies.
 3. `secrets.env`（または `.env`）を用意し、`OPENAI_API_KEY` や必要なエージェント設定を追加します。
    Prepare `secrets.env` (or `.env`) with `OPENAI_API_KEY` and any agent overrides.
-4. 必要に応じて `export FLASK_DEBUG=1 FLASK_APP=app` を設定します。
-   Optionally export `FLASK_DEBUG=1 FLASK_APP=app`.
-5. `flask --app app run --debug --port 5050` を実行します。
-   Run `flask --app app run --debug --port 5050`.
+4. 必要に応じて `export UVICORN_RELOAD=1` を設定します。
+   Optionally export `UVICORN_RELOAD=1`.
+5. `uvicorn app:app --host 0.0.0.0 --port 5050 --reload` を実行します。
+   Run `uvicorn app:app --host 0.0.0.0 --port 5050 --reload`.
 6. ブラウザで http://localhost:5050 を開き、各ビューを操作します。
    Open http://localhost:5050 and explore each view.
 
@@ -190,22 +190,22 @@ Polyphony exposes the `multi_agent_app` Flask blueprint that hosts a LangGraph +
 ## テスト / Testing
 - 依存関係をインストール後、`pytest -q`（または `pytest`）を実行して主要ユースケースを確認します。
 - After installing dependencies, run `pytest -q` (or `pytest`) to validate core flows.
-- 外部 HTTP (`requests.request`) や LangChain クライアントはモックし、新機能追加時は `tests/` 以下にモジュール名と揃えたスイートを作成してください。
-- Mock external HTTP (`requests.request`) and LangChain clients; add suites under `tests/` mirroring module names when extending coverage.
+- 外部 HTTP (`httpx.AsyncClient`) や LangChain クライアントはモックし、新機能追加時は `tests/` 以下にモジュール名と揃えたスイートを作成してください。
+- Mock external HTTP (`httpx.AsyncClient`) and LangChain clients; add suites under `tests/` mirroring module names when extending coverage.
 - 失敗を見つけた場合は再現手順・期待値を README または PR で共有します。
 - Document failures with reproduction steps and expectations in the README or PR when necessary.
 
 ## トラブルシューティング / Troubleshooting & Tips
-- Flask 起動前に `secrets.env` が読み込まれているか確認し、`OPENAI_API_KEY` が欠けていると LangChain でエラーになります。
-- Ensure `secrets.env` loads before Flask starts; missing `OPENAI_API_KEY` causes LangChain errors.
+- FastAPI 起動前に `secrets.env` が読み込まれているか確認し、`OPENAI_API_KEY` が欠けていると LangChain でエラーになります。
+- Ensure `secrets.env` loads before FastAPI starts; missing `OPENAI_API_KEY` causes LangChain errors.
 - Browser/IoT サービスをリモートで動かす場合は DNS を確認するか、環境変数またはオーケストレータリクエストでホストを上書きします。
 - When Browser/IoT services run remotely, verify DNS or override hosts via env or orchestrator requests.
 - `app.py` のタイムアウト定数は実環境に合わせ、変更時は環境変数でトグルを公開してください。
 - Keep timeout constants in `app.py` aligned with deployments and expose new toggles via env before changing behavior.
 - SSE ペイロードやエージェントブリッジ契約を更新する際は、バックエンドと `assets/app.js` を同時に変更して UI の非同期を防ぎます。
 - Update backend helpers and `assets/app.js` together when changing SSE payloads or agent bridge contracts to avoid UI desyncs.
-- ブロードキャスト処理は `_send_recent_history_to_agents` のようにバックグラウンドスレッドを用いて Flask スレッドを塞がないようにします。
-- Use background threads (as `_send_recent_history_to_agents` does) to avoid blocking Flask request threads during broadcasts.
+- ブロードキャスト処理は `_send_recent_history_to_agents` のようにバックグラウンドスレッドを用いて FastAPI のイベントループを塞がないようにします。
+- Use background threads (as `_send_recent_history_to_agents` does) to avoid blocking the FastAPI event loop during broadcasts.
 
 ## License
 This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.

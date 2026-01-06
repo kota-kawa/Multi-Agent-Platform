@@ -6,7 +6,7 @@ services:
     environment:
       LIFESTYLE_API_BASE: "http://lifestyle_agent:5000"
       BROWSER_AGENT_API_BASE: "http://browser-agent:5005"
-      FLASK_DEBUG: "1"
+      UVICORN_RELOAD: "1"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

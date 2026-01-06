@@ -6,6 +6,7 @@ import json
 import os
 import logging
 import threading
+import asyncio
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -28,6 +29,15 @@ _LEGACY_CHAT_HISTORY_PATHS = [Path("instance/chat_history.json")]
 _SHORT_TO_LONG_THRESHOLD = 3
 _short_updates_since_last_long = 0
 _short_update_lock = threading.Lock()
+
+
+def _run_async_history_sync(history: List[Dict[str, str]]) -> None:
+    """Run async history sync logic in a background thread."""
+
+    try:
+        asyncio.run(_send_recent_history_to_agents(history))
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Async history sync failed: %s", exc)
 
 
 def _load_chat_history(prefer_fallback: bool = True) -> tuple[List[Dict[str, Any]], Path]:
@@ -271,7 +281,7 @@ def _consolidate_short_into_long(recent_history: List[Dict[str, str]]) -> None:
         logging.warning("Short->Long consolidation failed: %s", exc)
 
 
-def _handle_agent_responses(
+async def _handle_agent_responses(
     responses: Dict[str, Dict[str, Any]],
     normalized_history: List[Dict[str, str]],
     had_reply: bool,
@@ -364,7 +374,7 @@ def _handle_agent_responses(
         _append_agent_reply("Orchestrator", "了解です。今のところ追加のアクションは不要です。")
         return
 
-    availability = get_agent_availability()
+    availability = await get_agent_availability()
     for request in action_requests:
         agent = request.get("agent")
         kind = request.get("kind")
@@ -374,7 +384,7 @@ def _handle_agent_responses(
             if kind == "browser_task":
                 if not availability.get("browser", True):
                     continue
-                result = _call_browser_agent_chat(description)
+                result = await _call_browser_agent_chat(description)
                 summary = result.get("run_summary") if isinstance(result, dict) else None
                 message = summary or f"ブラウザエージェントに依頼しました: {description}"
             elif kind == "iot_commands":
@@ -382,14 +392,14 @@ def _handle_agent_responses(
                     continue
                 # Send a concise command to IoT agent chat; IoT agent will interpret.
                 prompt = f"以下のIoTアクションを実行してください: {description}"
-                result = _call_iot_agent_command(prompt)
+                result = await _call_iot_agent_command(prompt)
                 message = result.get("reply") if isinstance(result, dict) else None
                 if not message:
                     message = f"IoT Agentに実行を依頼しました: {description}"
             elif kind == "lifestyle_query":
                 if not availability.get("lifestyle", True):
                     continue
-                result = _call_lifestyle(
+                result = await _call_lifestyle(
                     "/agent_rag_answer",
                     method="POST",
                     payload={"question": description},
@@ -409,7 +419,7 @@ def _handle_agent_responses(
             _append_agent_reply("Orchestrator", f"{agent} への依頼中に予期しないエラーが発生しました: {exc}")
 
 
-def _send_recent_history_to_agents(history: List[Dict[str, str]]) -> None:
+async def _send_recent_history_to_agents(history: List[Dict[str, str]]) -> None:
     """Send the last 5 chat history entries to all agents and capture any replies."""
 
     recent_history = history[-5:]
@@ -430,10 +440,10 @@ def _send_recent_history_to_agents(history: List[Dict[str, str]]) -> None:
     response_order: List[str] = []
     had_reply = False
 
-    availability = get_agent_availability()
+    availability = await get_agent_availability()
     if availability.get("lifestyle", True):
         try:
-            lifestyle_response = _call_lifestyle(
+            lifestyle_response = await _call_lifestyle(
                 "/analyze_conversation",
                 method="POST",
                 payload=payload,
@@ -447,7 +457,7 @@ def _send_recent_history_to_agents(history: List[Dict[str, str]]) -> None:
     global _browser_history_supported
     if _browser_history_supported and availability.get("browser", True):
         try:
-            browser_response = _call_browser_agent_history_check(normalized_history)
+            browser_response = await _call_browser_agent_history_check(normalized_history)
             responses["Browser"] = browser_response if isinstance(browser_response, dict) else {}
             had_reply = _extract_reply("Browser", browser_response) or had_reply
             response_order.append("Browser")
@@ -463,7 +473,7 @@ def _send_recent_history_to_agents(history: List[Dict[str, str]]) -> None:
 
     if availability.get("iot", True):
         try:
-            iot_response = _call_iot_agent_conversation_review(normalized_history)
+            iot_response = await _call_iot_agent_conversation_review(normalized_history)
             responses["IoT"] = iot_response if isinstance(iot_response, dict) else {}
             had_reply = _extract_reply("IoT", iot_response) or had_reply
             response_order.append("IoT")
@@ -472,14 +482,14 @@ def _send_recent_history_to_agents(history: List[Dict[str, str]]) -> None:
 
     if availability.get("scheduler", True):
         try:
-            scheduler_response = _call_scheduler_agent_conversation_review(normalized_history)
+            scheduler_response = await _call_scheduler_agent_conversation_review(normalized_history)
             responses["Scheduler"] = scheduler_response if isinstance(scheduler_response, dict) else {}
             had_reply = _extract_reply("Scheduler", scheduler_response) or had_reply
             response_order.append("Scheduler")
         except SchedulerAgentError as e:
             logging.warning("Error sending history to scheduler agent: %s", e)
 
-    _handle_agent_responses(responses, normalized_history, had_reply, response_order)
+    await _handle_agent_responses(responses, normalized_history, had_reply, response_order)
 
 
 def _append_to_chat_history(
@@ -513,7 +523,7 @@ def _append_to_chat_history(
     if broadcast and total_entries % 5 == 0:
         memory_settings = load_memory_settings()
         if memory_settings.get("history_sync_enabled", True):
-            threading.Thread(target=_send_recent_history_to_agents, args=(history,)).start()
+            threading.Thread(target=_run_async_history_sync, args=(history,)).start()
 
     # Short-term memory: refresh every turn using the latest few lines as context
     threading.Thread(target=_refresh_memory, args=("short", history[-6:])).start()
