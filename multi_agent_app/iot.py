@@ -158,19 +158,19 @@ async def _fetch_iot_model_selection() -> Dict[str, str] | None:
                 logging.info("IoT model sync attempt to %s returned invalid JSON", url)
                 continue
 
-        current = payload.get("current") if isinstance(payload, dict) else None
-        if not isinstance(current, dict):
-            logging.info("IoT model sync attempt to %s missing current selection", url)
-            continue
+            current = payload.get("current") if isinstance(payload, dict) else None
+            if not isinstance(current, dict):
+                logging.info("IoT model sync attempt to %s missing current selection", url)
+                continue
 
-        provider = str(current.get("provider") or "").strip()
-        model = str(current.get("model") or "").strip()
-        base_url = str(current.get("base_url") or "").strip()
-        if not provider or not model:
-            logging.info("IoT model sync attempt to %s missing provider/model", url)
-            continue
+            provider = str(current.get("provider") or "").strip()
+            model = str(current.get("model") or "").strip()
+            base_url = str(current.get("base_url") or "").strip()
+            if not provider or not model:
+                logging.info("IoT model sync attempt to %s missing provider/model", url)
+                continue
 
-        return {"provider": provider, "model": model, "base_url": base_url}
+            return {"provider": provider, "model": model, "base_url": base_url}
 
     return None
 

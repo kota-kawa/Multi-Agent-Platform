@@ -26,6 +26,14 @@ _scheduler_agent_preferred_base: str | None = None
 _host_failure_cache: Dict[str, float] = {}
 _HOST_FAILURE_COOLDOWN = 60.0  # seconds
 
+def _scheduler_timeout(connect_timeout: float | None, read_timeout: float | None) -> httpx.Timeout:
+    return httpx.Timeout(
+        connect=connect_timeout,
+        read=read_timeout,
+        write=read_timeout,
+        pool=connect_timeout,
+    )
+
 def _is_host_down(base_url: str) -> bool:
     """Check if the host is marked as down in the cache."""
     last_failure = _host_failure_cache.get(base_url)
@@ -123,7 +131,7 @@ async def _proxy_scheduler_agent_request(request: Request, path: str) -> Respons
     if not candidates:
         candidates = bases
 
-    timeout = httpx.Timeout(connect=SCHEDULER_AGENT_CONNECT_TIMEOUT, read=SCHEDULER_AGENT_TIMEOUT)
+    timeout = _scheduler_timeout(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT)
     async with httpx.AsyncClient(timeout=timeout) as client:
         for base in candidates:
             url = _build_scheduler_agent_url(base, path)
@@ -188,7 +196,7 @@ async def _fetch_scheduler_model_selection() -> Dict[str, str] | None:
     if not candidates:
         candidates = bases
 
-    timeout = httpx.Timeout(connect=SCHEDULER_MODEL_SYNC_CONNECT_TIMEOUT, read=SCHEDULER_MODEL_SYNC_TIMEOUT)
+    timeout = _scheduler_timeout(SCHEDULER_MODEL_SYNC_CONNECT_TIMEOUT, SCHEDULER_MODEL_SYNC_TIMEOUT)
     async with httpx.AsyncClient(timeout=timeout) as client:
         for base in candidates:
             url = _build_scheduler_agent_url(base, "/api/models")
@@ -240,7 +248,7 @@ async def _call_scheduler_agent(path: str, method: str = "GET", params: Dict[str
     
     headers = {"X-Platform-Propagation": "1"}  # Propagate a header if needed for agent logic
 
-    timeout = httpx.Timeout(connect=SCHEDULER_AGENT_CONNECT_TIMEOUT, read=SCHEDULER_AGENT_TIMEOUT)
+    timeout = _scheduler_timeout(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT)
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.request(method, url, params=params, headers=headers)
@@ -266,7 +274,7 @@ async def _post_scheduler_agent(path: str, payload: Dict[str, Any], *, method: s
     url = _build_scheduler_agent_url(base, path)
     headers = {"Content-Type": "application/json", "X-Platform-Propagation": "1"}
 
-    timeout = httpx.Timeout(connect=SCHEDULER_AGENT_CONNECT_TIMEOUT, read=SCHEDULER_AGENT_TIMEOUT)
+    timeout = _scheduler_timeout(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT)
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.request(method, url, json=payload, headers=headers)
@@ -506,7 +514,7 @@ async def _submit_day_form(date_str: str, form_data: Any) -> None:
     else:
         payload = dict(form_data or {})
 
-    timeout = httpx.Timeout(connect=SCHEDULER_AGENT_CONNECT_TIMEOUT, read=SCHEDULER_AGENT_TIMEOUT)
+    timeout = _scheduler_timeout(SCHEDULER_AGENT_CONNECT_TIMEOUT, SCHEDULER_AGENT_TIMEOUT)
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             response = await client.post(

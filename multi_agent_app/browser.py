@@ -51,7 +51,12 @@ def _running_inside_container() -> bool:
 
 
 def _browser_agent_timeout(read_timeout: float | None) -> httpx.Timeout:
-    return httpx.Timeout(connect=BROWSER_AGENT_CONNECT_TIMEOUT, read=read_timeout)
+    return httpx.Timeout(
+        connect=BROWSER_AGENT_CONNECT_TIMEOUT,
+        read=read_timeout,
+        write=read_timeout,
+        pool=BROWSER_AGENT_CONNECT_TIMEOUT,
+    )
 
 
 def _expand_browser_agent_base(base: str) -> Iterable[str]:
