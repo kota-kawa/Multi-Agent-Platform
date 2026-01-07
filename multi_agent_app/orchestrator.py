@@ -402,7 +402,7 @@ class MultiAgentOrchestrator:
 
         try:
             response = await asyncio.to_thread(self._llm.invoke, messages)
-            review_text = self._extract_text(response.content)
+            review_text = self._extract_text(response)
             review_data = self._parse_plan(review_text)
         except (OrchestratorError, Exception) as exc:  # noqa: BLE001
             logging.warning("Review LLM call failed, defaulting to 'ok': %s", exc)
@@ -494,7 +494,7 @@ class MultiAgentOrchestrator:
 
         history_for_prompt = state.get("session_history") or []
         if not history_for_prompt:
-            history_for_prompt = self._history_from_last_user_turn(self._load_recent_chat_history(limit=10))
+            history_for_prompt = self._history_from_last_user_turn(self._load_recent_chat_history(limit=20))
         history_entries = self._normalise_history_entries(history_for_prompt)
         history_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history_entries])
 
@@ -525,8 +525,7 @@ class MultiAgentOrchestrator:
         for attempt in range(3):
             try:
                 response = await asyncio.to_thread(self._llm.invoke, messages)
-                raw_content = response.content
-                plan_text = self._extract_text(raw_content)
+                plan_text = self._extract_text(response)
                 last_plan_text = plan_text
                 plan_data = self._parse_plan(plan_text)
                 break
@@ -591,20 +590,42 @@ class MultiAgentOrchestrator:
         return {"executions": executions, "current_index": index + 1, "tasks": tasks}
 
     def _extract_text(self, content: Any) -> str:
+        if content is None:
+            return ""
         if isinstance(content, str):
             return content
+        text_attr = getattr(content, "text", None)
+        if isinstance(text_attr, str):
+            return text_attr
+        content_blocks = getattr(content, "content_blocks", None)
+        if isinstance(content_blocks, list):
+            return self._extract_text(content_blocks)
+        if hasattr(content, "content"):
+            return self._extract_text(getattr(content, "content"))
         if isinstance(content, list):
             pieces: list[str] = []
             for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    text = item.get("text")
-                    if isinstance(text, str):
+                if isinstance(item, str):
+                    pieces.append(item)
+                    continue
+                if isinstance(item, dict):
+                    block_type = item.get("type") or item.get("block_type")
+                    text = item.get("text") or item.get("output_text") or item.get("content")
+                    if isinstance(text, str) and (block_type in {None, "text", "output_text"} or "text" in item):
                         pieces.append(text)
+                    continue
+                item_text = getattr(item, "text", None)
+                if isinstance(item_text, str):
+                    pieces.append(item_text)
             return "".join(pieces)
         if isinstance(content, dict):
             # Avoid Python repr (single quotes) which breaks JSON parsing
-            if isinstance(content.get("content"), str):
-                return content["content"]
+            for key in ("text", "output_text", "content"):
+                value = content.get(key)
+                if isinstance(value, str):
+                    return value
+            if "content" in content:
+                return self._extract_text(content["content"])
             try:
                 return json.dumps(content, ensure_ascii=False)
             except Exception:  # noqa: BLE001
@@ -961,7 +982,7 @@ class MultiAgentOrchestrator:
 
         try:
             response = await asyncio.to_thread(self._llm.invoke, messages)
-            text = self._extract_text(response.content)
+            text = self._extract_text(response)
             data = self._parse_plan(text)
         except Exception as exc:  # noqa: BLE001
             logging.warning("Actionability check failed for %s: %s", agent, exc)
@@ -1587,7 +1608,7 @@ class MultiAgentOrchestrator:
 
         if log_history:
             _append_to_chat_history("user", user_input, broadcast=True)
-            loaded_history = self._load_recent_chat_history(limit=10)
+            loaded_history = self._load_recent_chat_history(limit=20)
             session_history = self._history_from_last_user_turn(loaded_history)
             if not session_history or session_history[-1].get("content") != user_input:
                 session_history.append({"role": "user", "content": user_input})

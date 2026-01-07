@@ -247,18 +247,46 @@ def _normalise_history(conversation: List[Dict[str, Any]]) -> List[Dict[str, str
 def _extract_text(content: Any) -> str:
     """Normalise LangChain response content to plain text."""
 
+    if content is None:
+        return ""
     if isinstance(content, str):
         return content
+    text_attr = getattr(content, "text", None)
+    if isinstance(text_attr, str):
+        return text_attr
+    content_blocks = getattr(content, "content_blocks", None)
+    if isinstance(content_blocks, list):
+        return _extract_text(content_blocks)
+    if hasattr(content, "content"):
+        return _extract_text(getattr(content, "content"))
     if isinstance(content, list):
         pieces: list[str] = []
         for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
-                text = item.get("text")
-                if isinstance(text, str):
+            if isinstance(item, str):
+                pieces.append(item)
+                continue
+            if isinstance(item, dict):
+                block_type = item.get("type") or item.get("block_type")
+                text = item.get("text") or item.get("output_text") or item.get("content")
+                if isinstance(text, str) and (block_type in {None, "text", "output_text"} or "text" in item):
                     pieces.append(text)
+                continue
+            item_text = getattr(item, "text", None)
+            if isinstance(item_text, str):
+                pieces.append(item_text)
         return "".join(pieces)
-    if isinstance(content, dict) and isinstance(content.get("content"), str):
-        return content["content"]
+    if isinstance(content, dict):
+        for key in ("text", "output_text", "content"):
+            value = content.get(key)
+            if isinstance(value, str):
+                return value
+        if "content" in content:
+            return _extract_text(content["content"])
+        try:
+            return json.dumps(content, ensure_ascii=False)
+        except Exception:  # noqa: BLE001
+            return str(content)
+    return str(content)
 
 
 def _strip_manual_marker(line: str) -> str:
@@ -943,7 +971,7 @@ class MemoryManager:
                     HumanMessage(content="上記の指示に従い、MemoryDiff JSON だけを返してください。"),
                 ]
             )
-            response_text = _extract_text(response.content).strip()
+            response_text = _extract_text(response).strip()
             diff = _coerce_memory_diff(response_text)
         except Exception as exc:  # noqa: BLE001
             logging.warning("Memory consolidation failed to parse LLM output: %s", exc)

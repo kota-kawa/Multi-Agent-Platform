@@ -451,6 +451,72 @@ def _init_iot_llm() -> Any:
         )
 
 
+def _normalise_tool_call(tool_call: Any) -> tuple[str | None, Dict[str, Any]]:
+    """Normalise tool call payloads across LangChain versions."""
+
+    name = None
+    args: Any = {}
+    if isinstance(tool_call, dict):
+        name = tool_call.get("name")
+        args = tool_call.get("args")
+    else:
+        name = getattr(tool_call, "name", None)
+        args = getattr(tool_call, "args", None)
+        if args is None:
+            args = getattr(tool_call, "arguments", None)
+
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            args = {}
+    if not isinstance(args, dict):
+        args = {}
+
+    return name, args
+
+
+def _extract_llm_text(message: Any) -> str:
+    """Extract text content from an LLM response across message formats."""
+
+    if message is None:
+        return ""
+    text_attr = getattr(message, "text", None)
+    if isinstance(text_attr, str):
+        return text_attr
+    content_blocks = getattr(message, "content_blocks", None)
+    if isinstance(content_blocks, list):
+        parts: list[str] = []
+        for block in content_blocks:
+            block_text = getattr(block, "text", None)
+            if isinstance(block_text, str):
+                parts.append(block_text)
+            elif isinstance(block, dict):
+                text = block.get("text") or block.get("output_text") or block.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    content = getattr(message, "content", message)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("output_text") or item.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+                continue
+            item_text = getattr(item, "text", None)
+            if isinstance(item_text, str):
+                parts.append(item_text)
+        return "".join(parts)
+    return str(content)
+
+
 async def _execute_via_mcp(command: str, base_url: str) -> Dict[str, Any]:
     """Execute the command using MCP tools and a local LLM."""
 
@@ -509,9 +575,9 @@ async def _execute_via_mcp(command: str, base_url: str) -> Dict[str, Any]:
 
             tool_calls = getattr(response, "tool_calls", None) or []
             if tool_calls:
-                tool_call = tool_calls[0]
-                tool_name = tool_call["name"]
-                tool_args = tool_call["args"]
+                tool_name, tool_args = _normalise_tool_call(tool_calls[0])
+                if not tool_name:
+                    raise IotAgentError("IoT LLM のツール呼び出しに tool 名が含まれていません。")
                 logging.info("Executing MCP tool %s with args %s", tool_name, tool_args)
 
                 try:
@@ -530,10 +596,8 @@ async def _execute_via_mcp(command: str, base_url: str) -> Dict[str, Any]:
                 return {"reply": final_reply or "ツールは結果を返しましたが空のレスポンスでした。"}
 
             # No tool called; bubble the model content back.
-            content = response.content
-            if isinstance(content, str):
-                return {"reply": content}
-            return {"reply": str(content)}
+            reply_text = _extract_llm_text(response).strip()
+            return {"reply": reply_text or "IoT エージェントからの応答が空でした。"}
 
 
 async def _execute_via_http_chat(command: str, base_url: str) -> Dict[str, Any]:
