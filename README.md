@@ -1,6 +1,6 @@
-# Polyphony 
+# Symphony Agent Conductor
 
-<img src="assets/icons/Polyphony-Logo.png" width="800px">
+<img src="assets/icons/Symphony Agent Conductor.png" width="800px">
 
 
 FastAPI と LangGraph を組み合わせ、計画・実行・レビューを行うマルチエージェントタスクをシングルページ UI へ逐次配信するリファレンススタックです。オーケストレーター、Browser/IoT/Life-Assistant ブリッジ、各種ダッシュボードを同梱しています。
@@ -21,8 +21,8 @@ This project combines FastAPI and LangGraph to plan, execute, and review multi-a
 12. トラブルシューティング / Troubleshooting & Tips
 
 ## 概要 / Overview
-Polyphony は `multi_agent_app` FastAPI ルーターを中心に、LangGraph + ChatOpenAI で動作するオーケストレーターと Browser/IoT/Life-Assistant ブリッジを提供します。`assets/` と `templates/` に格納された SPA がオーケストレーターイベントを可視化し、Browser Agent 埋め込み、IoT ウィジェット、共有チャット、メモリエディタを提供します。
-Polyphony exposes the `multi_agent_app` FastAPI router that hosts a LangGraph + ChatOpenAI orchestrator plus Browser/IoT/Life-Assistant bridges. The SPA bundles in `assets/` and `templates/` mirror orchestrator events, embed the Browser Agent, and surface IoT widgets, shared chat, and memory editors.
+Symphony Agent Conductor は `multi_agent_app` FastAPI ルーターを中心に、LangGraph + ChatOpenAI で動作するオーケストレーターと Browser/IoT/Life-Assistant ブリッジを提供します。`assets/` と `templates/` に格納された SPA がオーケストレーターイベントを可視化し、Browser Agent 埋め込み、IoT ウィジェット、共有チャット、メモリエディタを提供します。
+Symphony Agent Conductor exposes the `multi_agent_app` FastAPI router that hosts a LangGraph + ChatOpenAI orchestrator plus Browser/IoT/Life-Assistant bridges. The SPA bundles in `assets/` and `templates/` mirror orchestrator events, embed the Browser Agent, and surface IoT widgets, shared chat, and memory editors.
 
 ## 特長 / Features
 - LangGraph 駆動の `MultiAgentOrchestrator` が `plan → execute → review` ループと SSE (`plan`, `before_execution`, `browser_init`, `execution_progress`, `after_execution`, `complete`) を提供します。
