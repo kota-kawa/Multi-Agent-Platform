@@ -1,4 +1,4 @@
-"""Configuration helpers and constants for Polyphony."""
+"""Configuration helpers and constants for Symphony."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""FastAPI router and HTTP routes for Polyphony."""
+"""FastAPI router and HTTP routes for Symphony."""
 
 from __future__ import annotations
 

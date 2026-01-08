@@ -1,4 +1,4 @@
-"""Application entrypoint for Polyphony."""
+"""Application entrypoint for Symphony."""
 
 from __future__ import annotations
 

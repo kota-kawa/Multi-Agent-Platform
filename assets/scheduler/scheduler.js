@@ -232,7 +232,7 @@ async function refreshView(modifiedIds) {
   if (currentPath === '/scheduler-ui') { // Only for main calendar view
       try {
           const separator = search ? '&' : '?';
-          // Call Polyphony's partial calendar route
+          // Call Symphony's partial calendar route
           const url = `/scheduler-ui/calendar_partial${search}${separator}t=${timestamp}`;
           
           const res = await fetch(url);
@@ -256,7 +256,7 @@ async function refreshView(modifiedIds) {
   if (currentPath.startsWith('/scheduler-ui/day/')) {
       // Refresh Timeline
       try {
-          // Call Polyphony's partial timeline route
+          // Call Symphony's partial timeline route
           const url = `${currentPath}/timeline${search ? search + '&' : '?'}t=${timestamp}`;
           
           const res = await fetch(url);
@@ -276,7 +276,7 @@ async function refreshView(modifiedIds) {
 
       // Refresh Daily Log
       try {
-          // Call Polyphony's partial log route
+          // Call Symphony's partial log route
           const url = `${currentPath}/log_partial${search ? search + '&' : '?'}t=${timestamp}`;
           
           const res = await fetch(url);

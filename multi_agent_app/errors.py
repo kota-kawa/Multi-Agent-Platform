@@ -1,4 +1,4 @@
-"""Custom exception classes used throughout Polyphony."""
+"""Custom exception classes used throughout Symphony."""
 
 from __future__ import annotations
 

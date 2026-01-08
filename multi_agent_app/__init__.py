@@ -1,4 +1,4 @@
-"""Application factory for Polyphony (FastAPI)."""
+"""Application factory for Symphony (FastAPI)."""
 
 from __future__ import annotations
 

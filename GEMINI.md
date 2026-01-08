@@ -1,7 +1,7 @@
-# Project Context: Polyphony
+# Project Context: Symphony
 
 ## Overview
-This project is **Polyphony** built with **FastAPI**, **LangGraph**, and **OpenAI**. It serves as an orchestrator that coordinates tasks across specialized agents:
+This project is **Symphony** built with **FastAPI**, **LangGraph**, and **OpenAI**. It serves as an orchestrator that coordinates tasks across specialized agents:
 *   **Life-Style Agent** (Lifestyle/schedule management)
 *   **Browser Agent** (Web automation via Selenium/Playwright/etc.)
 *   **IoT Agent** (Smart home control)
