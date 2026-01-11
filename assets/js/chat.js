@@ -69,6 +69,8 @@ const orchestratorBrowserMirrorState = {
   useSseFallback: false,
   messages: new Map(),
   placeholder: null,
+  fallbackTimer: null,
+  lastProgressAt: 0,
 };
 
 function clearOrchestratorBrowserMirrorMessages({ preserve } = {}) {
@@ -623,6 +625,11 @@ function resetOrchestratorBrowserMirror() {
   orchestratorBrowserMirrorState.useSseFallback = false;
   orchestratorBrowserMirrorState.messages.clear();
   orchestratorBrowserMirrorState.placeholder = null;
+  orchestratorBrowserMirrorState.lastProgressAt = 0;
+  if (orchestratorBrowserMirrorState.fallbackTimer) {
+    clearTimeout(orchestratorBrowserMirrorState.fallbackTimer);
+    orchestratorBrowserMirrorState.fallbackTimer = null;
+  }
 }
 
 function startOrchestratorBrowserMirror({ placeholder = null } = {}) {
@@ -630,6 +637,11 @@ function startOrchestratorBrowserMirror({ placeholder = null } = {}) {
   orchestratorBrowserMirrorState.useSseFallback = true;
   orchestratorBrowserMirrorState.messages.clear();
   orchestratorBrowserMirrorState.placeholder = placeholder || null;
+  orchestratorBrowserMirrorState.lastProgressAt = 0;
+  if (orchestratorBrowserMirrorState.fallbackTimer) {
+    clearTimeout(orchestratorBrowserMirrorState.fallbackTimer);
+    orchestratorBrowserMirrorState.fallbackTimer = null;
+  }
 }
 
 function stopOrchestratorBrowserMirror() {
@@ -638,6 +650,17 @@ function stopOrchestratorBrowserMirror() {
 
 function disableOrchestratorBrowserMirrorFallback() {
   orchestratorBrowserMirrorState.useSseFallback = false;
+  orchestratorBrowserMirrorState.lastProgressAt = Date.now();
+  if (orchestratorBrowserMirrorState.fallbackTimer) {
+    clearTimeout(orchestratorBrowserMirrorState.fallbackTimer);
+  }
+  orchestratorBrowserMirrorState.fallbackTimer = setTimeout(() => {
+    if (!orchestratorBrowserMirrorState.active) return;
+    const now = Date.now();
+    if (now - orchestratorBrowserMirrorState.lastProgressAt >= 1800) {
+      orchestratorBrowserMirrorState.useSseFallback = true;
+    }
+  }, 2000);
 }
 
 function mirrorBrowserMessageToOrchestrator(message) {

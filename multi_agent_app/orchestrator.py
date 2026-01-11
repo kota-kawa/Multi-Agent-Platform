@@ -1663,6 +1663,7 @@ class MultiAgentOrchestrator:
         stream_failed = stream_pre_failed
         chat_finished = False
         chat_finished_at: float | None = None
+        chat_indicates_running = False
         history_poll_summary = ""
         stream_has_new_message = False
         chat_has_new_messages = False
@@ -1680,6 +1681,8 @@ class MultiAgentOrchestrator:
                     if chat_finished and (stream_finished or stream_failed):
                         break
                     if chat_finished and not stream_finished and not stream_failed:
+                        if chat_indicates_running:
+                            continue
                         if chat_finished_at is None:
                             chat_finished_at = time.monotonic()
                         elif time.monotonic() - chat_finished_at > 5.0:
@@ -1758,7 +1761,12 @@ class MultiAgentOrchestrator:
                 elif kind == "chat_result":
                     chat_result = item.get("data") or {}
                     chat_finished = True
-                    chat_finished_at = chat_finished_at or time.monotonic()
+                    if isinstance(chat_result, dict):
+                        chat_indicates_running = bool(chat_result.get("agent_running"))
+                    else:
+                        chat_indicates_running = False
+                    if not chat_indicates_running:
+                        chat_finished_at = chat_finished_at or time.monotonic()
                     chat_messages = chat_result.get("messages") if isinstance(chat_result, dict) else None
                     chat_last_id = self._latest_message_id(chat_messages)
                     if chat_last_id > baseline_last_id:
