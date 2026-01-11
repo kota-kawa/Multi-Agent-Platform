@@ -338,12 +338,12 @@ class MultiAgentOrchestrator:
 
     def _build_graph(self) -> Any:
         graph: StateGraph[OrchestratorState] = StateGraph(OrchestratorState)
-        graph.add_node("plan", self._plan_node_sync)
+        graph.add_node("plan", self._plan_node_graph_sync)
         graph.add_node("execute", self._execute_node_sync)
         graph.add_node("review", self._review_node_sync)
-        graph.add_edge("plan", "execute")
+        graph.add_conditional_edges("plan", self._plan_or_end, {"execute": "execute", "end": END})
         graph.add_edge("execute", "review")
-        graph.add_conditional_edges("review", self._continue_or_end, {"continue": "execute", "end": END})
+        graph.add_edge("review", "plan")
         graph.set_entry_point("plan")
         return graph.compile()
 
@@ -365,6 +365,10 @@ class MultiAgentOrchestrator:
     def _plan_node_sync(self, state: OrchestratorState, *, incremental: bool = False) -> OrchestratorState:
         return self._run_async(self._plan_node(state, incremental=incremental))
 
+    def _plan_node_graph_sync(self, state: OrchestratorState) -> OrchestratorState:
+        incremental = bool(state.get("executions"))
+        return self._run_async(self._plan_node(state, incremental=incremental))
+
     def _execute_node_sync(self, state: OrchestratorState) -> OrchestratorState:
         return self._run_async(self._execute_node(state))
 
@@ -375,6 +379,10 @@ class MultiAgentOrchestrator:
         tasks = state.get("tasks") or []
         index = state.get("current_index", 0)
         return "continue" if index < len(tasks) else "end"
+
+    def _plan_or_end(self, state: OrchestratorState) -> str:
+        tasks = state.get("tasks") or []
+        return "execute" if tasks else "end"
 
     async def _review_node(self, state: OrchestratorState) -> OrchestratorState:
         executions = list(state.get("executions") or [])
@@ -930,6 +938,15 @@ class MultiAgentOrchestrator:
             "finalized": False,
         }
 
+    def _execution_error_result(self, agent: str, command: str, error: Exception) -> ExecutionResult:
+        return {
+            "agent": agent,
+            "command": command,
+            "status": "error",
+            "response": None,
+            "error": str(error),
+        }
+
     def _iot_action_is_clear(self, command: str) -> bool:
         """Heuristic to decide if an IoT command is actionable without clarification."""
 
@@ -1021,152 +1038,142 @@ class MultiAgentOrchestrator:
         agent = task["agent"]
         command = task["command"]
 
-        clarification = await self._maybe_request_clarification(task)
-        if clarification is not None:
-            return clarification
+        try:
+            clarification = await self._maybe_request_clarification(task)
+            if clarification is not None:
+                return clarification
 
-        availability = await get_agent_availability()
-        if not availability.get(agent, True):
-            agent_label = self._AGENT_DISPLAY_NAMES.get(agent, agent)
-            return {
-                "agent": agent,
-                "command": command,
-                "status": "success",
-                "response": f"{agent_label} に接続できないため、このタスクはスキップしました。",
-                "error": None,
-                "finalized": True,
-            }
-
-        if agent == "lifestyle":
-            try:
-                data = await _call_lifestyle("/agent_rag_answer", method="POST", payload={"question": command})
-            except LifestyleAPIError as exc:
+            availability = await get_agent_availability()
+            if not availability.get(agent, True):
+                agent_label = self._AGENT_DISPLAY_NAMES.get(agent, agent)
                 return {
                     "agent": agent,
-                    "command": command,
-                    "status": "error",
-                    "response": None,
-                    "error": str(exc),
-                }
-            answer = str(data.get("answer") or "").strip() or "Life-Styleエージェントから回答が得られませんでした。"
-            return {
-                "agent": agent,
-                "command": command,
-                "status": "success",
-                "response": answer,
-                "error": None,
-            }
-
-        if agent == "browser":
-            try:
-                data = await _call_browser_agent_chat(command)
-            except BrowserAgentError as exc:
-                return self._browser_error_result(command, exc)
-            # agent-relay returns synchronous results, no need for additional polling
-            return self._browser_result_from_payload(command, data, fallback_summary="")
-
-        if agent == "iot":
-            try:
-                data = await _call_iot_agent_command(command)
-            except IotAgentError as exc:
-                return {
-                    "agent": agent,
-                    "command": command,
-                    "status": "error",
-                    "response": None,
-                    "error": str(exc),
-                }
-            reply = str(data.get("reply") or "").strip()
-            if not reply:
-                reply = "IoT エージェントからの応答が空でした。"
-            return {
-                "agent": agent,
-                "command": command,
-                "status": "success",
-                "response": reply,
-                "error": None,
-            }
-
-        if agent == "scheduler":
-            try:
-                data = await _call_scheduler_agent_chat(command)
-            except SchedulerAgentError as exc:
-                return {
-                    "agent": agent,
-                    "command": command,
-                    "status": "error",
-                    "response": None,
-                    "error": str(exc),
-                }
-            reply = str(data.get("reply") or data.get("message") or "").strip()
-            if not reply:
-                reply = "Scheduler エージェントからの応答が空でした。"
-            return {
-                "agent": agent,
-                "command": command,
-                "status": "success",
-                "response": reply,
-                "error": None,
-            }
-
-        return {
-            "agent": agent,
-            "command": command,
-            "status": "error",
-            "response": None,
-            "error": f"未対応のエージェント種別です: {agent}",
-        }
-
-    async def _execute_browser_task_with_progress(self, task: TaskSpec) -> AsyncIterator[Dict[str, Any]]:
-        command = task["command"]
-
-        clarification = await self._maybe_request_clarification(task)
-        if clarification is not None:
-            yield {"type": "result", "result": clarification}
-            return
-
-        availability = await get_agent_availability()
-        if not availability.get("browser", True):
-            agent_label = self._AGENT_DISPLAY_NAMES.get("browser", "browser")
-            yield {
-                "type": "result",
-                "result": {
-                    "agent": "browser",
                     "command": command,
                     "status": "success",
                     "response": f"{agent_label} に接続できないため、このタスクはスキップしました。",
                     "error": None,
                     "finalized": True,
-                },
-            }
-            return
+                }
 
-        if _USE_BROWSER_AGENT_MCP:
-            mcp_result, mcp_errors = await _call_browser_agent_chat_via_mcp(command)
-            if mcp_result is not None:
-                fallback_summary = await self._augment_browser_payload_with_history(mcp_result, timeout=60.0)
+            if agent == "lifestyle":
+                try:
+                    data = await _call_lifestyle("/agent_rag_answer", method="POST", payload={"question": command})
+                except LifestyleAPIError as exc:
+                    return self._execution_error_result(agent, command, exc)
+                answer = str(data.get("answer") or "").strip() or "Life-Styleエージェントから回答が得られませんでした。"
+                return {
+                    "agent": agent,
+                    "command": command,
+                    "status": "success",
+                    "response": answer,
+                    "error": None,
+                }
+
+            if agent == "browser":
+                try:
+                    data = await _call_browser_agent_chat(command)
+                except BrowserAgentError as exc:
+                    return self._browser_error_result(command, exc)
+                # agent-relay returns synchronous results, no need for additional polling
+                return self._browser_result_from_payload(command, data, fallback_summary="")
+
+            if agent == "iot":
+                try:
+                    data = await _call_iot_agent_command(command)
+                except IotAgentError as exc:
+                    return self._execution_error_result(agent, command, exc)
+                reply = str(data.get("reply") or "").strip()
+                if not reply:
+                    reply = "IoT エージェントからの応答が空でした。"
+                return {
+                    "agent": agent,
+                    "command": command,
+                    "status": "success",
+                    "response": reply,
+                    "error": None,
+                }
+
+            if agent == "scheduler":
+                try:
+                    data = await _call_scheduler_agent_chat(command)
+                except SchedulerAgentError as exc:
+                    return self._execution_error_result(agent, command, exc)
+                reply = str(data.get("reply") or data.get("message") or "").strip()
+                if not reply:
+                    reply = "Scheduler エージェントからの応答が空でした。"
+                return {
+                    "agent": agent,
+                    "command": command,
+                    "status": "success",
+                    "response": reply,
+                    "error": None,
+                }
+
+            return {
+                "agent": agent,
+                "command": command,
+                "status": "error",
+                "response": None,
+                "error": f"未対応のエージェント種別です: {agent}",
+            }
+        except Exception as exc:  # noqa: BLE001
+            logging.exception("Unexpected error while executing %s task: %s", agent, exc)
+            return self._execution_error_result(agent, command, exc)
+
+    async def _execute_browser_task_with_progress(self, task: TaskSpec) -> AsyncIterator[Dict[str, Any]]:
+        command = task["command"]
+        try:
+            clarification = await self._maybe_request_clarification(task)
+            if clarification is not None:
+                yield {"type": "result", "result": clarification}
+                return
+
+            availability = await get_agent_availability()
+            if not availability.get("browser", True):
+                agent_label = self._AGENT_DISPLAY_NAMES.get("browser", "browser")
                 yield {
                     "type": "result",
-                    "result": self._browser_result_from_payload(command, mcp_result, fallback_summary=fallback_summary),
+                    "result": {
+                        "agent": "browser",
+                        "command": command,
+                        "status": "success",
+                        "response": f"{agent_label} に接続できないため、このタスクはスキップしました。",
+                        "error": None,
+                        "finalized": True,
+                    },
                 }
                 return
-            if mcp_errors:
-                logging.info("Browser Agent MCP execution failed, falling back to HTTP: %s", "; ".join(mcp_errors))
 
-        try:
-            async for event in self._iter_browser_agent_progress(command):
-                yield event
-        except BrowserAgentError as exc:
-            logging.warning("Streaming browser execution failed, falling back to summary only: %s", exc)
+            if _USE_BROWSER_AGENT_MCP:
+                mcp_result, mcp_errors = await _call_browser_agent_chat_via_mcp(command)
+                if mcp_result is not None:
+                    fallback_summary = await self._augment_browser_payload_with_history(mcp_result, timeout=60.0)
+                    yield {
+                        "type": "result",
+                        "result": self._browser_result_from_payload(command, mcp_result, fallback_summary=fallback_summary),
+                    }
+                    return
+                if mcp_errors:
+                    logging.info("Browser Agent MCP execution failed, falling back to HTTP: %s", "; ".join(mcp_errors))
+
             try:
-                data = await _call_browser_agent_chat(command)
-            except BrowserAgentError as fallback_exc:
-                yield {"type": "result", "result": self._browser_error_result(command, fallback_exc)}
-            else:
-                yield {
-                    "type": "result",
-                    "result": self._browser_result_from_payload(command, data, fallback_summary=""),
-                }
+                async for event in self._iter_browser_agent_progress(command):
+                    yield event
+            except BrowserAgentError as exc:
+                logging.warning("Streaming browser execution failed, falling back to summary only: %s", exc)
+                try:
+                    data = await _call_browser_agent_chat(command)
+                except BrowserAgentError as fallback_exc:
+                    yield {"type": "result", "result": self._browser_error_result(command, fallback_exc)}
+                else:
+                    yield {
+                        "type": "result",
+                        "result": self._browser_result_from_payload(command, data, fallback_summary=""),
+                    }
+                return
+        except Exception as exc:  # noqa: BLE001
+            logging.exception("Unexpected error while executing browser task: %s", exc)
+            yield {"type": "result", "result": self._browser_error_result(command, exc)}
             return
 
     async def _iter_browser_agent_progress(self, command: str) -> AsyncIterator[Dict[str, Any]]:
