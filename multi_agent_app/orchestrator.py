@@ -499,14 +499,15 @@ class MultiAgentOrchestrator:
         history_prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history_entries])
 
         prompt = self._planner_prompt(enabled_agents, disabled_agents, device_context)
+        execution_context = self._execution_context_for_prompt(previous_executions)
+        prompt += "\n\nこれまでの実行結果:\n"
+        prompt += execution_context or "まだタスクは実行されていません。"
         if incremental:
-            prompt += "\n\nいままでの進捗（完了/失敗済みのタスクは繰り返さない）:\n"
-            prompt += self._execution_context_for_prompt(previous_executions) or "まだタスクは実行されていません。"
             if previous_plan_summary:
                 prompt += "\n\n直前の計画要約:\n" + previous_plan_summary
             prompt += (
                 "\n\n【重要：再計画の指示】\n"
-                "1. **情報の引継ぎ**: 直前のタスク実行結果（上記の「いままでの進捗」）を読み取り、次に実行するタスクの command にその内容を具体的に反映させてください。\n"
+                "1. **情報の引継ぎ**: 直前のタスク実行結果（上記の「これまでの実行結果」）を読み取り、次に実行するタスクの command にその内容を具体的に反映させてください。\n"
                 "   - 例: Lifestyleエージェントが提案した献立名を、Schedulerの登録内容に書き写す。\n"
                 "   - 例: Browserエージェントが検索したURLや店名を、次のタスクの入力として使う。\n"
                 "2. **未完了タスクの更新**: 以前の計画にあったタスクでも、情報が更新された場合は command を書き換えて再定義してください。\n"
