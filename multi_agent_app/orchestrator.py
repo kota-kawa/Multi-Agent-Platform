@@ -163,6 +163,7 @@ class MultiAgentOrchestrator:
 - 利用可能なエージェント:
   - "lifestyle"（Life-Styleエージェント）:
     - **役割**: 家庭内の生活全般の知識（料理、掃除、家電、メンタルヘルスなど）に関する質問回答、相談、雑談を担当します。RAG（検索拡張生成）を用いて内部知識ベースから回答を生成します。
+    - **重要**: 「献立」「レシピ」「食事の提案」など、食事に関する依頼は**必ず**このエージェントに割り当ててください。
     - **非対応**: ユーザーの個別の予定管理、日報の記録、外部サイトの操作、IoT機器の制御は**行いません**。「覚えておいて」などの記憶依頼も、予定や記録としての側面が強い場合はSchedulerへ、事実としての記憶なら長期記憶へ（ここではタスク化しない）となります。
   - "browser"（Browserエージェント）:
     - **役割**: Webブラウザを自動操作して、最新情報の検索、Webサイトの閲覧、フォーム入力などを行います。
@@ -1046,6 +1047,24 @@ class MultiAgentOrchestrator:
         # Timed out without a final marker; return the latest summary we observed (if any).
         return latest_summary
 
+    async def _fetch_browser_history_snapshot(self, base: str) -> tuple[int, str]:
+        """Return (latest_message_id, latest_assistant_summary) from Browser Agent history."""
+
+        history_url = _build_browser_agent_url(base, "/api/history")
+        try:
+            async with httpx.AsyncClient(timeout=_browser_agent_timeout(10.0)) as client:
+                response = await client.get(history_url)
+                if not response.is_success:
+                    return -1, ""
+                data = response.json()
+        except Exception:  # noqa: BLE001 - best effort
+            return -1, ""
+
+        messages = data.get("messages") if isinstance(data, dict) else None
+        latest_id = self._latest_message_id(messages)
+        summary = self._summarise_browser_messages(messages)
+        return latest_id, summary
+
     def _browser_result_from_payload(
         self,
         command: str,
@@ -1089,6 +1108,15 @@ class MultiAgentOrchestrator:
                 messages_summary,
             )
         )
+        if self._browser_payload_indicates_failure(payload, summary):
+            return {
+                "agent": "browser",
+                "command": command,
+                "status": "error",
+                "response": None,
+                "error": summary,
+                "finalized": finalized,
+            }
         labeled_summary = summary
         if labeled_summary and not labeled_summary.startswith("最終結果:"):
             labeled_summary = f"最終結果: {labeled_summary}"
@@ -1100,6 +1128,62 @@ class MultiAgentOrchestrator:
             "error": None,
             "finalized": finalized,
         }
+
+    def _browser_payload_indicates_failure(self, payload: Dict[str, Any], summary: str) -> bool:
+        if isinstance(payload, dict):
+            success = payload.get("success")
+            if isinstance(success, bool) and not success:
+                return True
+            status = payload.get("status")
+            if isinstance(status, str) and status.strip().lower() in {"error", "failed", "failure"}:
+                return True
+
+        lowered = (summary or "").lower()
+        failure_phrases = (
+            "success: false",
+            "取得できませんでした",
+            "失敗しました",
+            "失敗",
+            "エラー",
+            "不正なレスポンス",
+        )
+        return any(phrase in lowered for phrase in failure_phrases)
+
+    def _browser_result_is_failure(self, result: ExecutionResult) -> bool:
+        if result.get("status") != "success":
+            return True
+        response = str(result.get("response") or "")
+        return self._browser_payload_indicates_failure({}, response)
+
+    def _browser_fallback_command(self, command: str) -> str | None:
+        if not command:
+            return None
+        if "検索" in command:
+            return None
+        lowered = command.lower()
+        if "yahoo" not in lowered and "ヤフー" not in command:
+            return None
+
+        term = ""
+        quoted = re.search(r"[\"“”]([^\"“”]+)[\"“”]", command)
+        if quoted:
+            term = quoted.group(1).strip()
+        else:
+            bracketed = re.search(r"『([^』]+)』", command)
+            if bracketed:
+                term = bracketed.group(1).strip()
+        if not term:
+            if "アメリカ" in command:
+                term = "アメリカ ニュース"
+            elif "米国" in command:
+                term = "米国 ニュース"
+            else:
+                term = "ニュース"
+
+        return (
+            f"ブラウザでYahoo!ニュースの検索で「{term}」を検索し、"
+            "検索結果の上位3件の見出しとURLを取得して。カテゴリページの遷移は不要です。"
+        )
 
     async def _augment_browser_payload_with_history(self, payload: Dict[str, Any], *, timeout: float = 900.0) -> str:
         """Fetch the latest history summary as a fallback when the payload lacks a final marker."""
@@ -1266,7 +1350,16 @@ class MultiAgentOrchestrator:
                 except BrowserAgentError as exc:
                     return self._browser_error_result(command, exc)
                 # agent-relay returns synchronous results, no need for additional polling
-                return self._browser_result_from_payload(command, data, fallback_summary="")
+                result = self._browser_result_from_payload(command, data, fallback_summary="")
+                if self._browser_result_is_failure(result):
+                    fallback_command = self._browser_fallback_command(command)
+                    if fallback_command:
+                        try:
+                            fallback_data = await _call_browser_agent_chat(fallback_command)
+                        except BrowserAgentError as exc:
+                            return self._browser_error_result(fallback_command, exc)
+                        result = self._browser_result_from_payload(fallback_command, fallback_data, fallback_summary="")
+                return result
 
             if agent == "iot":
                 try:
@@ -1349,6 +1442,28 @@ class MultiAgentOrchestrator:
 
             try:
                 async for event in self._iter_browser_agent_progress(command):
+                    if event.get("type") != "result":
+                        yield event
+                        continue
+                    result = event.get("result")
+                    if not isinstance(result, dict):
+                        yield event
+                        continue
+                    if self._browser_result_is_failure(result):
+                        fallback_command = self._browser_fallback_command(command)
+                        if fallback_command:
+                            try:
+                                fallback_data = await _call_browser_agent_chat(fallback_command)
+                            except BrowserAgentError as fallback_exc:
+                                yield {"type": "result", "result": self._browser_error_result(fallback_command, fallback_exc)}
+                                return
+                            fallback_result = self._browser_result_from_payload(
+                                fallback_command,
+                                fallback_data,
+                                fallback_summary="",
+                            )
+                            yield {"type": "result", "result": fallback_result}
+                            return
                     yield event
             except BrowserAgentError as exc:
                 logging.warning("Streaming browser execution failed, falling back to summary only: %s", exc)
@@ -1357,10 +1472,21 @@ class MultiAgentOrchestrator:
                 except BrowserAgentError as fallback_exc:
                     yield {"type": "result", "result": self._browser_error_result(command, fallback_exc)}
                 else:
-                    yield {
-                        "type": "result",
-                        "result": self._browser_result_from_payload(command, data, fallback_summary=""),
-                    }
+                    result = self._browser_result_from_payload(command, data, fallback_summary="")
+                    if self._browser_result_is_failure(result):
+                        fallback_command = self._browser_fallback_command(command)
+                        if fallback_command:
+                            try:
+                                fallback_data = await _call_browser_agent_chat(fallback_command)
+                            except BrowserAgentError as fallback_exc:
+                                yield {"type": "result", "result": self._browser_error_result(fallback_command, fallback_exc)}
+                                return
+                            result = self._browser_result_from_payload(
+                                fallback_command,
+                                fallback_data,
+                                fallback_summary="",
+                            )
+                    yield {"type": "result", "result": result}
                 return
         except Exception as exc:  # noqa: BLE001
             logging.exception("Unexpected error while executing browser task: %s", exc)
@@ -1395,6 +1521,7 @@ class MultiAgentOrchestrator:
 
         stream_url = _build_browser_agent_url(base, "/api/stream")
         chat_url = _build_browser_agent_url(base, "/api/chat")
+        baseline_last_id, baseline_summary = await self._fetch_browser_history_snapshot(base)
 
         async def _stream_worker() -> None:
             try:
@@ -1537,6 +1664,8 @@ class MultiAgentOrchestrator:
         chat_finished = False
         chat_finished_at: float | None = None
         history_poll_summary = ""
+        stream_has_new_message = False
+        chat_has_new_messages = False
 
         def _stop_stream() -> None:
             stop_event.set()
@@ -1588,8 +1717,13 @@ class MultiAgentOrchestrator:
                         if role == "user":
                             continue
                         if isinstance(msg_id_raw, int):
+                            if msg_id_raw <= baseline_last_id:
+                                continue
                             message_key = msg_id_raw
+                            stream_has_new_message = True
                         else:
+                            if not stream_has_new_message:
+                                continue
                             message_key = f"anon-{anon_counter}"
                             anon_counter += 1
                         previous_text = progress_messages.get(message_key)
@@ -1607,7 +1741,9 @@ class MultiAgentOrchestrator:
                     elif event_type == "status" and isinstance(body, dict):
                         summary_text = body.get("run_summary")
                         if isinstance(summary_text, str) and summary_text.strip():
-                            latest_summary = summary_text.strip()
+                            cleaned_summary = summary_text.strip()
+                            if stream_has_new_message or cleaned_summary != baseline_summary:
+                                latest_summary = cleaned_summary
                         if body.get("agent_running") is False:
                             stream_finished = True
                     elif event_type == "reset":
@@ -1623,6 +1759,10 @@ class MultiAgentOrchestrator:
                     chat_result = item.get("data") or {}
                     chat_finished = True
                     chat_finished_at = chat_finished_at or time.monotonic()
+                    chat_messages = chat_result.get("messages") if isinstance(chat_result, dict) else None
+                    chat_last_id = self._latest_message_id(chat_messages)
+                    if chat_last_id > baseline_last_id:
+                        chat_has_new_messages = True
                 elif kind == "chat_error":
                     error = item.get("error")
                     chat_error = error if isinstance(error, BrowserAgentError) else BrowserAgentError(str(error))
@@ -1639,9 +1779,13 @@ class MultiAgentOrchestrator:
                     break
         finally:
             if chat_result is not None:
-                need_poll = stream_failed or not self._has_browser_final_marker(latest_summary)
+                need_poll = (
+                    stream_failed
+                    or not self._has_browser_final_marker(latest_summary)
+                    or (baseline_last_id >= 0 and not chat_has_new_messages)
+                )
                 if need_poll:
-                    base_last_id = self._latest_message_id(chat_result.get("messages"))
+                    base_last_id = baseline_last_id
                     history_poll_summary = await self._poll_browser_history_summary(
                         base,
                         since_id=base_last_id,
@@ -1658,7 +1802,11 @@ class MultiAgentOrchestrator:
             raise BrowserAgentError("ブラウザエージェントからの応答を取得できませんでした。")
 
         http_run_summary = str(chat_result.get("run_summary") or "").strip()
+        if baseline_summary and not chat_has_new_messages and http_run_summary == baseline_summary:
+            http_run_summary = ""
         fallback_summary = history_poll_summary or latest_summary
+        if baseline_summary and not stream_has_new_message and fallback_summary == baseline_summary:
+            fallback_summary = ""
         if not http_run_summary and not latest_summary and not history_poll_summary:
             logging.warning(
                 "Browser agent returned empty run_summary. HTTP: %r, Stream: %r, Poll: %r, Messages count: %d",
@@ -1667,6 +1815,8 @@ class MultiAgentOrchestrator:
                 history_poll_summary,
                 len(chat_result.get("messages") or []),
             )
+        if baseline_last_id >= 0 and not chat_has_new_messages and not fallback_summary and not http_run_summary:
+            raise BrowserAgentError("ブラウザエージェントが前回の結果を返した可能性があります。再試行します。")
 
         yield {
             "type": "result",
