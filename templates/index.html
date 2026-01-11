@@ -8,6 +8,7 @@
     content="{{ browser_embed_url | e }}"
   />
   <meta name="browser-agent-api-base" content="{{ browser_agent_client_base | e }}" />
+  <meta name="lifestyle-agent-api-base" content="/lifestyle_agent" />
   <meta name="iot-agent-api-base" content="/iot_agent" />
   <meta name="scheduler-agent-api-base" content="/scheduler_agent" />
   <title>リモートブラウザ / IoT / 要約チャット - Single Page UI</title>
@@ -22,6 +23,7 @@
   <script>
     window.BROWSER_EMBED_URL = {{ browser_embed_url | tojson }};
     window.BROWSER_AGENT_API_BASE = {{ browser_agent_client_base | tojson }};
+    window.LIFESTYLE_AGENT_BASE = "/lifestyle_agent";
     window.SCHEDULER_AGENT_BASE = "/scheduler_agent";
   </script>
   <script type="module" src="./assets/app.js"></script>
@@ -170,181 +172,24 @@
           </div>
         </section>
 
-        <!-- 1) リモートブラウザ風ビュー -->
-        <section id="view-browser" class="view" aria-labelledby="appTitle">
-          <div class="no-vnc-surface">
-            <div id="browserStage" class="stage" role="region" aria-label="リモートブラウザ">
-              <p class="stage-fallback">リモートブラウザを読み込んでいます…</p>
-            </div>
-            <div class="browser-toolbar">
-              <button id="fullscreenBtn" class="btn subtle" type="button" title="フルスクリーン">⤢</button>
-            </div>
-          </div>
+        <!-- 1) リモートブラウザ -->
+        <section id="view-browser" class="view agent-result-host" aria-labelledby="appTitle">
+          <div class="agent-result-view" data-agent="browser"></div>
         </section>
 
-        <!-- 2) IoT ダッシュボード -->
-        <section id="view-iot" class="view" aria-label="IoT ダッシュボード">
-          <div class="section-header">
-            <div class="section-title">
-              <span class="section-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" focusable="false">
-                  <path d="M9 2h6v2h2v2h2v6h-2v2h-2v2h-6v-2H7v-2H5V6h2V4h2V2zm0 4v2H7v6h2v2h6v-2h2V8h-2V6H9z" fill="currentColor" />
-                </svg>
-              </span>
-              <div>
-                <h2>IoT ダッシュボード</h2>
-                <p class="section-caption">ホーム内の仮想デバイスを確認・制御できます。</p>
-              </div>
-            </div>
-            <div class="section-actions">
-              <button id="registerDeviceBtn" class="btn subtle" type="button">デバイス登録</button>
-              <button id="refreshDevicesBtn" class="btn subtle" type="button">最新の状態を取得</button>
-            </div>
-          </div>
-
-          <div
-            id="iotNotice"
-            class="iot-notice"
-            role="status"
-            aria-live="polite"
-            hidden
-          ></div>
-
-          <div id="deviceGrid" class="device-grid" aria-live="polite"></div>
-
+        <!-- 2) IoT Agent -->
+        <section id="view-iot" class="view agent-result-host" aria-label="IoT Agent">
+          <div class="agent-result-view" data-agent="iot"></div>
         </section>
 
-        <!-- 3) 要約チャット -->
-        <section id="view-chat" class="view" aria-label="要約チャット">
-          <div class="summary-layout">
-            <div class="summary-panel">
-              <div class="summary-panel-header">
-                <div class="summary-heading">
-                  <h2>要約</h2>
-                  <p>左側の共通チャットから送ったメッセージのポイントを確認できます。</p>
-                </div>
-                <div class="summary-actions">
-                  <button id="clearChatBtn" class="btn subtle" type="button">履歴クリア</button>
-                </div>
-              </div>
-              <div id="summaryBox" class="summary-box">
-                左側のチャットでメッセージを送信すると、ここに要約が表示されます。
-              </div>
-            </div>
-          </div>
+        <!-- 3) Life-Style Agent -->
+        <section id="view-chat" class="view agent-result-host" aria-label="Life-Style Agent">
+          <div class="agent-result-view" data-agent="lifestyle"></div>
         </section>
 
         <!-- 4) Scheduler Agent -->
-        <section id="view-schedule" class="view" aria-label="Scheduler Agent">
-          <div class="schedule-layout">
-            <div class="schedule-panel schedule-panel--calendar" id="schedulerCalendarPanel">
-              <div class="section-header">
-                <div class="section-title">
-                  <span class="section-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" focusable="false">
-                      <path fill="currentColor" d="M4 6a2 2 0 0 1 2-2h1V2h2v2h6V2h2v2h1a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Zm16 14V10H4v10Zm0-12V6H4v2Z" />
-                    </svg>
-                  </span>
-                  <div>
-                    <h2>Scheduler エージェント</h2>
-                    <p class="section-caption">左の共通チャットから Scheduler-Agent へ指示できます。</p>
-                  </div>
-                </div>
-                <div class="section-actions">
-                  <button id="schedulerCalendarRefresh" class="btn subtle" type="button">最新を取得</button>
-                </div>
-              </div>
-              {% set prev_month = scheduler_month - 1 %}
-              {% set prev_year = scheduler_year %}
-              {% if prev_month < 1 %}
-                {% set prev_month = 12 %}
-                {% set prev_year = scheduler_year - 1 %}
-              {% endif %}
-              {% set next_month = scheduler_month + 1 %}
-              {% set next_year = scheduler_year %}
-              {% if next_month > 12 %}
-                {% set next_month = 1 %}
-                {% set next_year = scheduler_year + 1 %}
-              {% endif %}
-
-              <div
-                class="scheduler-inline"
-                id="schedulerInline"
-                data-year="{{ scheduler_year }}"
-                data-month="{{ scheduler_month }}"
-                data-has-data="{{ 1 if scheduler_calendar_data else 0 }}"
-              >
-                <div class="scheduler-inline__nav">
-                  <div>
-                    <h3 class="scheduler-inline__title" id="schedulerMonthLabel">{{ scheduler_year }}年 {{ scheduler_month }}月</h3>
-                    <p class="scheduler-inline__caption">ルーチンの概要</p>
-                  </div>
-                  <div class="btn-group shadow-sm" role="group" aria-label="月移動">
-                    <button class="btn btn-light border" type="button" data-action="prev-month" aria-label="{{ prev_year }}年{{ prev_month }}月へ">
-                      <i class="bi bi-chevron-left"></i>
-                    </button>
-                    <button class="btn btn-light border" type="button" data-action="next-month" aria-label="{{ next_year }}年{{ next_month }}月へ">
-                      <i class="bi bi-chevron-right"></i>
-                    </button>
-                  </div>
-                </div>
-
-                <div class="calendar-header">
-                  <div>月</div>
-                  <div>火</div>
-                  <div>水</div>
-                  <div>木</div>
-                  <div>金</div>
-                  <div>土</div>
-                  <div class="text-danger">日</div>
-                </div>
-
-                <div class="scheduler-inline__body" data-calendar-slot>
-                  {% if scheduler_calendar_data %}
-                    {% with calendar_data=scheduler_calendar_data, today=scheduler_today %}
-                      {% include 'scheduler_calendar_partial.html' %}
-                    {% endwith %}
-                  {% endif %}
-                </div>
-
-                {% if not scheduler_calendar_data %}
-                  <div class="scheduler-inline__placeholder">
-                    <p class="scheduler-inline__placeholder-title">カレンダーを読み込めませんでした。</p>
-                    <p class="scheduler-inline__placeholder-caption">
-                      Scheduler-Agent が起動しているか、API が利用できるかを確認して「最新を取得」を押してください。
-                      {% if scheduler_error %}
-                        <br><small class="text-muted">{{ scheduler_error }}</small>
-                      {% endif %}
-                    </p>
-                  </div>
-                {% endif %}
-
-                <div id="schedulerCalendarFallback" class="scheduler-fallback" hidden>
-                  カレンダーを読み込めませんでした。Scheduler-Agent が起動しているか確認してください。
-                </div>
-              </div>
-            </div>
-
-            <!-- Day View Panel (appears when a date is clicked) -->
-            <div class="schedule-panel schedule-panel--day" id="schedulerDayPanel" hidden>
-              <div class="scheduler-day-view">
-                <div class="scheduler-day-view__header">
-                  <button id="schedulerDayBackBtn" class="btn subtle" type="button">
-                    <i class="bi bi-arrow-left me-1"></i> カレンダーに戻る
-                  </button>
-                </div>
-                <div class="scheduler-day-view__content" id="schedulerDayContent">
-                  <!-- Timeline and Log will be loaded here -->
-                  <div class="scheduler-day-view__loading">
-                    <div class="spinner-border text-primary" role="status">
-                      <span class="visually-hidden">読み込み中...</span>
-                    </div>
-                    <p>データを読み込んでいます...</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+        <section id="view-schedule" class="view agent-result-host" aria-label="Scheduler Agent">
+          <div class="agent-result-view" data-agent="scheduler"></div>
         </section>
       </main>
     </div>

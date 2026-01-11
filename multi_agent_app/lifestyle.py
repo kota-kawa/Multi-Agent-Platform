@@ -9,6 +9,8 @@ import os
 from typing import Any, Dict, List
 
 import httpx
+from fastapi import Request
+from fastapi.responses import Response, JSONResponse
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 
@@ -166,3 +168,65 @@ async def _call_lifestyle(path: str, *, method: str = "GET", payload: Dict[str, 
         raise LifestyleAPIError("Life-Styleエージェント API から不正なレスポンス形式が返されました。", status_code=502)
 
     return data
+
+
+async def _proxy_lifestyle_agent_request(request: Request, path: str) -> Response:
+    """Proxy the incoming request to the configured Life-Style Agent API."""
+
+    bases = _iter_lifestyle_bases()
+    if not bases:
+        return JSONResponse(
+            {"status": "unavailable", "error": "Life-Styleエージェント API の接続先が設定されていません。"}
+        )
+
+    json_payload = None
+    body_payload = None
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        try:
+            json_payload = await request.json()
+        except Exception:
+            json_payload = None
+    elif request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        body_payload = await request.body()
+
+    forward_headers: Dict[str, str] = {}
+    for header, value in request.headers.items():
+        lowered = header.lower()
+        if lowered in {"content-type", "authorization", "accept", "cookie"} or lowered.startswith("x-"):
+            forward_headers[header] = value
+
+    connection_errors: list[str] = []
+    response: httpx.Response | None = None
+    async with httpx.AsyncClient(timeout=LIFESTYLE_TIMEOUT) as client:
+        for base in bases:
+            url = _build_lifestyle_url(base, path)
+            try:
+                response = await client.request(
+                    request.method,
+                    url,
+                    params=request.query_params,
+                    json=json_payload,
+                    content=body_payload if json_payload is None else None,
+                    headers=forward_headers,
+                )
+            except httpx.RequestError as exc:  # pragma: no cover - network failure
+                connection_errors.append(f"{url}: {exc}")
+                continue
+            else:
+                break
+
+    if response is None:
+        message_lines = ["Life-Styleエージェント API への接続に失敗しました。"]
+        if connection_errors:
+            message_lines.append("試行した URL:")
+            message_lines.extend(f"- {error}" for error in connection_errors)
+        return JSONResponse({"status": "unavailable", "error": "\n".join(message_lines)})
+
+    proxy_response = Response(response.content, status_code=response.status_code)
+    excluded_headers = {"content-encoding", "transfer-encoding", "connection", "content-length"}
+    for header, value in response.headers.items():
+        if header.lower() in excluded_headers:
+            continue
+        proxy_response.headers[header] = value
+    return proxy_response

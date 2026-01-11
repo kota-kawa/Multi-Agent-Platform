@@ -37,7 +37,12 @@ from .iot import (
     _iter_iot_agent_bases,
     _proxy_iot_agent_request,
 )
-from .lifestyle import _build_lifestyle_url, _call_lifestyle, _iter_lifestyle_bases
+from .lifestyle import (
+    _build_lifestyle_url,
+    _call_lifestyle,
+    _iter_lifestyle_bases,
+    _proxy_lifestyle_agent_request,
+)
 from .scheduler import (
     _proxy_scheduler_agent_request,
     _fetch_calendar_data,
@@ -286,6 +291,22 @@ async def reset_history() -> Any:
         return {"status": "unavailable", "message": message, "error": str(exc)}
 
     return data
+
+
+@router.api_route(
+    "/lifestyle_agent",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    name="multi_agent_app.proxy_lifestyle_agent",
+)
+@router.api_route(
+    "/lifestyle_agent/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    name="multi_agent_app.proxy_lifestyle_agent",
+)
+async def proxy_lifestyle_agent(request: Request, path: str = "") -> Response:
+    """Forward Life-Style Agent traffic to the upstream service."""
+
+    return await _proxy_lifestyle_agent_request(request, path)
 
 
 @router.api_route(

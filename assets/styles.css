@@ -507,10 +507,56 @@ body{
   flex:1;
   min-height:0;
 }
+.general-view__proxy-frame{
+  border:1px solid var(--border);
+  border-radius:16px;
+  overflow:hidden;
+  background:#0b0f18;
+  flex:1;
+  min-height:420px;
+}
+.general-view__proxy-iframe{
+  width:100%;
+  height:100%;
+  border:0;
+  display:block;
+}
 .general-view--has-proxy .general-view__proxy{display:flex}
 .general-view--has-proxy .general-view__default{display:none}
 .view.general-proxy-active{display:block; overflow:auto; flex:1; min-height:0}
 #view-browser.view.general-proxy-active{display:flex; flex-direction:column; flex:1; min-height:0; overflow:hidden}
+.view.agent-result-host.active{
+  display:flex;
+  flex-direction:column;
+  flex:1;
+  min-height:0;
+  overflow:hidden;
+}
+.agent-result-view{
+  border:1px solid var(--border);
+  border-radius:16px;
+  background:var(--panel-2);
+  box-shadow:var(--shadow);
+  display:flex;
+  flex-direction:column;
+  flex:1;
+  min-height:0;
+  overflow:hidden;
+}
+.agent-result-view iframe{
+  width:100%;
+  height:100%;
+  border:0;
+  display:block;
+  flex:1;
+}
+.agent-result-fallback{
+  margin:0;
+  padding:24px;
+  color:var(--muted);
+  font-size:14px;
+  text-align:center;
+}
 
 /* generic buttons */
 .btn{

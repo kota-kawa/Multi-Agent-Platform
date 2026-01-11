@@ -56,6 +56,9 @@ const generalDefaultContent = $("#generalDefaultContent");
 const generalProxyStatus = $("#generalProxyStatus");
 const generalProxyContainer = $("#generalProxyContainer");
 const generalViewPanel = views.general?.querySelector(".general-view") ?? null;
+let generalProxyFrame = null;
+let generalProxyIframe = null;
+let generalProxyIframeSrc = "";
 
 const ICONS = {
   generalChat: `<svg viewBox="0 0 24 24" fill="currentColor" focusable="false"><path d="M4 4h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8l-4 4V5a1 1 0 0 1 1-1z"/></svg>`,
@@ -70,21 +73,201 @@ let generalBrowserStage = null;
 let generalBrowserFullscreenBtn = null;
 
 const viewPlacements = new Map();
-const AGENT_TO_VIEW_MAP = { browser: "browser", iot: "iot", lifestyle: "chat", chat: "chat", scheduler: "schedule" };
+const AGENT_TO_VIEW_MAP = {
+  browser: "browser",
+  browser_agent: "browser",
+  web: "browser",
+  web_agent: "browser",
+  navigator: "browser",
+  iot: "iot",
+  iot_agent: "iot",
+  lifestyle: "chat",
+  life_style: "chat",
+  "life-style": "chat",
+  faq: "chat",
+  qa: "chat",
+  qa_agent: "chat",
+  "qa-agent": "chat",
+  knowledge: "chat",
+  knowledge_base: "chat",
+  docs: "chat",
+  gemini: "chat",
+  faq_gemini: "chat",
+  chat: "chat",
+  scheduler: "schedule",
+  scheduler_agent: "schedule",
+};
+const AGENT_RESULT_TARGETS = {
+  browser: "browser",
+  browser_agent: "browser",
+  web: "browser",
+  web_agent: "browser",
+  navigator: "browser",
+  iot: "iot",
+  iot_agent: "iot",
+  lifestyle: "lifestyle",
+  life_style: "lifestyle",
+  "life-style": "lifestyle",
+  faq: "lifestyle",
+  qa: "lifestyle",
+  qa_agent: "lifestyle",
+  "qa-agent": "lifestyle",
+  knowledge: "lifestyle",
+  knowledge_base: "lifestyle",
+  docs: "lifestyle",
+  gemini: "lifestyle",
+  faq_gemini: "lifestyle",
+  chat: "lifestyle",
+  scheduler: "scheduler",
+  scheduler_agent: "scheduler",
+};
+const AGENT_RESULT_PATHS = {
+  browser: "/agent-result",
+  lifestyle: "/agent-result",
+  iot: "/agent_result.html",
+  scheduler: "/agent-result",
+};
 const GENERAL_PROXY_AGENT_LABELS = {
   lifestyle: "Life-Styleエージェント",
+  "life-style": "Life-Styleエージェント",
+  life_style: "Life-Styleエージェント",
   browser: "ブラウザエージェント",
+  browser_agent: "ブラウザエージェント",
   iot: "IoT エージェント",
+  iot_agent: "IoT エージェント",
   scheduler: "Scheduler エージェント",
+  scheduler_agent: "Scheduler エージェント",
   chat: "要約チャット",
-};
-const GENERAL_PROXY_VIEW_LABELS = {
-  browser: "リモートブラウザ",
-  chat: "要約チャット",
-  iot: "IoT ダッシュボード",
-  scheduler: "Scheduler",
 };
 const BROWSER_AGENT_FINAL_MARKER = "[browser-agent-final]";
+
+function sanitizeBase(value) {
+  return typeof value === "string" ? value.trim().replace(/\/+$/, "") : "";
+}
+
+function readQueryParam(name) {
+  try {
+    return new URLSearchParams(window.location.search).get(name) || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function resolveBrowserAgentResultBase() {
+  const sources = [
+    sanitizeBase(readQueryParam("browser_agent_base")),
+    sanitizeBase(window.BROWSER_AGENT_API_BASE),
+    sanitizeBase(document.querySelector("meta[name='browser-agent-api-base']")?.content),
+  ];
+  for (const base of sources) {
+    if (base) return base;
+  }
+  return "http://localhost:5005";
+}
+
+function resolveLifestyleAgentResultBase() {
+  const sources = [
+    sanitizeBase(readQueryParam("lifestyle_agent_base")),
+    sanitizeBase(window.LIFESTYLE_AGENT_BASE),
+    sanitizeBase(document.querySelector("meta[name='lifestyle-agent-api-base']")?.content),
+  ];
+  for (const base of sources) {
+    if (base) return base;
+  }
+  if (window.location.origin && window.location.origin !== "null") {
+    return `${window.location.origin.replace(/\/+$/, "")}/lifestyle_agent`;
+  }
+  return "http://localhost:5000";
+}
+
+function resolveIotAgentResultBase() {
+  const sources = [
+    sanitizeBase(readQueryParam("iot_agent_base")),
+    sanitizeBase(window.IOT_AGENT_API_BASE),
+    sanitizeBase(document.querySelector("meta[name='iot-agent-api-base']")?.content),
+  ];
+  for (const base of sources) {
+    if (base) return base;
+  }
+  if (window.location.origin && window.location.origin !== "null") {
+    return `${window.location.origin.replace(/\/+$/, "")}/iot_agent`;
+  }
+  return "https://iot-agent.project-kk.com";
+}
+
+function resolveSchedulerAgentResultBase() {
+  const sources = [
+    sanitizeBase(readQueryParam("scheduler_agent_base")),
+    sanitizeBase(window.SCHEDULER_AGENT_BASE),
+    sanitizeBase(document.querySelector("meta[name='scheduler-agent-api-base']")?.content),
+  ];
+  for (const base of sources) {
+    if (base) return base;
+  }
+  if (window.location.origin && window.location.origin !== "null") {
+    return `${window.location.origin.replace(/\/+$/, "")}/scheduler_agent`;
+  }
+  return "http://localhost:5010";
+}
+
+const AGENT_RESULT_BASES = {
+  browser: resolveBrowserAgentResultBase(),
+  lifestyle: resolveLifestyleAgentResultBase(),
+  iot: resolveIotAgentResultBase(),
+  scheduler: resolveSchedulerAgentResultBase(),
+};
+
+function resolveAgentResultBase(agentKey) {
+  if (typeof agentKey !== "string") return "";
+  const normalized = agentKey.trim().toLowerCase();
+  const target = AGENT_RESULT_TARGETS[normalized] || normalized;
+  return AGENT_RESULT_BASES[target] || "";
+}
+
+function buildAgentResultUrl(agentKey) {
+  if (!agentKey) return "";
+  const normalized = agentKey.trim().toLowerCase();
+  const target = AGENT_RESULT_TARGETS[normalized] || normalized;
+  const path = AGENT_RESULT_PATHS[target] || "/agent-result";
+  const base = resolveAgentResultBase(normalized);
+  if (!base) return path;
+  if (/^https?:/i.test(path)) return path;
+  const cleanedBase = base.replace(/\/+$/, "");
+  const cleanedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${cleanedBase}${cleanedPath}`;
+}
+
+function resolveAgentLabel(agentKey) {
+  if (!agentKey) return "";
+  const normalized = agentKey.trim().toLowerCase();
+  const directLabel = GENERAL_PROXY_AGENT_LABELS[normalized];
+  if (directLabel) return directLabel;
+  const target = AGENT_RESULT_TARGETS[normalized] || normalized;
+  return GENERAL_PROXY_AGENT_LABELS[target] || agentKey;
+}
+
+function initAgentResultHosts() {
+  const hosts = $$(".agent-result-view");
+  if (!hosts.length) return;
+  hosts.forEach(host => {
+    if (!host) return;
+    const agentKey = host.dataset.agent || "";
+    if (!agentKey) return;
+    const url = buildAgentResultUrl(agentKey);
+    if (!url) return;
+    let iframe = host.querySelector("iframe");
+    if (!iframe) {
+      iframe = document.createElement("iframe");
+      iframe.setAttribute("loading", "lazy");
+      iframe.setAttribute("allow", "fullscreen");
+      host.appendChild(iframe);
+    }
+    iframe.setAttribute("title", `${resolveAgentLabel(agentKey) || agentKey} 結果`);
+    if (iframe.src !== url) {
+      iframe.src = url;
+    }
+  });
+}
 
 export function containsBrowserAgentFinalMarker(text) {
   return typeof text === "string" && text.includes(BROWSER_AGENT_FINAL_MARKER);
@@ -116,6 +299,47 @@ function resolveAgentToView(agentKey) {
   const normalized = agentKey.trim().toLowerCase();
   if (!normalized) return null;
   return AGENT_TO_VIEW_MAP[normalized] || null;
+}
+
+function ensureGeneralProxyFrame() {
+  if (!generalProxyContainer) return null;
+  if (!generalProxyFrame) {
+    generalProxyFrame = document.createElement("div");
+    generalProxyFrame.className = "general-view__proxy-frame";
+  }
+  if (!generalProxyIframe) {
+    generalProxyIframe = document.createElement("iframe");
+    generalProxyIframe.className = "general-view__proxy-iframe";
+    generalProxyIframe.setAttribute("title", "エージェント結果");
+    generalProxyIframe.setAttribute("loading", "lazy");
+    generalProxyIframe.setAttribute("allow", "fullscreen");
+    generalProxyFrame.appendChild(generalProxyIframe);
+  }
+  if (generalProxyFrame.parentElement !== generalProxyContainer) {
+    generalProxyContainer.innerHTML = "";
+    generalProxyContainer.appendChild(generalProxyFrame);
+  }
+  return generalProxyIframe;
+}
+
+function updateGeneralProxyFrame(agentKey) {
+  const iframe = ensureGeneralProxyFrame();
+  if (!iframe) return;
+  const nextSrc = buildAgentResultUrl(agentKey);
+  if (!nextSrc) return;
+  const label = resolveAgentLabel(agentKey) || "エージェント";
+  iframe.setAttribute("title", `${label} 結果`);
+  if (generalProxyIframeSrc !== nextSrc) {
+    generalProxyIframeSrc = nextSrc;
+    iframe.src = nextSrc;
+  }
+}
+
+function clearGeneralProxyFrame() {
+  generalProxyIframeSrc = "";
+  if (generalProxyFrame && generalProxyFrame.parentElement) {
+    generalProxyFrame.parentElement.removeChild(generalProxyFrame);
+  }
 }
 
 function ensureViewPlacement(viewEl) {
@@ -179,22 +403,22 @@ function moveViewToGeneral(viewKey) {
 }
 
 function clearGeneralProxy() {
-  if (generalProxyViewKey) {
-    restoreView(generalProxyViewKey);
-    generalProxyViewKey = null;
-  }
+  generalProxyViewKey = null;
+  clearGeneralProxyFrame();
   if (generalProxyContainer) {
     generalProxyContainer.innerHTML = "";
   }
 }
 
 function updateGeneralViewProxy() {
-  const shouldShowProxy = currentViewKey === "general" && Boolean(generalProxyTargetView);
-  if (shouldShowProxy) {
-    moveViewToGeneral(generalProxyTargetView);
+  const hasProxyAgent = Boolean(generalProxyAgentKey);
+  if (hasProxyAgent) {
+    updateGeneralProxyFrame(generalProxyAgentKey);
   } else {
     clearGeneralProxy();
   }
+
+  const shouldShowProxy = currentViewKey === "general" && hasProxyAgent;
 
   if (generalViewPanel) {
     generalViewPanel.classList.toggle("general-view--has-proxy", shouldShowProxy);
@@ -207,12 +431,9 @@ function updateGeneralViewProxy() {
   }
   if (generalProxyStatus) {
     if (shouldShowProxy && generalProxyAgentKey) {
-      const agentLabel = GENERAL_PROXY_AGENT_LABELS[generalProxyAgentKey] || generalProxyAgentKey;
-      const viewLabel = GENERAL_PROXY_VIEW_LABELS[generalProxyTargetView] || agentLabel;
-      const labelText = agentLabel && viewLabel && agentLabel !== viewLabel
-        ? `オーケストレーターは現在「${agentLabel}」（${viewLabel}）を使用しています。`
-        : `オーケストレーターは現在「${agentLabel || viewLabel}」を使用しています。`;
-      generalProxyStatus.textContent = `${labelText}下のビューで進行状況を確認できます。`;
+      const agentLabel = resolveAgentLabel(generalProxyAgentKey);
+      const labelText = `オーケストレーターは現在「${agentLabel}」を使用しています。`;
+      generalProxyStatus.textContent = `${labelText}下の結果画面で進行状況を確認できます。`;
       generalProxyStatus.hidden = false;
     } else {
       generalProxyStatus.hidden = true;
@@ -229,11 +450,6 @@ function updateGeneralViewProxy() {
       });
     }
     return;
-  }
-
-  if (generalProxyTargetView === "browser") {
-    activateGeneralBrowserProxy();
-    requestGeneralBrowserViewportSync({ reloadFallback: true });
   }
 
   if (typeof generalProxyRenderHook === "function") {
@@ -348,6 +564,8 @@ navButtons.forEach(btn => {
     activateView(btn.dataset.view);
   });
 });
+
+initAgentResultHosts();
 
 /* ---------- Sidebar toggle ---------- */
 if (layoutEl && sidebarToggle && sidebarEl) {
