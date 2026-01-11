@@ -452,6 +452,38 @@ class MultiAgentOrchestrator:
             lines.append(f"{idx}. [{agent_label}] {header}\n   {outcome}")
         return "\n".join(lines)
 
+    def _pending_tasks_for_prompt(
+        self,
+        tasks: List[TaskSpec],
+        executions: List[ExecutionResult],
+    ) -> List[TaskSpec]:
+        if not tasks:
+            return []
+        completed = {
+            (res.get("agent"), (res.get("command") or "").strip())
+            for res in executions
+            if res.get("status") == "success"
+        }
+        pending: List[TaskSpec] = []
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            agent = task.get("agent")
+            command = (task.get("command") or "").strip()
+            if (agent, command) in completed:
+                continue
+            pending.append(task)
+        return pending
+
+    def _tasks_context_for_prompt(self, tasks: List[TaskSpec]) -> str:
+        lines: list[str] = []
+        for idx, task in enumerate(tasks, start=1):
+            agent = task.get("agent") or "agent"
+            agent_label = self._AGENT_DISPLAY_NAMES.get(agent, agent)
+            command = (task.get("command") or "").strip() or "内容が空のタスク"
+            lines.append(f"{idx}. [{agent_label}] {command}")
+        return "\n".join(lines)
+
     async def _plan_node(self, state: OrchestratorState, *, incremental: bool = False) -> OrchestratorState:
         user_input = state.get("user_input", "")
         if not user_input:
@@ -472,6 +504,8 @@ class MultiAgentOrchestrator:
 
         previous_plan_summary = str(state.get("plan_summary") or "").strip()
         previous_executions: List[ExecutionResult] = list(state.get("executions") or [])
+        previous_tasks: List[TaskSpec] = list(state.get("tasks") or [])
+        pending_tasks = self._pending_tasks_for_prompt(previous_tasks, previous_executions)
 
         device_context: str | None = None
         if agent_connections.get("iot"):
@@ -510,6 +544,9 @@ class MultiAgentOrchestrator:
         execution_context = self._execution_context_for_prompt(previous_executions)
         prompt += "\n\nこれまでの実行結果:\n"
         prompt += execution_context or "まだタスクは実行されていません。"
+        if pending_tasks:
+            prompt += "\n\n未完了タスク一覧:\n"
+            prompt += self._tasks_context_for_prompt(pending_tasks)
         if incremental:
             if previous_plan_summary:
                 prompt += "\n\n直前の計画要約:\n" + previous_plan_summary
@@ -518,7 +555,7 @@ class MultiAgentOrchestrator:
                 "1. **情報の引継ぎ**: 直前のタスク実行結果（上記の「これまでの実行結果」）を読み取り、次に実行するタスクの command にその内容を具体的に反映させてください。\n"
                 "   - 例: Lifestyleエージェントが提案した献立名を、Schedulerの登録内容に書き写す。\n"
                 "   - 例: Browserエージェントが検索したURLや店名を、次のタスクの入力として使う。\n"
-                "2. **未完了タスクの更新**: 以前の計画にあったタスクでも、情報が更新された場合は command を書き換えて再定義してください。\n"
+                "2. **未完了タスクの更新**: 「未完了タスク一覧」にあるタスクは原則として維持しつつ、情報が更新された場合は command を書き換えて再定義してください。不要になった場合は、plan_summary に理由を書いて停止してください。\n"
                 "3. **重複の禁止**: 完了済み(success)のタスクは出力に含めないでください。\n"
                 "4. **無限ループの防止**: エージェントの実行結果が改善せず、同じようなエラーや結果が繰り返されていると判断した場合、あるいは2回以上ほとんど同じ出力が直近の会話履歴に確認された場合は、新たなタスクを生成せずに停止してください。その場合、plan_summary に停止理由と現在の状況をユーザーに報告する形で記述してください。\n"
             )
@@ -553,6 +590,12 @@ class MultiAgentOrchestrator:
         raw_tasks = plan_data.get("tasks")
         tasks = self._normalise_tasks(raw_tasks, allowed_agents=enabled_agents)
         plan_summary = str(plan_data.get("plan_summary") or plan_data.get("plan") or "").strip()
+        if incremental and pending_tasks and not tasks:
+            logging.warning("Planner returned no tasks despite pending tasks; continuing with pending tasks.")
+            tasks = pending_tasks
+            if not plan_summary or plan_summary == previous_plan_summary:
+                plan_summary = "未完了のタスクがあるため継続します。"
+            plan_data["tasks"] = tasks
         skipped_agents: set[str] = set()
         if isinstance(raw_tasks, Iterable):
             for item in raw_tasks:
