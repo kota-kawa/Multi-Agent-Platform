@@ -452,6 +452,152 @@ class MultiAgentOrchestrator:
             lines.append(f"{idx}. [{agent_label}] {header}\n   {outcome}")
         return "\n".join(lines)
 
+    def _compact_execution_text(self, text: str, *, max_chars: int = 420) -> str:
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return ""
+        marker = "【使用したファイル】"
+        if marker in cleaned:
+            cleaned = cleaned.split(marker, 1)[0].strip()
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if len(cleaned) > max_chars:
+            cleaned = cleaned[:max_chars].rstrip() + "..."
+        return cleaned
+
+    def _extract_price_from_text(self, text: str) -> str:
+        cleaned = text or ""
+        if not cleaned:
+            return ""
+        match = re.search(r"¥\s*([0-9][0-9,\\.]+)", cleaned)
+        if match:
+            return match.group(1)
+        match = re.search(r"([0-9][0-9,\\.]+)\s*円", cleaned)
+        if match:
+            return match.group(1)
+        match = re.search(r"([0-9][0-9,\\.]+)\s*JPY", cleaned, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        return ""
+
+    def _execution_placeholders(self, executions: List[ExecutionResult]) -> Dict[str, str]:
+        latest_by_agent: Dict[str, str] = {}
+        last_success = ""
+        for result in reversed(executions or []):
+            if result.get("status") != "success":
+                continue
+            response = str(result.get("response") or "").strip()
+            if not response:
+                continue
+            if not last_success:
+                last_success = response
+            agent = str(result.get("agent") or "").strip()
+            if agent and agent not in latest_by_agent:
+                latest_by_agent[agent] = response
+
+        lifestyle_text = self._compact_execution_text(latest_by_agent.get("lifestyle", ""))
+        browser_text = self._compact_execution_text(latest_by_agent.get("browser", ""))
+        iot_text = self._compact_execution_text(latest_by_agent.get("iot", ""))
+        scheduler_text = self._compact_execution_text(latest_by_agent.get("scheduler", ""))
+        last_text = self._compact_execution_text(last_success)
+        price_value = self._extract_price_from_text(latest_by_agent.get("browser", ""))
+
+        placeholders = {
+            "advice": lifestyle_text,
+            "life": lifestyle_text,
+            "life_result": lifestyle_text,
+            "life_response": lifestyle_text,
+            "lifestyle": lifestyle_text,
+            "lifestyle_result": lifestyle_text,
+            "lifestyle_response": lifestyle_text,
+            "browser": browser_text,
+            "browser_result": browser_text,
+            "browser_response": browser_text,
+            "iot": iot_text,
+            "iot_result": iot_text,
+            "iot_response": iot_text,
+            "scheduler": scheduler_text,
+            "scheduler_result": scheduler_text,
+            "scheduler_response": scheduler_text,
+            "result": last_text,
+            "last_result": last_text,
+            "summary": self._compact_execution_text(last_success, max_chars=200),
+        }
+        if price_value:
+            placeholders["price"] = price_value
+        elif browser_text:
+            placeholders["price"] = browser_text
+        return {key: value for key, value in placeholders.items() if value}
+
+    def _execution_context_for_task_command(self, executions: List[ExecutionResult]) -> str:
+        if not executions:
+            return ""
+        latest_by_agent: Dict[str, str] = {}
+        for result in reversed(executions or []):
+            if result.get("status") != "success":
+                continue
+            agent = str(result.get("agent") or "").strip()
+            if not agent or agent in latest_by_agent:
+                continue
+            response = str(result.get("response") or "").strip()
+            if response:
+                latest_by_agent[agent] = self._compact_execution_text(response, max_chars=280)
+        if not latest_by_agent:
+            return ""
+
+        lines = ["【これまでの実行結果】"]
+        ordered_agents = ["lifestyle", "scheduler", "browser", "iot"]
+        used = set()
+        for agent in ordered_agents:
+            if agent in latest_by_agent:
+                label = self._AGENT_DISPLAY_NAMES.get(agent, agent)
+                lines.append(f"- {label}: {latest_by_agent[agent]}")
+                used.add(agent)
+        for agent, summary in latest_by_agent.items():
+            if agent in used:
+                continue
+            label = self._AGENT_DISPLAY_NAMES.get(agent, agent)
+            lines.append(f"- {label}: {summary}")
+
+        return "\n".join(lines)
+
+    def _apply_execution_placeholders(self, text: str, executions: List[ExecutionResult]) -> str:
+        if not text or "[" not in text:
+            return text
+        replacements = self._execution_placeholders(executions)
+        if not replacements:
+            return text
+        updated = text
+        price_value = replacements.get("price")
+        if price_value:
+            updated = re.sub(r"¥?\[price\]", price_value, updated)
+
+        def _replace(match: re.Match[str]) -> str:
+            key = match.group(1).strip().lower()
+            value = replacements.get(key)
+            return value if value else match.group(0)
+
+        return re.sub(r"\[([a-zA-Z0-9_-]+)\]", _replace, updated)
+
+    def _apply_execution_results_to_tasks(
+        self,
+        tasks: List[TaskSpec],
+        executions: List[ExecutionResult],
+    ) -> List[TaskSpec]:
+        if not tasks or not executions:
+            return tasks
+        context_block = self._execution_context_for_task_command(executions)
+        updated: List[TaskSpec] = []
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            command = str(task.get("command") or "")
+            updated_command = self._apply_execution_placeholders(command, executions)
+            replaced = updated_command != command
+            if context_block and not replaced and "【これまでの実行結果】" not in updated_command:
+                updated_command = updated_command.rstrip() + "\n\n" + context_block
+            updated.append({**task, "command": updated_command})
+        return updated
+
     def _pending_tasks_for_prompt(
         self,
         tasks: List[TaskSpec],
@@ -628,7 +774,9 @@ class MultiAgentOrchestrator:
         }
 
     async def _execute_node(self, state: OrchestratorState) -> OrchestratorState:
-        tasks = state.get("tasks") or []
+        tasks = list(state.get("tasks") or [])
+        tasks = self._apply_execution_results_to_tasks(tasks, list(state.get("executions") or []))
+        state["tasks"] = tasks
         index = state.get("current_index", 0)
         executions = list(state.get("executions") or [])
 
@@ -1887,6 +2035,7 @@ class MultiAgentOrchestrator:
 
         while True:
             tasks = list(state.get("tasks") or [])
+            tasks = self._apply_execution_results_to_tasks(tasks, executions)
             state["tasks"] = tasks
             current_index = state.get("current_index", 0)
             if current_index >= len(tasks):
@@ -2008,6 +2157,7 @@ class MultiAgentOrchestrator:
                     for task in state.get("tasks") or []
                     if (task.get("agent"), (task.get("command") or "").strip()) not in completed
                 ]
+            state["tasks"] = self._apply_execution_results_to_tasks(state.get("tasks") or [], executions)
             state["current_index"] = 0
 
             new_plan_history = self._plan_history_entry(state.get("plan_summary"), state.get("tasks") or [])
@@ -2029,6 +2179,8 @@ class MultiAgentOrchestrator:
             yield self._event_payload("plan", state, incremental=True)
 
         plan_summary = state.get("plan_summary") or ""
+        plan_summary = self._apply_execution_placeholders(plan_summary, executions)
+        state["plan_summary"] = plan_summary
         assistant_messages = self._format_assistant_messages(plan_summary, executions)
         if log_history:
             updated_messages = []
